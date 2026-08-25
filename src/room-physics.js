@@ -20,6 +20,12 @@
   // ---- Crossover-aware gain: rolloff outside [freqLow, freqHigh] at a fixed slope ----
   function sourceGainAtFreq(source, f, slopeDbPerOct){
     slopeDbPerOct = slopeDbPerOct ?? 12;
+    // A negative frequency has no physical meaning here, and (unlike f===0,
+    // which the branches below already resolve to a gain of 0 via -Infinity dB)
+    // it drives the log2 ratio negative, producing NaN — treat it as inaudible
+    // rather than letting NaN escape and silently poison every field sum it
+    // touches (see precomputeSourceImages, which also guards against this).
+    if(!(f > 0)) return 0;
     let db = 0;
     if(f < source.freqLow && source.freqLow > 0){
       const octaves = Math.log2(source.freqLow / f);
@@ -142,7 +148,11 @@
   function precomputeSourceImages(sources, order, freq, ctx){
     return sources.map(s => {
       const freqGain = sourceGainAtFreq(s, freq);
-      if(freqGain < 0.0005) return null;
+      // Written as !(freqGain >= 0.0005) rather than freqGain < 0.0005 so a
+      // non-finite gain (NaN) is also dropped here — NaN fails every direct
+      // comparison, so freqGain < 0.0005 would let it silently through instead
+      // of being filtered like a genuinely-quiet source.
+      if(!(freqGain >= 0.0005)) return null;
       const imgSources = getImageSources(s.x, s.y, s.z ?? 3, order, freq, ctx);
       const delaySec = s.delayMs / 1000;
       const levelGain = Math.pow(10, s.levelDb / 20) * freqGain;

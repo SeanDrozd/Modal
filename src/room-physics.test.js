@@ -17,6 +17,9 @@ function approx(actual, expected, tol, msg){
   assert.ok(Math.abs(actual - expected) <= tol,
     `${msg || ''} expected ${expected} +/- ${tol}, got ${actual}`);
 }
+function magOf({ re, im }){
+  return Math.sqrt(re*re + im*im);
+}
 
 // A minimal ctx with no panels, no opening, mid reflectivity — used throughout.
 const baseRoom = { w: 18, d: 13.5, h: 8, openWidth: 0 };
@@ -65,6 +68,17 @@ test('gain is symmetric in log-frequency on both sides', () => {
   const below = 20 * Math.log10(P.sourceGainAtFreq(s, 50));  // 1 oct below
   const above = 20 * Math.log10(P.sourceGainAtFreq(s, 200)); // 1 oct above
   approx(below, above, 0.05, 'symmetric rolloff around a point passband');
+});
+
+test('gain is 0 (not NaN) for a non-positive evaluation frequency', () => {
+  // Math.log2(freqLow / f) goes negative-argument (NaN) for f < 0, and the
+  // f===0 case would otherwise resolve via -Infinity dB -- both are guarded
+  // explicitly so callers never see NaN leak out of this function.
+  const s = { freqLow: 20, freqHigh: 80 };
+  assert.strictEqual(P.sourceGainAtFreq(s, 0), 0);
+  const negGain = P.sourceGainAtFreq(s, -10);
+  assert.ok(Number.isFinite(negGain), `expected finite gain for f=-10, got ${negGain}`);
+  assert.strictEqual(negGain, 0);
 });
 
 console.log('\n-- panelAbsorptionAtFreq (thickness vs quarter-wavelength) --');
@@ -180,6 +194,140 @@ test('wallWithPanels leaves amplitude unchanged when point falls well OUTSIDE th
   approx(amp, 0.7, 1e-9, 'point outside panel footprint (and its taper zone) should be untouched');
 });
 
+// Every test above only exercises wallName='left', which reads its along-wall
+// coordinate from basePoint.y. 'right' shares that same y-axis branch, while
+// 'front'/'back' read basePoint.x instead -- neither branch had a dedicated
+// test before this, despite being a real per-call branch in wallWithPanels.
+test('wallWithPanels reads the along-wall coordinate from basePoint.y for the right wall (same axis as left)', () => {
+  const panels = [{ wall:'right', pos:0, length:20, thickness:2, enabled:true }];
+  const onPanel = P.wallWithPanels('right', {x:18,y:5,z:3}, 0.7, 400, panels, true);
+  const offPanel = P.wallWithPanels('right', {x:18,y:50,z:3}, 0.7, 400, panels, true);
+  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
+  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on y should be untouched');
+});
+
+test('wallWithPanels reads the along-wall coordinate from basePoint.x for the front wall', () => {
+  const panels = [{ wall:'front', pos:0, length:20, thickness:2, enabled:true }];
+  const onPanel = P.wallWithPanels('front', {x:5,y:0,z:3}, 0.7, 400, panels, true);
+  const offPanel = P.wallWithPanels('front', {x:50,y:0,z:3}, 0.7, 400, panels, true);
+  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
+  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on x should be untouched');
+});
+
+test('wallWithPanels reads the along-wall coordinate from basePoint.x for the back wall', () => {
+  const panels = [{ wall:'back', pos:0, length:20, thickness:2, enabled:true }];
+  const onPanel = P.wallWithPanels('back', {x:5,y:13.5,z:3}, 0.7, 400, panels, true);
+  const offPanel = P.wallWithPanels('back', {x:50,y:13.5,z:3}, 0.7, 400, panels, true);
+  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
+  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on x should be untouched');
+});
+
+test('wallWithPanels ignores panels mounted on a different wall than the one being queried', () => {
+  // A panel positioned to cover this exact point, but on 'right' -- querying
+  // 'left' at the same coordinates should see no absorption from it at all.
+  const panels = [{ wall:'right', pos:0, length:20, thickness:2, enabled:true }];
+  const amp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, panels, true);
+  approx(amp, 0.7, 1e-9, 'a panel on a different wall must not affect this wall\'s amplitude');
+});
+
+test('wallWithPanels compounds absorption multiplicatively when two panels on the same wall both cover the point', () => {
+  const singlePanel = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
+  const twoPanels = [
+    { wall:'left', pos:0, length:20, thickness:2, enabled:true },
+    { wall:'left', pos:0, length:20, thickness:1.5, enabled:true } // fully overlapping, different thickness
+  ];
+  const singleAmp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, singlePanel, true);
+  const doubleAmp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, twoPanels, true);
+  const absorb1 = P.panelAbsorptionAtFreq(twoPanels[0], 400);
+  const absorb2 = P.panelAbsorptionAtFreq(twoPanels[1], 400);
+  const expected = 0.7 * (1 - absorb1) * (1 - absorb2);
+  approx(doubleAmp, expected, 1e-9, 'compounded amplitude should be the product of each panel\'s (1-absorb) factor');
+  assert.ok(doubleAmp < singleAmp, 'two overlapping panels should absorb at least as much as either alone');
+});
+
+console.log('\n-- frontOpeningOverlap (entryway opening on the front wall) --');
+
+test('frontOpeningOverlap is 0 everywhere when the room has no opening (openWidth<=0)', () => {
+  const room = { w: 18, openWidth: 0 };
+  approx(P.frontOpeningOverlap(9, room), 0, 1e-9);
+  approx(P.frontOpeningOverlap(17, room), 0, 1e-9, 'even right where an opening would otherwise be');
+});
+
+test('frontOpeningOverlap is 1.0 anywhere inside the opening span', () => {
+  const room = { w: 18, openWidth: 4 }; // opening spans x=[14,18] (top-right corner of the front wall)
+  approx(P.frontOpeningOverlap(14, room), 1.0, 1e-9, 'left edge of the opening');
+  approx(P.frontOpeningOverlap(16, room), 1.0, 1e-9, 'middle of the opening');
+  approx(P.frontOpeningOverlap(18, room), 1.0, 1e-9, 'right edge of the opening (room boundary)');
+});
+
+test('frontOpeningOverlap tapers linearly to 0 over 3ft outside the opening', () => {
+  const room = { w: 18, openWidth: 4 }; // opening starts at x=14
+  approx(P.frontOpeningOverlap(13, room), 1 - 1/3, 1e-9, '1ft outside the opening');
+  approx(P.frontOpeningOverlap(12.5, room), 0.5, 1e-9, '1.5ft outside -- taper midpoint');
+  approx(P.frontOpeningOverlap(11, room), 0, 1e-9, '3ft outside -- taper fully spent');
+  assert.strictEqual(P.frontOpeningOverlap(9, room), 0, 'well beyond the taper zone should clamp to 0, not go negative');
+});
+
+test('frontOpeningOverlap clamps the opening span to the room width when openWidth exceeds it', () => {
+  const room = { w: 10, openWidth: 15 }; // start = max(0, 10-15) = 0, so the whole wall is "opening"
+  approx(P.frontOpeningOverlap(0, room), 1.0, 1e-9);
+  approx(P.frontOpeningOverlap(10, room), 1.0, 1e-9);
+});
+
+console.log('\n-- boundaryOps: front-wall opening blend (openingFactor) --');
+// frontOpeningOverlap is only ever consumed through boundaryOps's front-wall
+// amplitude (wallReflect * (1 - openingFactor * frontOpeningOverlap(...))) --
+// every prior test in this file hard-codes openingFactor: 0, so this shipped
+// feature had no coverage of the actual blend end-to-end until now.
+
+test('boundaryOps front-wall amplitude is unaffected by the opening when openingFactor is 0', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
+  const amp = front.amp({ x: 16, y: 6, z: 3 }); // inside the opening span
+  approx(amp, 0.7, 1e-9, 'openingFactor=0 should leave front-wall reflectivity untouched even inside the opening span');
+});
+
+test('boundaryOps front-wall amplitude is fully knocked out inside the opening when openingFactor is 1', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+  const ctx = { room, wallReflect: 0.7, openingFactor: 1, panels: [], panelsEnabled: true };
+  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
+  const amp = front.amp({ x: 16, y: 6, z: 3 }); // inside opening span [14,18]
+  approx(amp, 0, 1e-9, 'openingFactor=1 fully inside the opening should zero out reflectivity');
+});
+
+test('boundaryOps front-wall amplitude is reduced by exactly openingFactor inside the opening', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+  const ctx = { room, wallReflect: 0.7, openingFactor: 0.6, panels: [], panelsEnabled: true };
+  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
+  const amp = front.amp({ x: 16, y: 6, z: 3 });
+  approx(amp, 0.7 * (1 - 0.6), 1e-9);
+});
+
+test('boundaryOps front-wall amplitude away from the opening (and its taper) is unaffected regardless of openingFactor', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 }; // opening + 3ft taper covers x=[11,18]
+  const ctx = { room, wallReflect: 0.7, openingFactor: 1, panels: [], panelsEnabled: true };
+  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
+  const amp = front.amp({ x: 2, y: 6, z: 3 }); // far side of the wall from the opening
+  approx(amp, 0.7, 1e-9, 'point outside the opening and its taper zone should be untouched');
+});
+
+test('REGRESSION: front-wall reflection amplitude does not jump discontinuously as a source sweeps across the opening edge', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 }; // opening starts at x=14
+  const ctx = { room, wallReflect: 0.7, openingFactor: 0.8, panels: [], panelsEnabled: true };
+  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
+  const amps = [];
+  for(let x = 12.5; x <= 15.5; x += 0.05){
+    amps.push(front.amp({ x, y: 6, z: 3 }));
+  }
+  let maxStep = 0;
+  for(let i = 1; i < amps.length; i++){
+    maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
+  }
+  // 3ft taper, 0.05ft step, full swing = wallReflect*openingFactor = 0.56 -> expect small steps
+  assert.ok(maxStep < 0.03, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
+});
+
 console.log('\n-- getImageSources (image-source method / regression tests) --');
 
 test('order 1 produces exactly 7 image sources (direct + 6 single-wall bounces)', () => {
@@ -190,6 +338,32 @@ test('order 1 produces exactly 7 image sources (direct + 6 single-wall bounces)'
 test('order 2 produces exactly 1 + 6 + 6*5 = 37 image sources', () => {
   const imgs = P.getImageSources(9, 6, 3, 2, 100, baseCtx());
   assert.strictEqual(imgs.length, 37, `expected 37, got ${imgs.length}`);
+});
+
+test('order=0 (and negative order) still includes first-order reflections -- only the order>=2 second-bounce expansion is gated', () => {
+  // The "generate first-order mirrors" step is unconditional in this function;
+  // only the SECOND round of reflections is gated on `order >= 2`. So order=0
+  // or a negative order is NOT "direct source only" as the parameter name might
+  // suggest -- it behaves identically to order=1 (7 sources).
+  const ctx = baseCtx();
+  const order1 = P.getImageSources(9, 6, 3, 1, 100, ctx);
+  const order0 = P.getImageSources(9, 6, 3, 0, 100, ctx);
+  const orderNeg = P.getImageSources(9, 6, 3, -5, 100, ctx);
+  assert.strictEqual(order0.length, 7, `expected order=0 to still produce 7 sources, got ${order0.length}`);
+  assert.strictEqual(orderNeg.length, 7, `expected a negative order to still produce 7 sources, got ${orderNeg.length}`);
+  assert.deepStrictEqual(order0, order1, 'order=0 should be indistinguishable from order=1');
+});
+
+test('order>=3 behaves identically to order=2 -- higher orders are not actually supported', () => {
+  // There is no loop/recursion for a third bounce; the order>=2 branch only
+  // ever runs once no matter how high `order` is set.
+  const ctx = baseCtx();
+  const order2 = P.getImageSources(9, 6, 3, 2, 100, ctx);
+  const order3 = P.getImageSources(9, 6, 3, 3, 100, ctx);
+  const order10 = P.getImageSources(9, 6, 3, 10, 100, ctx);
+  assert.strictEqual(order3.length, 37, `expected order=3 to produce the same 37 sources as order=2, got ${order3.length}`);
+  assert.deepStrictEqual(order3, order2, 'order=3 should be indistinguishable from order=2 (no 3rd-bounce reflections exist)');
+  assert.deepStrictEqual(order10, order2, 'order=10 should also collapse to the order=2 result');
 });
 
 test('direct source position/amplitude is unchanged (first entry)', () => {
@@ -243,6 +417,80 @@ test('REGRESSION: computeFieldAtPoint never returns NaN for a well-formed scene'
   const pre = P.precomputeSourceImages(sources, 1, freq, ctx);
   const { re, im } = P.computeFieldAtPoint(9, 9, 3.5, pre, k);
   assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite re/im, got re=${re} im=${im}`);
+});
+
+test('REGRESSION: a source with an invalid (negative) freqLow/freqHigh gain input is dropped, not left to poison the field', () => {
+  // Before this was fixed, sourceGainAtFreq could return NaN for a source
+  // evaluated at f<0, and precomputeSourceImages's `freqGain < 0.0005` filter
+  // let NaN through uncaught (NaN fails every direct comparison) -- so the
+  // malformed source's NaN contribution silently wrecked re/im for every
+  // other source sharing that field point. This exercises the fix at both
+  // layers: sourceGainAtFreq no longer produces NaN, and even if some future
+  // gain function did, precomputeSourceImages's !(freqGain >= 0.0005) filter
+  // would still catch and drop it.
+  const goodSource = { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const badSource = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const ctx = baseCtx();
+  const freq = -50; // malformed: negative evaluation frequency
+  const pre = P.precomputeSourceImages([goodSource, badSource], 1, freq, ctx);
+  assert.strictEqual(pre[0], null, 'source evaluated at a negative frequency should be filtered out, not poison the array');
+  assert.strictEqual(pre[1], null, 'same for the second source');
+
+  // And a mixed, realistic case: one well-formed source at a valid frequency
+  // alongside one that (if it ever produced NaN again) must not contaminate
+  // the sum for the well-formed one.
+  const mixedPre = P.precomputeSourceImages([goodSource], 1, 200, ctx);
+  const k = 2 * Math.PI * 200 / P.C;
+  const { re, im } = P.computeFieldAtPoint(9, 9, 3.5, mixedPre, k);
+  assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite re/im, got re=${re} im=${im}`);
+});
+
+console.log('\n-- computeFieldAtPoint near-field clamp (r < 0.3m floor) --');
+
+test('field is finite (not Infinity/NaN) exactly at a source position (true r=0)', () => {
+  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const ctx = baseCtx({ wallReflect: 0 }); // isolate direct path only
+  const freq = 100;
+  const k = 2 * Math.PI * freq / P.C;
+  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
+  const { re, im } = P.computeFieldAtPoint(9, 6, 3, pre, k);
+  assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite field at r=0, got re=${re} im=${im}`);
+});
+
+test('REGRESSION: a source contributes an IDENTICAL complex value at every point strictly within the 0.3m clamp radius, regardless of direction', () => {
+  // amp=(src.amp/r)*levelGain and phase=k*r+extraPhase are both computed from
+  // the SAME clamped r, so the entire sub-0.3m sphere around a source collapses
+  // to one constant field value -- not just amplitude-flat, but direction-independent.
+  // This is a real, if subtle, consequence of the hard (non-tapered) clamp.
+  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const ctx = baseCtx({ wallReflect: 0 });
+  const freq = 100;
+  const k = 2 * Math.PI * freq / P.C;
+  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
+  const offsetFt = 0.1 / P.FT_TO_M; // 0.1m, well inside the 0.3m clamp radius
+
+  const atSource = P.computeFieldAtPoint(9, 6, 3, pre, k);
+  const offsetX = P.computeFieldAtPoint(9 + offsetFt, 6, 3, pre, k);
+  const offsetY = P.computeFieldAtPoint(9, 6 + offsetFt, 3, pre, k);
+
+  approx(offsetX.re, atSource.re, 1e-9, 're should be identical across the clamp sphere');
+  approx(offsetX.im, atSource.im, 1e-9, 'im should be identical across the clamp sphere');
+  approx(offsetY.re, atSource.re, 1e-9, 're should not depend on direction within the clamp sphere');
+  approx(offsetY.im, atSource.im, 1e-9, 'im should not depend on direction within the clamp sphere');
+});
+
+test('normal 1/r falloff resumes once the true distance exceeds the 0.3m clamp radius', () => {
+  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const ctx = baseCtx({ wallReflect: 0 });
+  const freq = 100;
+  const k = 2 * Math.PI * freq / P.C;
+  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
+
+  const justInsideFt = 0.29 / P.FT_TO_M;
+  const justOutsideFt = 0.5 / P.FT_TO_M; // safely past the clamp radius
+  const insideMag = magOf(P.computeFieldAtPoint(9 + justInsideFt, 6, 3, pre, k));
+  const outsideMag = magOf(P.computeFieldAtPoint(9 + justOutsideFt, 6, 3, pre, k));
+  assert.ok(outsideMag < insideMag, `expected magnitude to fall off past the clamp radius: inside=${insideMag}, outside=${outsideMag}`);
 });
 
 console.log('\n-- fieldDbAtPoint: known-configuration sanity checks --');
@@ -420,6 +668,53 @@ test('score combines multiple listeners by penalizing the WORST listener, not ju
   assert.ok(Number.isFinite(oneListener.score));
   assert.ok(Number.isFinite(twoListeners.score));
   assert.strictEqual(twoListeners.listenerStats.length, 2);
+});
+
+test('worstMinDb penalty engages (score is reduced) when the worst listener has a deep null (minDb < -20dB)', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+  const ctx = { room, wallReflect: 0, openingFactor: 0, panels: [], panelsEnabled: true }; // isolate direct path, no reflections
+  // The candidate itself always contributes to the field too (default levelDb:0,
+  // freqLow:20,freqHigh:20000 unless overridden) -- silence it via an explicit
+  // levelDb override so this scenario is driven purely by quietSource.
+  const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
+  const quietSource = { x: 9, y: 6, z: 1, levelDb: -30, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 6, z: 4 }]; // ~0.91m from quietSource
+  const freqs = [60]; // a single frequency sample -> stdDev is trivially 0, isolating the minDb term
+
+  const result = P.scoreSubPosition(silentCandidate, [quietSource], room, freqs, listeners, ctx, 1);
+  assert.ok(result.worstMinDb < -20, `expected a deep null (<-20dB) to set up this test, got worstMinDb=${result.worstMinDb.toFixed(1)}`);
+  approx(result.worstStdDev, 0, 1e-9, 'a single frequency sample should give zero std dev');
+  const expectedPenalty = (-result.worstMinDb - 20) * 0.5;
+  assert.ok(expectedPenalty > 0, 'this scenario should actually exercise a nonzero penalty');
+  approx(result.score, result.avgMean - expectedPenalty, 1e-6, 'score should equal avgMean minus the worstMinDb penalty');
+});
+
+test('worstMinDb penalty is exactly zero when no listener dips below -20dB', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+  const ctx = { room, wallReflect: 0, openingFactor: 0, panels: [], panelsEnabled: true };
+  const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
+  const loudSource = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 6, z: 4 }];
+  const freqs = [60];
+
+  const result = P.scoreSubPosition(silentCandidate, [loudSource], room, freqs, listeners, ctx, 1);
+  assert.ok(result.worstMinDb >= -20, `expected no deep null for this test, got worstMinDb=${result.worstMinDb.toFixed(1)}`);
+  approx(result.score, result.avgMean, 1e-6, 'with the penalty inactive, score should equal avgMean exactly (stdDev is also 0 here)');
+});
+
+test('empty listenerPositions produces a NaN score rather than throwing', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [60], [], ctx, 1);
+  assert.ok(Number.isNaN(result.score), `expected NaN score with no listener positions, got ${result.score}`);
+  assert.deepStrictEqual(result.listenerStats, []);
+});
+
+test('empty freqList produces a NaN score rather than throwing', () => {
+  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [], [{ x: 9, y: 6, z: 3.5 }], ctx, 1);
+  assert.ok(Number.isNaN(result.score), `expected NaN score with an empty frequency list, got ${result.score}`);
 });
 
 console.log('\n-- isPointInRect / isCandidateValid --');
@@ -692,6 +987,22 @@ test('longer T60 (livelier room) raises the Schroeder frequency', () => {
   const fsLive = P.schroederFrequency(room, 0.6);
   const fsDamped = P.schroederFrequency(room, 0.2);
   assert.ok(fsLive > fsDamped, 'a livelier (longer T60) room should have a higher Schroeder frequency');
+});
+
+test('returns 0 (not NaN/Infinity) for a degenerate room with zero volume', () => {
+  // The only defensive guard in this file (volumeM3 <= 0 -> return 0) --
+  // otherwise sqrt(t60/0) is Infinity. Exercises w=0 specifically since that's
+  // the most plausible real trigger (e.g. a room dimension input momentarily
+  // cleared/zeroed in the UI while the user is typing a new value).
+  const room = { w: 0, d: 13.5, h: 8 };
+  assert.strictEqual(P.schroederFrequency(room, 0.4), 0);
+});
+
+test('returns 0 (not NaN) for a room with a negative dimension', () => {
+  const room = { w: 18, d: -13.5, h: 8 };
+  const fs = P.schroederFrequency(room, 0.4);
+  assert.ok(Number.isFinite(fs), `expected a finite result, got ${fs}`);
+  assert.strictEqual(fs, 0);
 });
 
 console.log('\n-- earPositions / fieldDbAtEars --');
