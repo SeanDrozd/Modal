@@ -6,7 +6,13 @@ A browser-based tool for reasoning about bass response in a real room. It render
 
 No build step, no dependencies: open `src/modal.html` in a browser.
 
-![Frequency sweep across a room, showing the interference pattern shift as frequency changes](docs/sweep-demo.gif)
+![Frequency sweep across a room with two symmetrically-placed subs, showing a bad null forming at the listening position as frequency changes](docs/sweep-demo.gif)
+
+Symmetric sub placement is a classic trap: it's visually tidy, but it excites the room's modes symmetrically too, often carving a null right at the centerline seat where the couch usually is. The sweep above shows exactly that.
+
+![The subwoofer optimizer relocating the same two subs off the symmetric null, with the heatmap and frequency response chart improving together](docs/optimizer-demo.gif)
+
+Same room, same two subs, same frequency, before/after running the sub-placement optimizer. It deliberately breaks the symmetry to get off the shared null, and both the heat map and the spatially-averaged frequency response chart show the improvement together.
 
 ## Screenshots
 
