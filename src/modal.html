@@ -26,8 +26,8 @@
     overflow: hidden;
   }
   #sidebar {
-    width: 320px;
-    min-width: 320px;
+    width: 340px;
+    min-width: 340px;
     background: var(--panel);
     border-right: 1px solid var(--border);
     padding: 16px;
@@ -51,6 +51,17 @@
   .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; gap: 8px; }
   .row label { font-size: 12px; color: var(--text); flex-shrink: 0; }
   .row .val { font-size: 11.5px; color: var(--accent); font-variant-numeric: tabular-nums; min-width: 50px; text-align: right; }
+  /* Label+value on their own line, control (slider/select) on a full-width
+     line below -- used for rows whose label+control+value can't all fit on
+     one line without crowding or overflowing the sidebar (long labels, wide
+     dropdown text). Puts the value right next to its label instead of pinned
+     to the far edge of the sidebar. */
+  .row-stacked { margin-bottom: 7px; }
+  .row-stacked .row-stacked-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+  .row-stacked .row-stacked-head label { font-size: 12px; color: var(--text); }
+  .row-stacked .row-stacked-head .val { font-size: 11.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .row-stacked input[type="range"] { width: 100%; }
+  .row-stacked select { width: 100%; }
   input[type="range"] { flex: 1; accent-color: var(--accent); }
   input[type="number"] {
     width: 56px; background: var(--panel-2); border: 1px solid var(--border);
@@ -79,6 +90,10 @@
     font-size: 14px; padding: 2px 5px; line-height: 1; border-radius: 3px;
   }
   .icon-btn:hover { color: var(--bad); background: rgba(232,92,92,0.1); }
+  .icon-btn.reorder-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+  .icon-btn.reorder-btn:disabled { opacity: 0.3; cursor: default; }
+  .icon-btn.reorder-btn:disabled:hover { background: transparent; }
+  .src-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
   .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   button {
     background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
@@ -159,9 +174,9 @@
       <label>Listener ear height (ft)</label>
       <input type="number" id="listenerZ" min="0" max="20" step="0.25" value="3.5">
     </div>
-    <div class="row"><label>Listener facing (&deg;)</label>
+    <div class="row-stacked">
+      <div class="row-stacked-head"><label>Listener facing (&deg;)</label><span class="val" id="listenerFacingVal">0&deg;</span></div>
       <input type="range" id="listenerFacing" min="0" max="359" step="1" value="0">
-      <span class="val" id="listenerFacingVal">0&deg;</span>
     </div>
     <div class="hint">0&deg; faces into the room from the front wall; used to place the two ears (~17cm apart) for the ear-difference readout below.</div>
     <div id="earDiffInfo" class="hint"></div>
@@ -198,6 +213,7 @@
       </div>
     </div>
     <div id="srcList"></div>
+    <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
   </div>
 
   <div class="section">
@@ -244,9 +260,9 @@
         <option value="custom">Custom</option>
       </select>
     </div>
-    <div class="row"><label>Floor reflectivity</label>
+    <div class="row-stacked">
+      <div class="row-stacked-head"><label>Floor reflectivity</label><span class="val" id="floorReflectVal">0.80</span></div>
       <input type="range" id="floorReflect" min="0" max="0.95" step="0.05" value="0.8">
-      <span class="val" id="floorReflectVal">0.80</span>
     </div>
     <div class="hint">Base reflectivity of the bare floor.</div>
     <div class="row" style="margin-top:8px;"><label>Ceiling material</label>
@@ -326,8 +342,9 @@
 
   <div class="section">
     <div class="section-title">Reflections</div>
-    <div class="row"><label>Reflection order</label>
-      <select id="reflectionOrder" style="width:auto; flex:1;">
+    <div class="row-stacked">
+      <div class="row-stacked-head"><label>Reflection order</label></div>
+      <select id="reflectionOrder">
         <option value="1">1st order (faster)</option>
         <option value="2" selected>2nd order (more accurate, slower)</option>
         <option value="3">3rd order (most accurate, slowest)</option>
@@ -340,9 +357,9 @@
       <input type="number" id="dbMax" step="1" value="12" style="width:52px;">
     </div>
     <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color.</div>
-    <div class="row" style="margin-top:8px;"><label>Grid resolution</label>
+    <div class="row-stacked" style="margin-top:8px;">
+      <div class="row-stacked-head"><label>Grid resolution</label><span class="val" id="resolutionScaleVal">1.0x</span></div>
       <input type="range" id="resolutionScale" min="0.5" max="3" step="0.25" value="1">
-      <span class="val" id="resolutionScaleVal">1.0x</span>
     </div>
     <div class="hint">Higher resolution reduces blockiness/aliasing in the field but slows down redraws &mdash; lower it if dragging feels sluggish, especially at 2nd order.</div>
     <div class="row" style="margin-top:8px;"><label>Rendering</label>
@@ -426,8 +443,8 @@
 
   function defaultSources(){
     return [
-      { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
-      { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+      { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true },
+      { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }
     ];
   }
 
@@ -497,6 +514,13 @@
   function loadConfig(cfg){
     room = JSON.parse(JSON.stringify(cfg.room));
     sources = JSON.parse(JSON.stringify(cfg.sources));
+    // Older presets predate the explicit isMain flag (which sources form the
+    // front L/R triangle) -- if none of them have it, infer it the same way
+    // the old "exactly 2 sources" triangle logic implicitly did: the first
+    // two in list order are the mains, everything else isn't.
+    if(!sources.some(s => 'isMain' in s)){
+      sources.forEach((s, i) => { s.isMain = i < 2; });
+    }
     sourcesEnabled = cfg.sourcesEnabled !== false;
     panels = JSON.parse(JSON.stringify(cfg.panels || []));
     panelsEnabled = cfg.panelsEnabled !== false;
@@ -771,7 +795,10 @@
             <span class="dot" style="background:${color}"></span>
             <input type="text" data-field="name" value="${escapeHtml(s.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:12px;width:100%;">
           </div>
-          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
+          ${reorderButtonsHtml(idx, sources.length)}
+        </div>
+        <div class="row"><label>Front L/R (triangle)</label>
+          <input type="checkbox" data-field="isMain" ${s.isMain ? 'checked' : ''} style="width:auto; flex:0;">
         </div>
         <div class="row"><label>Level (dB)</label>
           <input type="range" data-field="levelDb" min="-12" max="12" step="0.5" value="${s.levelDb}">
@@ -803,11 +830,21 @@
         s.name = this.value || ('Source '+s.id);
         scheduleDraw(); // map label (2-letter abbreviation) is derived from the name
       });
+      block.querySelector('[data-field="isMain"]').addEventListener('change', function(){
+        s.isMain = this.checked;
+        scheduleDraw();
+      });
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(sources.length <= 1){ showStatus('Keep at least one source', false); return; }
         sources = sources.filter(x => x.id !== s.id);
         renderSrcList();
         draw();
+      });
+      block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
+        if(moveArrayItem(sources, idx, -1)){ renderSrcList(); scheduleDraw(); }
+      });
+      block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
+        if(moveArrayItem(sources, idx, 1)){ renderSrcList(); scheduleDraw(); }
       });
       const lvl = block.querySelector('[data-field="levelDb"]');
       lvl.addEventListener('input', function(){
@@ -839,6 +876,30 @@
     return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // Swaps arr[idx] with its neighbor in the given direction (-1 up, +1 down),
+  // in place. Returns false (no-op) if idx is already at that end -- callers
+  // also disable the corresponding button so this is a belt-and-suspenders
+  // check, not the primary guard.
+  function moveArrayItem(arr, idx, dir){
+    const newIdx = idx + dir;
+    if(newIdx < 0 || newIdx >= arr.length) return false;
+    const tmp = arr[idx];
+    arr[idx] = arr[newIdx];
+    arr[newIdx] = tmp;
+    return true;
+  }
+
+  // Shared markup for the up/down/remove button trio in a list-item header.
+  function reorderButtonsHtml(idx, len){
+    return `
+      <div class="src-actions">
+        <button class="icon-btn reorder-btn" data-action="move-up" title="Move up" ${idx===0 ? 'disabled' : ''}>&uarr;</button>
+        <button class="icon-btn reorder-btn" data-action="move-down" title="Move down" ${idx===len-1 ? 'disabled' : ''}>&darr;</button>
+        <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
+      </div>
+    `;
+  }
+
   // Length of the wall a panel/opening runs along -- shared by both, since
   // both are "a span positioned along one of the room's 4 walls" shapes.
   function wallSpan(wallName){
@@ -850,7 +911,7 @@
   function renderPanelList(){
     const list = document.getElementById('panelList');
     list.innerHTML = '';
-    panels.forEach((pnl) => {
+    panels.forEach((pnl, idx) => {
       const block = document.createElement('div');
       block.className = 'src-block';
       block.innerHTML = `
@@ -860,7 +921,7 @@
             <span class="dot" style="background:${PANEL_COLOR}"></span>
             <input type="text" data-field="name" value="${escapeHtml(pnl.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:12px;width:100%;">
           </div>
-          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
+          ${reorderButtonsHtml(idx, panels.length)}
         </div>
         <div class="range-row">
           <label>Wall</label>
@@ -897,6 +958,12 @@
         panels = panels.filter(x => x.id !== pnl.id);
         renderPanelList();
         draw();
+      });
+      block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
+        if(moveArrayItem(panels, idx, -1)){ renderPanelList(); draw(); }
+      });
+      block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
+        if(moveArrayItem(panels, idx, 1)){ renderPanelList(); draw(); }
       });
       block.querySelector('[data-field="wall"]').addEventListener('change', function(){
         pnl.wall = this.value;
@@ -986,9 +1053,9 @@
         <div class="row"><label>Width (ft)</label>
           <input type="number" data-field="width" min="0.5" step="0.5" value="${op.width}" style="width:56px;">
         </div>
-        <div class="row"><label>Opening amount</label>
+        <div class="row-stacked">
+          <div class="row-stacked-head"><label>Opening amount</label><span class="val" data-out="factor">${op.factor.toFixed(2)}</span></div>
           <input type="range" data-field="factor" min="0" max="1" step="0.05" value="${op.factor}">
-          <span class="val" data-out="factor">${op.factor.toFixed(2)}</span>
         </div>
       `;
       list.appendChild(block);
@@ -1329,7 +1396,8 @@
       z: 1,
       levelDb: 0, delayMs: 0,
       freqLow: 20, freqHigh: 80,
-      enabled: true
+      enabled: true,
+      isMain: false
     };
     sources.push(newSrc);
     renderSrcList();
@@ -1735,21 +1803,26 @@
 
     const lx = offX + listener.x*scale, ly = offY + listener.y*scale;
 
-    // triangle lines between all sources and listener (only if <=3 total points, else just nearest-wall)
-    const pts = sources.map((s,i) => ({ x: s.x, y: s.y, px: offX+s.x*scale, py: offY+s.y*scale, color: SRC_COLORS[i%SRC_COLORS.length], name: s.name, enabled: sourcesEnabled && s.enabled !== false }));
-    if(pts.length === 2){
+    // Stereo-triangle guide: connects whichever two sources are explicitly
+    // marked isMain (see the "Front L/R" checkbox in the source list) to the
+    // listener, regardless of how many other sources (subs, etc.) also exist
+    // -- previously this fired off "exactly 2 sources total", which silently
+    // stopped drawing the instant a sub was added.
+    const pts = sources.map((s,i) => ({ x: s.x, y: s.y, px: offX+s.x*scale, py: offY+s.y*scale, color: SRC_COLORS[i%SRC_COLORS.length], name: s.name, enabled: sourcesEnabled && s.enabled !== false, isMain: !!s.isMain }));
+    const mainPts = pts.filter(p => p.isMain && p.enabled);
+    if(mainPts.length === 2){
       ctx.strokeStyle = 'rgba(245,213,71,0.55)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4,4]);
       ctx.beginPath();
-      ctx.moveTo(pts[0].px, pts[0].py); ctx.lineTo(pts[1].px, pts[1].py);
-      ctx.lineTo(lx, ly); ctx.lineTo(pts[0].px, pts[0].py);
+      ctx.moveTo(mainPts[0].px, mainPts[0].py); ctx.lineTo(mainPts[1].px, mainPts[1].py);
+      ctx.lineTo(lx, ly); ctx.lineTo(mainPts[0].px, mainPts[0].py);
       ctx.stroke();
       ctx.setLineDash([]);
       function distFt(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
-      labelMid(pts[0].px,pts[0].py,pts[1].px,pts[1].py, distFt(pts[0],pts[1]).toFixed(1)+"'", 16);
-      labelMid(pts[0].px,pts[0].py,lx,ly, distFt(pts[0],{x:listener.x,y:listener.y}).toFixed(1)+"'", -16);
-      labelMid(pts[1].px,pts[1].py,lx,ly, distFt(pts[1],{x:listener.x,y:listener.y}).toFixed(1)+"'", 16);
+      labelMid(mainPts[0].px,mainPts[0].py,mainPts[1].px,mainPts[1].py, distFt(mainPts[0],mainPts[1]).toFixed(1)+"'", 16);
+      labelMid(mainPts[0].px,mainPts[0].py,lx,ly, distFt(mainPts[0],{x:listener.x,y:listener.y}).toFixed(1)+"'", -16);
+      labelMid(mainPts[1].px,mainPts[1].py,lx,ly, distFt(mainPts[1],{x:listener.x,y:listener.y}).toFixed(1)+"'", 16);
     }
 
     for(const p of pts) drawWallDists(p.x, p.y, p.px, p.py, offX, offY, scale, p.color);
