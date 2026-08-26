@@ -6,6 +6,19 @@ A browser-based tool for reasoning about bass response in a real room. It render
 
 No build step, no dependencies: open `src/modal.html` in a browser.
 
+![Frequency sweep across a room, showing the interference pattern shift as frequency changes](docs/sweep-demo.gif)
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Main view: interference field, sources, and stereo-triangle guide](docs/overview.png) | ![Subwoofer placement optimizer, showing a score heatmap and suggested position](docs/optimizer.png) |
+| Main view: interference field, sources, and the stereo-triangle guide | Subwoofer placement optimizer, with a score heatmap and suggested position |
+
+![Per-wall and ceiling material configuration](docs/materials.png)
+
+Per-wall and ceiling material configuration, each with its own frequency-dependent absorption curve.
+
 ## Features
 
 **Sources & listening position**
@@ -33,7 +46,7 @@ No build step, no dependencies: open `src/modal.html` in a browser.
 
 ## How it works
 
-The simulator treats sound as a single-frequency steady-state pressure field and sums contributions from every source (and every reflection of every source) at each point on the floor plan. It is **not** a full room-acoustics/FEM simulation. It's a fast, interactive approximation good enough to reason about where nulls and peaks form, not a substitute for a measurement.
+The simulator treats sound as a single-frequency steady-state pressure field and sums contributions from every source (and every reflection of every source) at each point on the floor plan. It is **not** a full room-acoustics/FEM simulation. It's a fast, interactive approximation good enough to reason about where nulls and peaks form, not a substitute for measurements.
 
 ### Reflections: the image-source method
 
