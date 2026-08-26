@@ -1,6 +1,6 @@
 # Modal
 
-Interactive room acoustics simulator — visualize standing waves, find optimal subwoofer placement, and model absorption treatment in real time (CPU + GPU rendering).
+Interactive room acoustics simulator: visualize standing waves, find optimal subwoofer placement, and model absorption treatment in real time (CPU + GPU rendering).
 
 A browser-based tool for reasoning about bass response in a real room. It renders a single-frequency sound-pressure field across the room floor plan (including wall/floor/ceiling reflections), lets you configure speakers, subs, absorption treatment, and room construction, and can automatically search for subwoofer positions that minimize peaks and nulls at your listening position.
 
@@ -17,7 +17,7 @@ No build step, no dependencies: open `src/modal.html` in a browser.
 - 1st/2nd/3rd-order image-source reflections (see [How it works](#how-it-works) below)
 - Per-wall material picker (drywall on insulated vs. hollow cavity, masonry), each with its own frequency-dependent absorption
 - Ceiling material picker (same three, plus suspended acoustic tile), floor material presets (hardwood, thin/thick carpet, or custom)
-- Openings on any wall — doorways, open floor plans — movable, any number, each tapering reflectivity near its edges rather than cutting it off sharply
+- Openings on any wall (doorways, open floor plans), movable, any number, each tapering reflectivity near its edges rather than cutting it off sharply
 - Wall-mounted absorption panels (thickness-dependent, quarter-wavelength rule, reorderable list) and floor/ceiling rugs & acoustic panels, drawn directly on the map by click-drag
 
 **Subwoofer optimizer**
@@ -33,7 +33,7 @@ No build step, no dependencies: open `src/modal.html` in a browser.
 
 ## How it works
 
-The simulator treats sound as a single-frequency steady-state pressure field and sums contributions from every source (and every reflection of every source) at each point on the floor plan. It is **not** a full room-acoustics/FEM simulation — it's a fast, interactive approximation good enough to reason about where nulls and peaks form, not a substitute for a measurement.
+The simulator treats sound as a single-frequency steady-state pressure field and sums contributions from every source (and every reflection of every source) at each point on the floor plan. It is **not** a full room-acoustics/FEM simulation. It's a fast, interactive approximation good enough to reason about where nulls and peaks form, not a substitute for a measurement.
 
 ### Reflections: the image-source method
 
@@ -41,9 +41,9 @@ Instead of tracing rays, the room's six boundaries (four walls, floor, ceiling) 
 
 - **1st order**: the direct source + one bounce off each of the 6 boundaries (7 total image sources per real source)
 - **2nd order**: adds every pair of *different* boundaries bounced off in sequence (37 total)
-- **3rd order**: a further bounce on top of that (187 total) — more accurate near corners, at a real cost: each order roughly 5x's the image-source count, so this is also the main performance knob
+- **3rd order**: a further bounce on top of that (187 total), more accurate near corners, at a real cost: each order roughly 5x's the image-source count, so this is also the main performance knob
 
-The only sequence excluded is bouncing off the *same* boundary twice in a row (e.g. left→left) — physically that's just a longer single bounce, not a distinct path, so it isn't worth a separate image source.
+The only sequence excluded is bouncing off the *same* boundary twice in a row (e.g. left then left again). Physically that's just a longer single bounce, not a distinct path, so it isn't worth a separate image source.
 
 ### Field summation
 
@@ -55,37 +55,37 @@ im = Σ (A / r) · sin(k·r + φ)
 dB = 20 · log10( √(re² + im²) )
 ```
 
-where `r` is the distance from that image source to the point (floored at 0.3 m to avoid a singularity right at a source), and `φ` bundles per-source delay and any other phase offset. This is plain complex-exponential wave superposition — the interesting physics is entirely in what feeds into `A`, `r`, and `φ` for each image source, not in the summation itself.
+where `r` is the distance from that image source to the point (floored at 0.3 m to avoid a singularity right at a source), and `φ` bundles per-source delay and any other phase offset. This is plain complex-exponential wave superposition. The interesting physics is entirely in what feeds into `A`, `r`, and `φ` for each image source, not in the summation itself.
 
 ### Absorption: two material shapes
 
-Real wall assemblies (drywall on studs) behave like a lightly-damped mass-spring-mass system: they absorb unusually well in a narrow band around their own resonance (more insulation in the cavity = deeper, broader absorption) and are comparatively reflective elsewhere. That's modeled as a Gaussian dip in reflectivity around a `peakFreq`. Masonry has no membrane to resonate, so it's modeled as flat. Porous/broadband absorbers (rugs, acoustic panels, suspended ceiling tile) don't resonate — they absorb progressively more at higher frequencies — modeled as a logistic ramp instead. Wall/floor/ceiling absorption panels use a separate quarter-wavelength-rule curve: thicker panels absorb lower frequencies more effectively, tapered smoothly at panel edges so a fraction-of-an-inch move can't flip constructive/destructive interference outright.
+Real wall assemblies (drywall on studs) behave like a lightly-damped mass-spring-mass system: they absorb unusually well in a narrow band around their own resonance (more insulation in the cavity means deeper, broader absorption) and are comparatively reflective elsewhere. That's modeled as a Gaussian dip in reflectivity around a `peakFreq`. Masonry has no membrane to resonate, so it's modeled as flat. Porous/broadband absorbers (rugs, acoustic panels, suspended ceiling tile) don't resonate; they absorb progressively more at higher frequencies, modeled as a logistic ramp instead. Wall/floor/ceiling absorption panels use a separate quarter-wavelength-rule curve: thicker panels absorb lower frequencies more effectively, tapered smoothly at panel edges so a fraction-of-an-inch move can't flip constructive/destructive interference outright.
 
 ### Reverberation time & the Schroeder frequency
 
-Below the **Schroeder frequency**, the room's response is dominated by a handful of discrete, individually identifiable modes — which is exactly what this tool visualizes. Above it, modes overlap so densely that a single-frequency snapshot stops being a meaningful diagnostic. It's estimated from room volume `V` and reverberation time `T60` (`f_s = 2000·√(T60/V)`, metric units), and `T60` itself is estimated live from your actual configured wall/floor/ceiling materials via Sabine's formula:
+Below the **Schroeder frequency**, the room's response is dominated by a handful of discrete, individually identifiable modes, which is exactly what this tool visualizes. Above it, modes overlap so densely that a single-frequency snapshot stops being a meaningful diagnostic. It's estimated from room volume `V` and reverberation time `T60` (`f_s = 2000·√(T60/V)`, metric units), and `T60` itself is estimated live from your actual configured wall/floor/ceiling materials via Sabine's formula:
 
 ```
 T60 = 0.161 · V / A         where A = Σ (surface area × absorption coefficient)
 ```
 
-Each surface's absorption coefficient is `1 − R²`, converting the amplitude/pressure reflection coefficient used everywhere else in the model into a power/energy quantity, which is what Sabine's formula is defined in terms of. This is a real, live estimate from your room's construction — not a fixed guess — but it deliberately excludes absorption panels, rugs, and openings (localized area patches rather than whole-surface properties), and Sabine's formula itself assumes evenly-distributed, diffuse absorption, which gets less accurate the more a room is dominated by isolated absorptive/reflective patches (furniture, in particular, isn't modeled at all). See the in-app hint next to the Schroeder frequency readout for the live numbers.
+Each surface's absorption coefficient is `1 − R²`, converting the amplitude/pressure reflection coefficient used everywhere else in the model into a power/energy quantity, which is what Sabine's formula is defined in terms of. This is a real, live estimate from your room's construction, not a fixed guess, but it deliberately excludes absorption panels, rugs, and openings (localized area patches rather than whole-surface properties), and Sabine's formula itself assumes evenly-distributed, diffuse absorption, which gets less accurate the more a room is dominated by isolated absorptive/reflective patches (furniture, in particular, isn't modeled at all). See the in-app hint next to the Schroeder frequency readout for the live numbers.
 
 ### What isn't modeled
 
 This is worth being explicit about, since it's easy to over-trust a clean-looking heat map:
 
-- **No furniture, HVAC, window coverings, or anything not explicitly configured** — real rooms absorb more than their bare wall/floor/ceiling construction suggests.
-- **Exact listener position, not a "typical seating area"** — a real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement.
-- **Single frequency at a time** — real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view.
-- **Material values are illustrative, not measured** — the wall/ceiling presets are typical-construction approximations, not data for your specific walls. Real behavior depends on details a preset can't capture (drywall thickness, stud spacing, how well-sealed the cavity is), so treat the absolute numbers as a starting point, not ground truth.
+- **No furniture, HVAC, window coverings, or anything not explicitly configured.** Real rooms absorb more than their bare wall/floor/ceiling construction suggests.
+- **Exact listener position, not a "typical seating area."** A real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement.
+- **Single frequency at a time.** Real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view.
+- **Material values are illustrative, not measured.** The wall/ceiling presets are typical-construction approximations, not data for your specific walls. Real behavior depends on details a preset can't capture (drywall thickness, stud spacing, how well-sealed the cavity is), so treat the absolute numbers as a starting point, not ground truth.
 
 ## Architecture
 
-- `src/room-physics.js` — the entire physics model (image sources, absorption, optimizer scoring, Schroeder/T60 estimate), as pure functions with no DOM/browser dependency. This is the single source of truth; nothing else reimplements this math.
-- `src/room-physics.test.js` — a hand-rolled test suite (no framework, no dependencies) covering the physics module. Run with `node src/room-physics.test.js`.
-- `src/field-render.js` — turns a precomputed image-source list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU image-source data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget the way an early version of this was.
-- `src/modal.html` — the UI: DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
+- `src/room-physics.js`: the entire physics model (image sources, absorption, optimizer scoring, Schroeder/T60 estimate), as pure functions with no DOM/browser dependency. This is the single source of truth; nothing else reimplements this math.
+- `src/room-physics.test.js`: a hand-rolled test suite (no framework, no dependencies) covering the physics module. Run with `node src/room-physics.test.js`.
+- `src/field-render.js`: turns a precomputed image-source list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU image-source data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget the way an early version of this was.
+- `src/modal.html`: the UI. DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
 
 ## Running it
 
@@ -93,3 +93,7 @@ No build step or install required.
 
 - **App**: open `src/modal.html` directly in a browser.
 - **Tests**: `node src/room-physics.test.js` (plain Node, no dependencies).
+
+## Credits
+
+Built in collaboration with [Claude](https://claude.com/claude-code): the physics model, rendering, UI, tests, and this README were all written with Claude, working from the project owner's direction and review.
