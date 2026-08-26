@@ -37,15 +37,25 @@
     return Math.pow(10, db / 20);
   }
 
-  // ---- Entryway opening: how much a front-wall reflection at x=sx is reduced ----
-  // room: { w, openWidth }, openingFactor: 0..1
-  function frontOpeningOverlap(sx, room){
-    if(room.openWidth <= 0) return 0;
-    const end = room.w;
-    const start = Math.max(0, end - room.openWidth);
-    if(sx >= start && sx <= end) return 1;
-    const dist = sx < start ? start - sx : sx - end;
-    return Math.max(0, 1 - dist / 3);
+  // Shared "span with a smooth taper at each end" coverage helper: 1.0 inside
+  // [start,end], tapering linearly to 0 over `taperFt` outside it. Used by both
+  // panelCoverage (thin absorbers, taper is small) and openingOverlap (wall
+  // openings, taper is room-scale) so a source/point sweeping across an edge
+  // never sees a discontinuous jump in reflection amplitude (which otherwise
+  // flips constructive/destructive interference for a fraction-of-an-inch move).
+  function taperedCoverage(start, end, axisCoord, taperFt){
+    if(axisCoord >= start && axisCoord <= end) return 1;
+    if(axisCoord < start) return Math.max(0, 1 - (start - axisCoord) / taperFt);
+    return Math.max(0, 1 - (axisCoord - end) / taperFt);
+  }
+
+  // ---- Wall opening (doorway/entryway): how much a wall's reflection at a
+  // given along-wall coordinate is reduced. opening: { pos, width }. Position
+  // is free -- an opening can sit anywhere along its wall, not just a fixed
+  // corner. Returns 0 (no effect) .. 1 (fully inside the opening span).
+  function openingOverlap(opening, axisCoord){
+    const TAPER_FT = 3; // wider taper than panels -- an opening's edge is a room-scale acoustic transition, not a thin absorber's edge
+    return taperedCoverage(opening.pos, opening.pos + opening.width, axisCoord, TAPER_FT);
   }
 
   // ---- Absorption panel: 0 (no extra absorption) .. 1 (fully absorptive), ----
@@ -66,15 +76,10 @@
 
   // Does the reflection point p (already on the wall's plane) fall within this
   // panel's along-wall span? Returns 0..1 with a smooth taper over TAPER_FT at
-  // each end, so a source sweeping across a panel's edge doesn't cause a
-  // discontinuous jump in reflection amplitude (which otherwise flips
-  // constructive/destructive interference for a fraction-of-an-inch move).
+  // each end (see taperedCoverage).
   function panelCoverage(panel, axisCoord){
     const TAPER_FT = 0.5;
-    const start = panel.pos, end = panel.pos + panel.length;
-    if(axisCoord >= start && axisCoord <= end) return 1;
-    if(axisCoord < start) return Math.max(0, 1 - (start - axisCoord) / TAPER_FT);
-    return Math.max(0, 1 - (axisCoord - end) / TAPER_FT);
+    return taperedCoverage(panel.pos, panel.pos + panel.length, axisCoord, TAPER_FT);
   }
 
   // wallName: 'left'|'right'|'front'|'back'. basePoint: {x,y,z}. panels: array.
@@ -95,20 +100,46 @@
     return amp;
   }
 
-  // ---- Six boundary reflection operators for a room { w, d, h, openWidth } ----
-  // ctx: { room, wallReflect, openingFactor, panels, panelsEnabled }
+  // wallName: 'left'|'right'|'front'|'back'. basePoint: {x,y,z}. openings: array
+  // of { wall, pos, width, factor, enabled }. openingsEnabled: bool (master
+  // toggle). Returns the reflection amplitude for that wall at basePoint after
+  // every relevant, enabled opening has reduced it -- multiple openings on the
+  // same wall compound multiplicatively, same as overlapping panels do.
+  function wallWithOpenings(wallName, basePoint, baseAmp, openings, openingsEnabled){
+    if(!openingsEnabled) return baseAmp;
+    const relevant = (openings || []).filter(o => o.wall === wallName && o.enabled !== false);
+    if(relevant.length === 0) return baseAmp;
+    const axisCoord = (wallName === 'left' || wallName === 'right') ? basePoint.y : basePoint.x;
+    let amp = baseAmp;
+    for(const o of relevant){
+      const overlap = openingOverlap(o, axisCoord);
+      if(overlap > 0){
+        amp *= (1 - o.factor * overlap);
+      }
+    }
+    return amp;
+  }
+
+  // ---- Six boundary reflection operators for a room { w, d, h } ----
+  // ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
+  // Openings reduce a wall's base reflectivity first (sound passes through into
+  // another space); panel absorption is then applied on top of whatever
+  // reflectivity remains. Floor/ceiling are unaffected by either -- both
+  // openings and panels are wall-mounted concepts in this model.
   function boundaryOps(freqForAbsorption, ctx){
-    const { room, wallReflect, openingFactor, panels, panelsEnabled } = ctx;
+    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled } = ctx;
     const w = room.w, d = room.d, h = room.h;
+    function wallAmp(wallName){
+      return (p) => {
+        const afterOpenings = wallWithOpenings(wallName, p, wallReflect, openings, openingsEnabled);
+        return wallWithPanels(wallName, p, afterOpenings, freqForAbsorption, panels, panelsEnabled);
+      };
+    }
     return [
-      { name:'left',  apply:(p)=>({x:-p.x, y:p.y, z:p.z}),
-        amp:(p)=>wallWithPanels('left', p, wallReflect, freqForAbsorption, panels, panelsEnabled) },
-      { name:'right', apply:(p)=>({x:2*w-p.x, y:p.y, z:p.z}),
-        amp:(p)=>wallWithPanels('right', p, wallReflect, freqForAbsorption, panels, panelsEnabled) },
-      { name:'front', apply:(p)=>({x:p.x, y:-p.y, z:p.z}),
-        amp:(p)=>wallWithPanels('front', p, wallReflect * (1 - openingFactor * frontOpeningOverlap(p.x, room)), freqForAbsorption, panels, panelsEnabled) },
-      { name:'back',  apply:(p)=>({x:p.x, y:2*d-p.y, z:p.z}),
-        amp:(p)=>wallWithPanels('back', p, wallReflect, freqForAbsorption, panels, panelsEnabled) },
+      { name:'left',  apply:(p)=>({x:-p.x, y:p.y, z:p.z}), amp: wallAmp('left') },
+      { name:'right', apply:(p)=>({x:2*w-p.x, y:p.y, z:p.z}), amp: wallAmp('right') },
+      { name:'front', apply:(p)=>({x:p.x, y:-p.y, z:p.z}), amp: wallAmp('front') },
+      { name:'back',  apply:(p)=>({x:p.x, y:2*d-p.y, z:p.z}), amp: wallAmp('back') },
       { name:'floor', apply:(p)=>({x:p.x, y:p.y, z:-p.z}), amp:(p)=>wallReflect },
       { name:'ceil',  apply:(p)=>({x:p.x, y:p.y, z:2*h-p.z}), amp:(p)=>wallReflect }
     ];
@@ -116,7 +147,7 @@
 
   // Generates image sources up to `order` bounces (1 = direct + 6 single-wall
   // bounces; 2 additionally includes every pair of DIFFERENT boundaries bounced
-  // off in sequence). ctx: { room, wallReflect, openingFactor, panels, panelsEnabled }
+  // off in sequence). ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
   function getImageSources(sx, sy, sz, order, freqForAbsorption, ctx){
     const ops = boundaryOps(freqForAbsorption, ctx);
     const direct = { x: sx, y: sy, z: sz, amp: 1.0 };
@@ -144,7 +175,7 @@
 
   // Precomputes each source's image-source list once per source (position/amp
   // only depend on source+room+panels+frequency, never on the grid point).
-  // ctx: { room, wallReflect, openingFactor, panels, panelsEnabled }
+  // ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
   function precomputeSourceImages(sources, order, freq, ctx){
     return sources.map(s => {
       const freqGain = sourceGainAtFreq(s, freq);
@@ -460,7 +491,8 @@
   return {
     FT_TO_M, C,
     sourceGainAtFreq,
-    frontOpeningOverlap,
+    openingOverlap,
+    wallWithOpenings,
     panelAbsorptionAtFreq,
     panelCoverage,
     wallWithPanels,

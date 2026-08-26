@@ -21,13 +21,14 @@ function magOf({ re, im }){
   return Math.sqrt(re*re + im*im);
 }
 
-// A minimal ctx with no panels, no opening, mid reflectivity — used throughout.
-const baseRoom = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+// A minimal ctx with no panels, no openings, mid reflectivity — used throughout.
+const baseRoom = { w: 18, d: 13.5, h: 8 };
 function baseCtx(overrides){
   return Object.assign({
     room: baseRoom,
     wallReflect: 0.7,
-    openingFactor: 0,
+    openings: [],
+    openingsEnabled: true,
     panels: [],
     panelsEnabled: true
   }, overrides || {});
@@ -150,9 +151,9 @@ test('REGRESSION: reflection amplitude does not jump discontinuously as a source
   // This is the actual bug: dragging a source an inch near a panel edge used to
   // snap the wall's reflection amplitude instantly (e.g. 0.0003 -> 0.7), which
   // flips constructive/destructive interference for a fraction-of-an-inch move.
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
+  const room = { w: 18, d: 13.5, h: 8 };
   const panels = [{ wall:'left', pos: 3, length: 3, thickness: 1, enabled: true }]; // y=[3,6]
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels, panelsEnabled: true };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels, panelsEnabled: true };
   const freq = 300;
 
   const amps = [];
@@ -245,76 +246,140 @@ test('wallWithPanels compounds absorption multiplicatively when two panels on th
   assert.ok(doubleAmp < singleAmp, 'two overlapping panels should absorb at least as much as either alone');
 });
 
-console.log('\n-- frontOpeningOverlap (entryway opening on the front wall) --');
+console.log('\n-- openingOverlap (wall opening / doorway coverage) --');
 
-test('frontOpeningOverlap is 0 everywhere when the room has no opening (openWidth<=0)', () => {
-  const room = { w: 18, openWidth: 0 };
-  approx(P.frontOpeningOverlap(9, room), 0, 1e-9);
-  approx(P.frontOpeningOverlap(17, room), 0, 1e-9, 'even right where an opening would otherwise be');
+test('openingOverlap is 1.0 anywhere inside the opening span', () => {
+  const opening = { pos: 14, width: 4 }; // spans [14,18]
+  approx(P.openingOverlap(opening, 14), 1.0, 1e-9, 'left edge');
+  approx(P.openingOverlap(opening, 16), 1.0, 1e-9, 'middle');
+  approx(P.openingOverlap(opening, 18), 1.0, 1e-9, 'right edge');
 });
 
-test('frontOpeningOverlap is 1.0 anywhere inside the opening span', () => {
-  const room = { w: 18, openWidth: 4 }; // opening spans x=[14,18] (top-right corner of the front wall)
-  approx(P.frontOpeningOverlap(14, room), 1.0, 1e-9, 'left edge of the opening');
-  approx(P.frontOpeningOverlap(16, room), 1.0, 1e-9, 'middle of the opening');
-  approx(P.frontOpeningOverlap(18, room), 1.0, 1e-9, 'right edge of the opening (room boundary)');
+test('openingOverlap tapers linearly to 0 over 3ft outside the opening', () => {
+  const opening = { pos: 14, width: 4 }; // spans [14,18]
+  approx(P.openingOverlap(opening, 13), 1 - 1/3, 1e-9, '1ft outside');
+  approx(P.openingOverlap(opening, 12.5), 0.5, 1e-9, '1.5ft outside -- taper midpoint');
+  approx(P.openingOverlap(opening, 11), 0, 1e-9, '3ft outside -- taper fully spent');
+  assert.strictEqual(P.openingOverlap(opening, 9), 0, 'well beyond the taper zone should clamp to 0, not go negative');
 });
 
-test('frontOpeningOverlap tapers linearly to 0 over 3ft outside the opening', () => {
-  const room = { w: 18, openWidth: 4 }; // opening starts at x=14
-  approx(P.frontOpeningOverlap(13, room), 1 - 1/3, 1e-9, '1ft outside the opening');
-  approx(P.frontOpeningOverlap(12.5, room), 0.5, 1e-9, '1.5ft outside -- taper midpoint');
-  approx(P.frontOpeningOverlap(11, room), 0, 1e-9, '3ft outside -- taper fully spent');
-  assert.strictEqual(P.frontOpeningOverlap(9, room), 0, 'well beyond the taper zone should clamp to 0, not go negative');
+test('openingOverlap can be positioned anywhere along a wall, not anchored to a fixed corner', () => {
+  const midWall = { pos: 7, width: 3 }; // an opening in the MIDDLE of a wall, e.g. an 18ft wall
+  approx(P.openingOverlap(midWall, 7), 1.0, 1e-9, 'left edge of a mid-wall opening');
+  approx(P.openingOverlap(midWall, 8.5), 1.0, 1e-9, 'middle of a mid-wall opening');
+  approx(P.openingOverlap(midWall, 10), 1.0, 1e-9, 'right edge of a mid-wall opening');
+  approx(P.openingOverlap(midWall, 0), 0, 1e-9, 'far from a mid-wall opening (both sides are now "outside")');
+  approx(P.openingOverlap(midWall, 17), 0, 1e-9, 'far from a mid-wall opening on the other side too');
 });
 
-test('frontOpeningOverlap clamps the opening span to the room width when openWidth exceeds it', () => {
-  const room = { w: 10, openWidth: 15 }; // start = max(0, 10-15) = 0, so the whole wall is "opening"
-  approx(P.frontOpeningOverlap(0, room), 1.0, 1e-9);
-  approx(P.frontOpeningOverlap(10, room), 1.0, 1e-9);
+console.log('\n-- wallWithOpenings --');
+
+test('wallWithOpenings returns base amplitude when openingsEnabled is false', () => {
+  const openings = [{ wall:'front', pos:0, width:20, factor:1, enabled:true }];
+  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, false);
+  approx(amp, 0.7, 1e-9, 'master toggle off should bypass all openings');
 });
 
-console.log('\n-- boundaryOps: front-wall opening blend (openingFactor) --');
-// frontOpeningOverlap is only ever consumed through boundaryOps's front-wall
-// amplitude (wallReflect * (1 - openingFactor * frontOpeningOverlap(...))) --
-// every prior test in this file hard-codes openingFactor: 0, so this shipped
-// feature had no coverage of the actual blend end-to-end until now.
-
-test('boundaryOps front-wall amplitude is unaffected by the opening when openingFactor is 0', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
-  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
-  const amp = front.amp({ x: 16, y: 6, z: 3 }); // inside the opening span
-  approx(amp, 0.7, 1e-9, 'openingFactor=0 should leave front-wall reflectivity untouched even inside the opening span');
+test('wallWithOpenings returns base amplitude when the opening is individually disabled', () => {
+  const openings = [{ wall:'front', pos:0, width:20, factor:1, enabled:false }];
+  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
+  approx(amp, 0.7, 1e-9, 'disabled opening should not reduce reflection');
 });
 
-test('boundaryOps front-wall amplitude is fully knocked out inside the opening when openingFactor is 1', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 1, panels: [], panelsEnabled: true };
-  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
-  const amp = front.amp({ x: 16, y: 6, z: 3 }); // inside opening span [14,18]
-  approx(amp, 0, 1e-9, 'openingFactor=1 fully inside the opening should zero out reflectivity');
+test('wallWithOpenings ignores openings mounted on a different wall than the one being queried', () => {
+  const openings = [{ wall:'left', pos:0, width:20, factor:1, enabled:true }];
+  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
+  approx(amp, 0.7, 1e-9, 'an opening on a different wall must not affect this wall\'s amplitude');
 });
 
-test('boundaryOps front-wall amplitude is reduced by exactly openingFactor inside the opening', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0.6, panels: [], panelsEnabled: true };
-  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
-  const amp = front.amp({ x: 16, y: 6, z: 3 });
+test('wallWithOpenings reduces amplitude by exactly factor when the point is inside the opening span', () => {
+  const openings = [{ wall:'front', pos:0, width:20, factor:0.6, enabled:true }];
+  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
   approx(amp, 0.7 * (1 - 0.6), 1e-9);
 });
 
-test('boundaryOps front-wall amplitude away from the opening (and its taper) is unaffected regardless of openingFactor', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 }; // opening + 3ft taper covers x=[11,18]
-  const ctx = { room, wallReflect: 0.7, openingFactor: 1, panels: [], panelsEnabled: true };
-  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
-  const amp = front.amp({ x: 2, y: 6, z: 3 }); // far side of the wall from the opening
-  approx(amp, 0.7, 1e-9, 'point outside the opening and its taper zone should be untouched');
+test('wallWithOpenings leaves amplitude unchanged when point falls well OUTSIDE the opening span (beyond taper)', () => {
+  const openings = [{ wall:'front', pos:0, width:3, factor:1, enabled:true }]; // covers x=[0,3]
+  const amp = P.wallWithOpenings('front', {x:20,y:0,z:3}, 0.7, openings, true); // x=20, well off-opening
+  approx(amp, 0.7, 1e-9, 'point outside opening footprint (and its taper zone) should be untouched');
 });
 
-test('REGRESSION: front-wall reflection amplitude does not jump discontinuously as a source sweeps across the opening edge', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 4 }; // opening starts at x=14
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0.8, panels: [], panelsEnabled: true };
+test('wallWithOpenings compounds amplitude multiplicatively when two openings on the same wall both cover the point', () => {
+  const oneOpening = [{ wall:'front', pos:0, width:20, factor:0.5, enabled:true }];
+  const twoOpenings = [
+    { wall:'front', pos:0, width:20, factor:0.5, enabled:true },
+    { wall:'front', pos:0, width:20, factor:0.4, enabled:true } // fully overlapping second opening
+  ];
+  const oneAmp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, oneOpening, true);
+  const twoAmp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, twoOpenings, true);
+  approx(twoAmp, 0.7 * (1-0.5) * (1-0.4), 1e-9);
+  assert.ok(twoAmp < oneAmp, 'two overlapping openings should reduce amplitude at least as much as either alone');
+});
+
+test('wallWithOpenings reads the along-wall coordinate from basePoint.y for left/right walls, basePoint.x for front/back', () => {
+  const leftOpening = [{ wall:'left', pos:2, width:2, factor:1, enabled:true }]; // y=[2,4]
+  const onOpening = P.wallWithOpenings('left', {x:0,y:3,z:3}, 0.7, leftOpening, true);
+  const offOpening = P.wallWithOpenings('left', {x:0,y:20,z:3}, 0.7, leftOpening, true);
+  approx(onOpening, 0, 1e-9);
+  approx(offOpening, 0.7, 1e-9);
+});
+
+console.log('\n-- boundaryOps: openings on any wall, before panel absorption --');
+// Every prior test in this file (before this section) used openings: [], so
+// this shipped feature had no coverage of the actual blend end-to-end. Also
+// verifies openings now apply to EVERY wall (left/right/front/back), not just
+// front -- the whole point of generalizing away from the old hardcoded
+// front-wall-only entryway.
+
+test('boundaryOps applies an opening on the FRONT wall to front-wall amplitude only', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const openings = [{ wall:'front', pos:14, width:4, factor:0.6, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ops = P.boundaryOps(200, ctx);
+  const front = ops.find(o => o.name === 'front').amp({ x: 16, y: 6, z: 3 });
+  const left = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
+  approx(front, 0.7 * (1 - 0.6), 1e-9, 'front wall inside the opening should be reduced');
+  approx(left, 0.7, 1e-9, 'left wall (no opening on it) should be untouched');
+});
+
+test('boundaryOps applies an opening on the LEFT wall (or any non-front wall) just as it does on front', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const openings = [{ wall:'left', pos:2, width:3, factor:0.6, enabled:true }]; // y=[2,5]
+  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
+  const left = P.boundaryOps(200, ctx).find(o => o.name === 'left');
+  approx(left.amp({ x: 0, y: 3.5, z: 3 }), 0.7 * (1 - 0.6), 1e-9, 'inside the opening span on the left wall');
+  approx(left.amp({ x: 0, y: 13, z: 3 }), 0.7, 1e-9, 'far from the opening on the left wall');
+});
+
+test('boundaryOps applies openings on multiple different walls simultaneously', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const openings = [
+    { wall:'front', pos:14, width:4, factor:1, enabled:true },
+    { wall:'back', pos:0, width:4, factor:1, enabled:true }
+  ];
+  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ops = P.boundaryOps(200, ctx);
+  approx(ops.find(o => o.name === 'front').amp({ x: 16, y: 6, z: 3 }), 0, 1e-9, 'front wall opening active');
+  approx(ops.find(o => o.name === 'back').amp({ x: 2, y: 6, z: 3 }), 0, 1e-9, 'back wall opening ALSO active, independently');
+  approx(ops.find(o => o.name === 'right').amp({ x: 18, y: 6, z: 3 }), 0.7, 1e-9, 'right wall has no opening, untouched');
+});
+
+test('boundaryOps applies opening reduction BEFORE panel absorption (both stack multiplicatively)', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const openings = [{ wall:'front', pos:0, width:20, factor:0.5, enabled:true }];
+  const panels = [{ wall:'front', pos:0, length:20, thickness:2, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels, panelsEnabled: true };
+  const front = P.boundaryOps(400, ctx).find(o => o.name === 'front');
+  const amp = front.amp({ x: 5, y: 0, z: 3 });
+  const expectedAfterOpening = 0.7 * (1 - 0.5);
+  const absorb = P.panelAbsorptionAtFreq(panels[0], 400);
+  approx(amp, expectedAfterOpening * (1 - absorb), 1e-9, 'panel absorption should apply on top of the opening-reduced amplitude, not independently of it');
+});
+
+test('REGRESSION: wall reflection amplitude does not jump discontinuously as a source sweeps across an opening edge', () => {
+  const room = { w: 18, d: 13.5, h: 8 }; // opening starts at x=14
+  const openings = [{ wall:'front', pos:14, width:4, factor:0.8, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
   const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
   const amps = [];
   for(let x = 12.5; x <= 15.5; x += 0.05){
@@ -324,7 +389,7 @@ test('REGRESSION: front-wall reflection amplitude does not jump discontinuously 
   for(let i = 1; i < amps.length; i++){
     maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
   }
-  // 3ft taper, 0.05ft step, full swing = wallReflect*openingFactor = 0.56 -> expect small steps
+  // 3ft taper, 0.05ft step, full swing = wallReflect*factor = 0.56 -> expect small steps
   assert.ok(maxStep < 0.03, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
 });
 
@@ -612,8 +677,8 @@ test('DEMONSTRATION: dB is far more sensitive to tiny position shifts near a nul
 console.log('\n-- scoreSubPosition --');
 
 test('a position centered between two coherent-summing sources scores well (loud + flat)', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -633,8 +698,8 @@ test('a position centered between two coherent-summing sources scores well (loud
 test('a position with a deep null at one frequency scores worse than an equally-loud-on-average flat position', () => {
   // Construct two single-sub scenarios with the SAME average level across frequency,
   // but one has a severe dip at a single frequency (a null) and the other doesn't.
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const freqs = [40, 50, 60, 70, 80];
   const listeners = [{ x: 9, y: 6, z: 3.5 }];
 
@@ -657,8 +722,8 @@ test('a position with a deep null at one frequency scores worse than an equally-
 });
 
 test('score combines multiple listeners by penalizing the WORST listener, not just averaging', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }];
   const freqs = [40, 60, 80];
 
@@ -671,8 +736,8 @@ test('score combines multiple listeners by penalizing the WORST listener, not ju
 });
 
 test('worstMinDb penalty engages (score is reduced) when the worst listener has a deep null (minDb < -20dB)', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0, openingFactor: 0, panels: [], panelsEnabled: true }; // isolate direct path, no reflections
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true }; // isolate direct path, no reflections
   // The candidate itself always contributes to the field too (default levelDb:0,
   // freqLow:20,freqHigh:20000 unless overridden) -- silence it via an explicit
   // levelDb override so this scenario is driven purely by quietSource.
@@ -690,8 +755,8 @@ test('worstMinDb penalty engages (score is reduced) when the worst listener has 
 });
 
 test('worstMinDb penalty is exactly zero when no listener dips below -20dB', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
   const loudSource = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 6, z: 4 }];
@@ -703,16 +768,16 @@ test('worstMinDb penalty is exactly zero when no listener dips below -20dB', () 
 });
 
 test('empty listenerPositions produces a NaN score rather than throwing', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [60], [], ctx, 1);
   assert.ok(Number.isNaN(result.score), `expected NaN score with no listener positions, got ${result.score}`);
   assert.deepStrictEqual(result.listenerStats, []);
 });
 
 test('empty freqList produces a NaN score rather than throwing', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [], [{ x: 9, y: 6, z: 3.5 }], ctx, 1);
   assert.ok(Number.isNaN(result.score), `expected NaN score with an empty frequency list, got ${result.score}`);
 });
@@ -754,8 +819,8 @@ test('isCandidateValid with NO preferred zones allows anywhere in-room (not off-
 console.log('\n-- optimizeSubPlacement --');
 
 test('optimizer finds a best candidate and respects off-limits zones', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -783,8 +848,8 @@ test('optimizer finds a best candidate and respects off-limits zones', () => {
 });
 
 test('optimizer returns null best when no valid candidates exist', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const offLimits = [{ x: 0, y: 0, width: 18, height: 13.5 }]; // blocks the entire room
   const result = P.optimizeSubPlacement({
     room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
@@ -798,8 +863,8 @@ test('optimizer returns null best when no valid candidates exist', () => {
 console.log('\n-- optimizeMultipleSubs (greedy sequential placement) --');
 
 test('places the requested number of subs', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -818,8 +883,8 @@ test('each round accounts for previously-placed subs, not just the original main
   // position round 1 did (since nothing in its view of the world changed). With
   // the placed sub correctly folded in, round 2's winner should generally differ
   // from round 1's, since the room's field has changed.
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -840,8 +905,8 @@ test('each round accounts for previously-placed subs, not just the original main
 });
 
 test('greedy respects off-limits zones for every sub placed, not just the first', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const offLimits = [{ x: 0, y: 0, width: 18, height: 10 }]; // only y=[10,13.5] is allowed
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 3, freqList: [40,60,80],
@@ -854,8 +919,8 @@ test('greedy respects off-limits zones for every sub placed, not just the first'
 });
 
 test('stops placing subs (without error) if candidates run out', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   // Preferred zone so small (relative to a coarse grid step) that at most 1 candidate exists.
   const tinyPreferred = [{ x: 9, y: 6.75, width: 0.4, height: 0.4 }];
   const result = P.optimizeMultipleSubs({
@@ -870,8 +935,8 @@ test('stops placing subs (without error) if candidates run out', () => {
 test('PERFORMANCE: cost scales linearly with sub count, not exponentially', () => {
   // This is the actual point of greedy placement -- confirm empirically that going
   // from 1 to 4 subs costs roughly 4x the work (linear), not candidates^4 (exponential).
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -906,8 +971,8 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
   // can legitimately re-select the exact same position for multiple subs, since
   // two co-located subs simply sum louder rather than being penalized for
   // redundancy in the scoring function itself.
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -928,8 +993,8 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
 });
 
 test('minSeparationFt is configurable and respected', () => {
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 2, freqList: [60],
     listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
@@ -1038,8 +1103,8 @@ test('ears stay at the listener height (z unchanged)', () => {
 test('DEMONSTRATION: two-ear dB difference is negligible at bass frequencies, more meaningful at higher frequencies', () => {
   // This is the actual physical claim behind adding two-ear sampling in the
   // first place -- confirm it empirically rather than just asserting it in prose.
-  const room = { w: 18, d: 13.5, h: 8, openWidth: 0 };
-  const ctx = { room, wallReflect: 0.7, openingFactor: 0, panels: [], panelsEnabled: true };
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }

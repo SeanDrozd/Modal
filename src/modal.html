@@ -122,7 +122,7 @@
 
 <div id="sidebar">
   <h1>Room wave interference</h1>
-  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (1st-order image sources). Sources roll off outside their frequency range at 12 dB/octave.</p>
+  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 2nd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at 12 dB/octave.</p>
 
   <div class="section">
     <div class="section-title">Saved configurations</div>
@@ -155,15 +155,6 @@
       <label>Ceiling height (ft)</label>
       <input type="number" id="roomH" min="6" max="20" step="0.25" value="8">
     </div>
-    <div class="row">
-      <label>Entryway width (ft)</label>
-      <input type="number" id="openWidth" min="0" max="15" step="0.5" value="4">
-    </div>
-    <div class="row"><label>Opening amount</label>
-      <input type="range" id="opening" min="0" max="1" step="0.05" value="0.6">
-      <span class="val" id="openingVal">0.60</span>
-    </div>
-    <div class="hint">Opening sits in the top-right corner of the front wall (width axis), reducing that wall's reflection near the opening.</div>
     <div class="row" style="margin-top:8px;">
       <label>Listener ear height (ft)</label>
       <input type="number" id="listenerZ" min="0" max="20" step="0.25" value="3.5">
@@ -213,6 +204,20 @@
     </div>
     <div id="panelList"></div>
     <div class="hint">Panels stick to a wall and run parallel to it. Thicker panels absorb lower frequencies more effectively (quarter-wavelength rule) &mdash; the inward band on the map shows how effective each panel is at the current frequency.</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      Openings
+      <div style="display:flex; gap:6px; align-items:center;">
+        <label style="font-size:11px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
+          <input type="checkbox" id="openingsMasterToggle" checked style="margin:0;"> All
+        </label>
+        <button id="addOpeningBtn" class="small">+ Add opening</button>
+      </div>
+    </div>
+    <div id="openingList"></div>
+    <div class="hint">An opening sits on a wall (any wall, any position) and reduces that wall's reflection near it &mdash; e.g. a doorway or open floorplan. Add any number, move them, or remove them entirely.</div>
   </div>
 
   <div class="section">
@@ -312,11 +317,13 @@
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
 
-  let room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+  let room = { w: 18, d: 13.5, h: 8 };
   let sources = [];
   let sourcesEnabled = true;
   let panels = [];
   let panelsEnabled = true;
+  let openings = [];
+  let openingsEnabled = true;
   let offLimitZones = [];
   let preferredZones = [];
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
@@ -325,7 +332,6 @@
   let listener = { x: 9, y: 9, z: 3.5, facing: 0 };
   let freq = 60;
   let wallReflect = 0.7;
-  let openingFactor = 0.6;
   let reflectionOrder = 1;
   let nextId = 1;
   let presets = {}; // name -> config
@@ -336,6 +342,22 @@
       { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
       { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
     ];
+  }
+
+  // The original app's single hardcoded entryway: front wall, top-right
+  // corner (width axis), 4ft wide. Kept as the fresh-install default so a
+  // first-time load still demonstrates the feature, but now it's just one
+  // opening in a list -- movable, removable, and not the only one possible.
+  function defaultOpenings(r){
+    return [{
+      id: nextId++,
+      name: 'Entryway',
+      wall: 'front',
+      pos: Math.max(0, r.w - 4),
+      width: 4,
+      factor: 0.6,
+      enabled: true
+    }];
   }
 
   // A sensible starting off-limits zone for sub optimization: excludes the
@@ -363,10 +385,12 @@
       sourcesEnabled,
       panels: JSON.parse(JSON.stringify(panels)),
       panelsEnabled,
+      openings: JSON.parse(JSON.stringify(openings)),
+      openingsEnabled,
       offLimitZones: JSON.parse(JSON.stringify(offLimitZones)),
       preferredZones: JSON.parse(JSON.stringify(preferredZones)),
       listener: JSON.parse(JSON.stringify(listener)),
-      freq, wallReflect, openingFactor, reflectionOrder
+      freq, wallReflect, reflectionOrder
     };
   }
 
@@ -376,22 +400,22 @@
     sourcesEnabled = cfg.sourcesEnabled !== false;
     panels = JSON.parse(JSON.stringify(cfg.panels || []));
     panelsEnabled = cfg.panelsEnabled !== false;
+    openings = JSON.parse(JSON.stringify(cfg.openings || []));
+    openingsEnabled = cfg.openingsEnabled !== false;
     offLimitZones = JSON.parse(JSON.stringify(cfg.offLimitZones || []));
     preferredZones = JSON.parse(JSON.stringify(cfg.preferredZones || []));
     optimizerResult = null; // stale relative to whatever just loaded; clear rather than show outdated results
     for(const s of sources){ if(s.id >= nextId) nextId = s.id + 1; }
     for(const p of panels){ if(p.id >= nextId) nextId = p.id + 1; }
+    for(const o of openings){ if(o.id >= nextId) nextId = o.id + 1; }
     for(const z of offLimitZones){ if(z.id >= nextId) nextId = z.id + 1; }
     for(const z of preferredZones){ if(z.id >= nextId) nextId = z.id + 1; }
     listener = JSON.parse(JSON.stringify(cfg.listener));
-    freq = cfg.freq; wallReflect = cfg.wallReflect; openingFactor = cfg.openingFactor;
+    freq = cfg.freq; wallReflect = cfg.wallReflect;
     reflectionOrder = cfg.reflectionOrder ?? 1;
     document.getElementById('roomW').value = room.w;
     document.getElementById('roomD').value = room.d;
     document.getElementById('roomH').value = room.h;
-    document.getElementById('openWidth').value = room.openWidth;
-    document.getElementById('opening').value = openingFactor;
-    document.getElementById('openingVal').textContent = openingFactor.toFixed(2);
     document.getElementById('reflect').value = wallReflect;
     document.getElementById('reflectVal').textContent = wallReflect.toFixed(2);
     document.getElementById('reflectionOrder').value = String(reflectionOrder);
@@ -401,30 +425,33 @@
     document.getElementById('listenerFacing').value = listener.facing ?? 0;
     document.getElementById('listenerFacingVal').textContent = (listener.facing ?? 0) + '\u00b0';
     document.getElementById('panelsMasterToggle').checked = panelsEnabled;
+    document.getElementById('openingsMasterToggle').checked = openingsEnabled;
     document.getElementById('sourcesMasterToggle').checked = sourcesEnabled;
-    // resolutionScale is intentionally NOT part of the saved config (see makeConfig) —
+    // resolutionScale is intentionally NOT part of the saved config (see makeConfig) --
     // it's a device/performance preference, not a room property, so we just re-sync
     // the control to whatever the in-memory value currently is rather than overwriting it.
     document.getElementById('resolutionScale').value = resolutionScale;
     document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
     renderSrcList();
     renderPanelList();
+    renderOpeningsList();
     renderZoneList();
   }
 
   function applySymmetricDefaults(){
-    room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+    room = { w: 18, d: 13.5, h: 8 };
     sources = defaultSources();
     sourcesEnabled = true;
     panels = [];
     panelsEnabled = true;
+    openings = []; // "symmetric" means no asymmetric doorway either
+    openingsEnabled = true;
     offLimitZones = defaultOffLimitZones(room);
     preferredZones = [];
     optimizerResult = null;
     listener = { x: 9, y: 9, z: 3.5, facing: 0 };
     freq = 60;
     wallReflect = 0.7;
-    openingFactor = 0;
     reflectionOrder = 1;
     loadConfig(makeConfig());
   }
@@ -624,11 +651,14 @@
     return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ---- Panel list UI ----
-  const PANEL_COLOR = '#e8b84f';
-  function panelMaxSpan(wallName){
+  // Length of the wall a panel/opening runs along -- shared by both, since
+  // both are "a span positioned along one of the room's 4 walls" shapes.
+  function wallSpan(wallName){
     return (wallName === 'left' || wallName === 'right') ? room.d : room.w;
   }
+
+  // ---- Panel list UI ----
+  const PANEL_COLOR = '#e8b84f';
   function renderPanelList(){
     const list = document.getElementById('panelList');
     list.innerHTML = '';
@@ -682,17 +712,17 @@
       });
       block.querySelector('[data-field="wall"]').addEventListener('change', function(){
         pnl.wall = this.value;
-        pnl.pos = Math.min(pnl.pos, Math.max(0, panelMaxSpan(pnl.wall) - pnl.length));
+        pnl.pos = Math.min(pnl.pos, Math.max(0, wallSpan(pnl.wall) - pnl.length));
         draw();
       });
       block.querySelector('[data-field="pos"]').addEventListener('change', function(){
-        const maxSpan = panelMaxSpan(pnl.wall);
+        const maxSpan = wallSpan(pnl.wall);
         pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, parseFloat(this.value)||0));
         this.value = pnl.pos;
         draw();
       });
       block.querySelector('[data-field="length"]').addEventListener('change', function(){
-        const maxSpan = panelMaxSpan(pnl.wall);
+        const maxSpan = wallSpan(pnl.wall);
         pnl.length = Math.max(0.5, Math.min(maxSpan, parseFloat(this.value)||0.5));
         pnl.pos = Math.min(pnl.pos, maxSpan - pnl.length);
         draw();
@@ -726,6 +756,110 @@
     };
     panels.push(newPanel);
     renderPanelList();
+    draw();
+  });
+
+  // ---- Opening list UI ----
+  // An opening sits on a wall and runs parallel to it, exactly like a panel
+  // geometrically (pos/width along the wall's axis) but reduces reflection
+  // instead of absorbing it, and has no frequency dependence.
+  const OPENING_COLOR = '#e8824f'; // matches drawOpenings' rgba(232,130,79,...) on the canvas
+  function renderOpeningsList(){
+    const list = document.getElementById('openingList');
+    list.innerHTML = '';
+    openings.forEach((op) => {
+      const block = document.createElement('div');
+      block.className = 'src-block';
+      block.innerHTML = `
+        <div class="src-label">
+          <div class="name-wrap">
+            <input type="checkbox" data-field="enabled" ${op.enabled !== false ? 'checked' : ''} style="margin-right:6px; flex-shrink:0;">
+            <span class="dot" style="background:${OPENING_COLOR}"></span>
+            <input type="text" data-field="name" value="${escapeHtml(op.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:12px;width:100%;">
+          </div>
+          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
+        </div>
+        <div class="range-row">
+          <label>Wall</label>
+          <select data-field="wall" style="flex:1;">
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+            <option value="front">Front</option>
+            <option value="back">Back</option>
+          </select>
+        </div>
+        <div class="row"><label>Position along wall (ft)</label>
+          <input type="number" data-field="pos" min="0" step="0.5" value="${op.pos}" style="width:56px;">
+        </div>
+        <div class="row"><label>Width (ft)</label>
+          <input type="number" data-field="width" min="0.5" step="0.5" value="${op.width}" style="width:56px;">
+        </div>
+        <div class="row"><label>Opening amount</label>
+          <input type="range" data-field="factor" min="0" max="1" step="0.05" value="${op.factor}">
+          <span class="val" data-out="factor">${op.factor.toFixed(2)}</span>
+        </div>
+      `;
+      list.appendChild(block);
+      block.querySelector('[data-field="wall"]').value = op.wall;
+      if(op.enabled === false) block.style.opacity = '0.5';
+
+      block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
+        op.enabled = this.checked;
+        block.style.opacity = this.checked ? '1' : '0.5';
+        draw();
+      });
+      block.querySelector('[data-field="name"]').addEventListener('input', function(){
+        op.name = this.value || ('Opening '+op.id);
+      });
+      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
+        openings = openings.filter(x => x.id !== op.id);
+        renderOpeningsList();
+        draw();
+      });
+      block.querySelector('[data-field="wall"]').addEventListener('change', function(){
+        op.wall = this.value;
+        op.pos = Math.min(op.pos, Math.max(0, wallSpan(op.wall) - op.width));
+        draw();
+      });
+      block.querySelector('[data-field="pos"]').addEventListener('change', function(){
+        const maxSpan = wallSpan(op.wall);
+        op.pos = Math.max(0, Math.min(maxSpan - op.width, parseFloat(this.value)||0));
+        this.value = op.pos;
+        draw();
+      });
+      block.querySelector('[data-field="width"]').addEventListener('change', function(){
+        const maxSpan = wallSpan(op.wall);
+        op.width = Math.max(0.5, Math.min(maxSpan, parseFloat(this.value)||0.5));
+        op.pos = Math.min(op.pos, maxSpan - op.width);
+        draw();
+      });
+      const factorInput = block.querySelector('[data-field="factor"]');
+      factorInput.addEventListener('input', function(){
+        op.factor = parseFloat(this.value);
+        block.querySelector('[data-out="factor"]').textContent = op.factor.toFixed(2);
+        scheduleDraw();
+      });
+    });
+  }
+
+  document.getElementById('openingsMasterToggle').addEventListener('change', function(){
+    openingsEnabled = this.checked;
+    draw();
+  });
+
+  document.getElementById('addOpeningBtn').addEventListener('click', () => {
+    const wall = 'front';
+    const newOpening = {
+      id: nextId++,
+      name: 'Opening ' + (openings.length + 1),
+      wall,
+      pos: Math.max(0, room.w/2 - 2),
+      width: 4,
+      factor: 0.6,
+      enabled: true
+    };
+    openings.push(newOpening);
+    renderOpeningsList();
     draw();
   });
 
@@ -812,11 +946,12 @@
   // every existing call site below is unchanged. RoomPhysics is now the only
   // place the actual math lives — see src/room-physics.test.js for its coverage.
   function physicsCtx(){
-    return { room, wallReflect, openingFactor, panels, panelsEnabled };
+    return { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled };
   }
   const sourceGainAtFreq = RoomPhysics.sourceGainAtFreq;
-  function frontOpeningOverlap(sx){
-    return RoomPhysics.frontOpeningOverlap(sx, room);
+  const openingOverlap = RoomPhysics.openingOverlap;
+  function wallWithOpenings(wallName, basePoint, baseAmp){
+    return RoomPhysics.wallWithOpenings(wallName, basePoint, baseAmp, openings, openingsEnabled);
   }
   const panelAbsorptionAtFreq = RoomPhysics.panelAbsorptionAtFreq;
   const panelCoverage = RoomPhysics.panelCoverage;
@@ -1153,27 +1288,7 @@
     ctx.lineWidth = 2;
     ctx.strokeRect(offX, offY, w*scale, d*scale);
 
-    if(openingFactor > 0 && room.openWidth > 0){
-      const end = w, start = Math.max(0, end - room.openWidth);
-      const doorX1 = offX + start*scale, doorX2 = offX + end*scale, doorY = offY;
-      ctx.strokeStyle = '#e8824f';
-      ctx.lineWidth = 4;
-      ctx.setLineDash([6,4]);
-      ctx.beginPath(); ctx.moveTo(doorX1, doorY); ctx.lineTo(doorX2, doorY); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.font = 'bold 16px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'alphabetic';
-      const doorLabel = 'entryway';
-      const doorLabelW = ctx.measureText(doorLabel).width;
-      const doorLabelX = (doorX1+doorX2)/2, doorLabelY = doorY - 10;
-      ctx.fillStyle = 'rgba(11,14,18,0.85)';
-      ctx.fillRect(doorLabelX-doorLabelW/2-6, doorLabelY-16, doorLabelW+12, 20);
-      ctx.fillStyle = '#e8824f';
-      ctx.fillText(doorLabel, doorLabelX, doorLabelY);
-      ctx.textAlign = 'left';
-    }
-
+    drawOpenings(offX, offY, scale);
     drawPanels(offX, offY, scale);
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
@@ -1257,6 +1372,55 @@
     ctx.fillRect(tx-tw/2-6, ty-13, tw+12, 26);
     ctx.fillStyle='#f5d547';
     ctx.fillText(text, tx, ty);
+  }
+
+  // Renders each opening as a dashed line along its wall span (any wall, any
+  // position/width), with a label offset INWARD (same direction panels use
+  // for their own label/effectiveness band) so there's always room-interior
+  // space to draw into regardless of which wall it's on -- an outward label
+  // works fine above the front wall (where the original single hardcoded
+  // opening always lived) but can run off the canvas edge for a left/right
+  // wall opening, where there's much less margin outside the room rect.
+  // Line/label opacity scales with the opening's factor.
+  function drawOpenings(offX, offY, scale){
+    for(const op of openings){
+      const isActive = openingsEnabled && op.enabled !== false;
+      const alpha = isActive ? (0.4 + op.factor*0.6) : 0.25;
+
+      let x1, y1, x2, y2, inDx, inDy;
+      if(op.wall === 'left'){
+        x1 = 0; y1 = op.pos; x2 = 0; y2 = op.pos + op.width; inDx = 1; inDy = 0;
+      } else if(op.wall === 'right'){
+        x1 = room.w; y1 = op.pos; x2 = room.w; y2 = op.pos + op.width; inDx = -1; inDy = 0;
+      } else if(op.wall === 'front'){
+        x1 = op.pos; y1 = 0; x2 = op.pos + op.width; y2 = 0; inDx = 0; inDy = 1;
+      } else {
+        x1 = op.pos; y1 = room.d; x2 = op.pos + op.width; y2 = room.d; inDx = 0; inDy = -1;
+      }
+      const px1 = offX + x1*scale, py1 = offY + y1*scale;
+      const px2 = offX + x2*scale, py2 = offY + y2*scale;
+
+      ctx.strokeStyle = `rgba(232,130,79,${alpha})`;
+      ctx.lineWidth = 4;
+      ctx.setLineDash([6,4]);
+      ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+      ctx.setLineDash([]);
+
+      const labelOffset = 16;
+      const midx = (px1+px2)/2 + inDx*labelOffset;
+      const midy = (py1+py2)/2 + inDy*labelOffset;
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = isActive ? op.name : `${op.name} (off)`;
+      const labelW = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(11,14,18,0.85)';
+      ctx.fillRect(midx-labelW/2-6, midy-11, labelW+12, 22);
+      ctx.fillStyle = `rgba(232,130,79,${Math.max(alpha,0.6)})`;
+      ctx.fillText(label, midx, midy);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
   }
 
   // Renders each panel as: (1) a static line on the wall, weight+color-saturation
@@ -1697,11 +1861,6 @@
       }
     });
   });
-  document.getElementById('opening').addEventListener('input', function(){
-    openingFactor = parseFloat(this.value);
-    document.getElementById('openingVal').textContent = openingFactor.toFixed(2);
-    scheduleDraw();
-  });
   document.getElementById('roomW').addEventListener('change', function(){
     room.w = Math.max(6, parseFloat(this.value)||16); draw();
   });
@@ -1721,9 +1880,6 @@
     listener.facing = parseFloat(this.value);
     document.getElementById('listenerFacingVal').textContent = listener.facing + '\u00b0';
     scheduleDraw();
-  });
-  document.getElementById('openWidth').addEventListener('change', function(){
-    room.openWidth = Math.max(0, parseFloat(this.value)||0); draw();
   });
   document.getElementById('resetBtn').addEventListener('click', () => {
     currentPresetName = null;
@@ -1769,7 +1925,7 @@
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
 
   // ---- Dragging ----
-  let dragTarget = null; // 'listener', source id, 'panel:<id>', or null
+  let dragTarget = null; // 'listener', source id, 'panel:<id>', 'opening:<id>', or null
 
   function getRoomCoords(evt){
     const rect = canvas.getBoundingClientRect();
@@ -1818,6 +1974,13 @@
       if(pnl.wall === 'right' && Math.abs(x-room.w) < tol && y >= pnl.pos-0.3 && y <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
       if(pnl.wall === 'front' && Math.abs(y-0) < tol && x >= pnl.pos-0.3 && x <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
       if(pnl.wall === 'back' && Math.abs(y-room.d) < tol && x >= pnl.pos-0.3 && x <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
+    }
+    for(const op of openings){
+      const tol = 0.6;
+      if(op.wall === 'left' && Math.abs(x-0) < tol && y >= op.pos-0.3 && y <= op.pos+op.width+0.3) return 'opening:'+op.id;
+      if(op.wall === 'right' && Math.abs(x-room.w) < tol && y >= op.pos-0.3 && y <= op.pos+op.width+0.3) return 'opening:'+op.id;
+      if(op.wall === 'front' && Math.abs(y-0) < tol && x >= op.pos-0.3 && x <= op.pos+op.width+0.3) return 'opening:'+op.id;
+      if(op.wall === 'back' && Math.abs(y-room.d) < tol && x >= op.pos-0.3 && x <= op.pos+op.width+0.3) return 'opening:'+op.id;
     }
     return null;
   }
@@ -1914,11 +2077,25 @@
       const id = parseInt(dragTarget.slice(6), 10);
       const pnl = panels.find(p => p.id === id);
       if(pnl){
-        const maxSpan = panelMaxSpan(pnl.wall);
+        const maxSpan = wallSpan(pnl.wall);
         if(pnl.wall === 'left' || pnl.wall === 'right'){
           pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, y - pnl.length/2));
         } else {
           pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, x - pnl.length/2));
+        }
+      }
+      scheduleDraw();
+      return;
+    }
+    if(typeof dragTarget === 'string' && dragTarget.startsWith('opening:')){
+      const id = parseInt(dragTarget.slice(8), 10);
+      const op = openings.find(o => o.id === id);
+      if(op){
+        const maxSpan = wallSpan(op.wall);
+        if(op.wall === 'left' || op.wall === 'right'){
+          op.pos = Math.max(0, Math.min(maxSpan - op.width, y - op.width/2));
+        } else {
+          op.pos = Math.max(0, Math.min(maxSpan - op.width, x - op.width/2));
         }
       }
       scheduleDraw();
@@ -1947,9 +2124,11 @@
   window.addEventListener('mouseup', () => {
     if(zoneMouseUp()){ canvas.classList.remove('dragging'); return; }
     const wasPanelDrag = typeof dragTarget === 'string' && dragTarget.startsWith('panel:');
+    const wasOpeningDrag = typeof dragTarget === 'string' && dragTarget.startsWith('opening:');
     dragTarget = null;
     canvas.classList.remove('dragging');
     if(wasPanelDrag) renderPanelList(); // sync panel position fields once, after drag ends
+    if(wasOpeningDrag) renderOpeningsList();
   });
   canvas.addEventListener('touchstart', (e) => {
     const t=e.touches[0];
@@ -1965,8 +2144,10 @@
   canvas.addEventListener('touchend', () => {
     if(zoneMouseUp()) return;
     const wasPanelDrag = typeof dragTarget === 'string' && dragTarget.startsWith('panel:');
+    const wasOpeningDrag = typeof dragTarget === 'string' && dragTarget.startsWith('opening:');
     dragTarget = null;
     if(wasPanelDrag) renderPanelList();
+    if(wasOpeningDrag) renderOpeningsList();
   });
 
   // ---- Init ----
@@ -1989,32 +2170,23 @@
       loadConfig(presets[lastUsed]);
       refreshPresetSelect();
     } else {
-      room = { w: 18, d: 13.5, h: 8, openWidth: 4 };
+      // Fresh install, no saved presets: build the default scene then hand
+      // off to loadConfig for state+DOM sync (same path applySymmetricDefaults
+      // uses), rather than duplicating that sync here by hand.
+      room = { w: 18, d: 13.5, h: 8 };
       sources = defaultSources();
       sourcesEnabled = true;
       panels = [];
       panelsEnabled = true;
+      openings = defaultOpenings(room);
+      openingsEnabled = true;
       offLimitZones = defaultOffLimitZones(room);
       preferredZones = [];
       optimizerResult = null;
       listener = { x: 9, y: 9, z: 3.5, facing: 0 };
-      freq = 60; wallReflect = 0.7; openingFactor = 0.6;
+      freq = 60; wallReflect = 0.7;
       reflectionOrder = 1;
-      renderSrcList();
-      renderPanelList();
-      renderZoneList();
-      document.getElementById('panelsMasterToggle').checked = true;
-      document.getElementById('sourcesMasterToggle').checked = true;
-      document.getElementById('roomW').value = room.w;
-      document.getElementById('roomD').value = room.d;
-      document.getElementById('roomH').value = room.h;
-      document.getElementById('openWidth').value = room.openWidth;
-      document.getElementById('opening').value = openingFactor;
-      document.getElementById('openingVal').textContent = openingFactor.toFixed(2);
-      document.getElementById('listenerZ').value = listener.z;
-      document.getElementById('listenerFacing').value = listener.facing;
-      document.getElementById('listenerFacingVal').textContent = listener.facing + '\u00b0';
-      document.getElementById('reflectionOrder').value = '1';
+      loadConfig(makeConfig());
     }
     draw();
   }
