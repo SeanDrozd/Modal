@@ -246,6 +246,148 @@ test('wallWithPanels compounds absorption multiplicatively when two panels on th
   assert.ok(doubleAmp < singleAmp, 'two overlapping panels should absorb at least as much as either alone');
 });
 
+console.log('\n-- rectCoverage (2D floor/ceiling panel coverage) --');
+
+test('rectCoverage is 1.0 anywhere inside the rectangle', () => {
+  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
+  approx(P.rectCoverage(rect, 4, 3), 1.0, 1e-9, 'corner');
+  approx(P.rectCoverage(rect, 7, 5.5), 1.0, 1e-9, 'center');
+  approx(P.rectCoverage(rect, 10, 8), 1.0, 1e-9, 'opposite corner');
+});
+
+test('rectCoverage tapers along a single axis when only that axis is outside the rectangle', () => {
+  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
+  // 0.25ft outside on x only, y held inside -> taper matches the 1D taperedCoverage math (TAPER_FT=0.5)
+  approx(P.rectCoverage(rect, 10.25, 5), 1 - 0.25/0.5, 1e-9, 'just past the right edge, y inside');
+  approx(P.rectCoverage(rect, 3.75, 5), 1 - 0.25/0.5, 1e-9, 'just past the left edge, y inside');
+});
+
+test('rectCoverage tapers on BOTH axes near a corner, compounding multiplicatively', () => {
+  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
+  // 0.25ft past the corner on both x and y: each axis alone would taper to 0.5,
+  // but corner coverage is the PRODUCT of both, not just the smaller one.
+  const corner = P.rectCoverage(rect, 10.25, 8.25);
+  approx(corner, 0.5 * 0.5, 1e-9, 'corner coverage should be the product of both axes\' taper, i.e. 0.25');
+  const singleAxisOnly = P.rectCoverage(rect, 10.25, 5); // same x offset, y inside
+  assert.ok(corner < singleAxisOnly, 'a corner should have LESS coverage than an equivalent single-edge offset');
+});
+
+test('rectCoverage is 0 well outside the rectangle (beyond the taper zone) on either or both axes', () => {
+  const rect = { x: 4, y: 3, width: 6, height: 5 };
+  assert.strictEqual(P.rectCoverage(rect, 20, 5), 0, 'far outside on x, inside on y');
+  assert.strictEqual(P.rectCoverage(rect, 7, 20), 0, 'inside on x, far outside on y');
+  assert.strictEqual(P.rectCoverage(rect, 20, 20), 0, 'far outside on both axes');
+});
+
+console.log('\n-- wallWithSurfacePanels (floor/ceiling rugs and panels) --');
+
+test('wallWithSurfacePanels returns base amplitude when surfacePanelsEnabled is false', () => {
+  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:true }];
+  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, false);
+  approx(amp, 0.8, 1e-9, 'master toggle off should bypass all surface panels');
+});
+
+test('wallWithSurfacePanels returns base amplitude when the panel is individually disabled', () => {
+  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:false }];
+  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, true);
+  approx(amp, 0.8, 1e-9);
+});
+
+test('wallWithSurfacePanels ignores panels on the OTHER surface (ceiling panel does not affect floor)', () => {
+  const surfacePanels = [{ surface:'ceil', x:0, y:0, width:20, height:20, thickness:1, enabled:true }];
+  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, true);
+  approx(amp, 0.8, 1e-9, 'a ceiling panel must not affect the floor\'s amplitude');
+});
+
+test('wallWithSurfacePanels reduces amplitude when the point falls inside a rug/panel at an absorptive frequency', () => {
+  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
+  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, surfacePanels, true);
+  assert.ok(amp < 0.8, `expected reduced amplitude, got ${amp}`);
+});
+
+test('wallWithSurfacePanels leaves amplitude unchanged well outside the rug/panel footprint', () => {
+  const surfacePanels = [{ surface:'floor', x:0, y:0, width:3, height:3, thickness:2, enabled:true }];
+  const amp = P.wallWithSurfacePanels('floor', {x:15,y:15,z:0}, 0.8, 400, surfacePanels, true);
+  approx(amp, 0.8, 1e-9);
+});
+
+test('wallWithSurfacePanels compounds absorption multiplicatively for two overlapping rugs', () => {
+  const singleRug = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
+  const twoRugs = [
+    { surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true },
+    { surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:true }
+  ];
+  const singleAmp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, singleRug, true);
+  const doubleAmp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, twoRugs, true);
+  const absorb1 = P.panelAbsorptionAtFreq(twoRugs[0], 400);
+  const absorb2 = P.panelAbsorptionAtFreq(twoRugs[1], 400);
+  approx(doubleAmp, 0.8 * (1-absorb1) * (1-absorb2), 1e-9);
+  assert.ok(doubleAmp < singleAmp);
+});
+
+console.log('\n-- boundaryOps: floor/ceiling reflectivity and surface panels --');
+
+test('boundaryOps floor amplitude uses floorReflect when specified, independent of wallReflect', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, floorReflect: 0.3, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
+  const floor = P.boundaryOps(200, ctx).find(o => o.name === 'floor');
+  approx(floor.amp({ x: 9, y: 6, z: 3 }), 0.3, 1e-9, 'floor should use floorReflect, not wallReflect');
+});
+
+test('boundaryOps floor amplitude defaults to wallReflect when floorReflect is not specified', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
+  const floor = P.boundaryOps(200, ctx).find(o => o.name === 'floor');
+  approx(floor.amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, 'omitting floorReflect should fall back to wallReflect (backward compatible default)');
+});
+
+test('boundaryOps ceiling amplitude always uses wallReflect, unaffected by floorReflect', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, floorReflect: 0.1, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
+  const ceil = P.boundaryOps(200, ctx).find(o => o.name === 'ceil');
+  approx(ceil.amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, 'ceiling should never be affected by floorReflect');
+});
+
+test('boundaryOps applies a floor rug to floor amplitude only, not ceiling', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
+  const ops = P.boundaryOps(400, ctx);
+  const floorAmp = ops.find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 3 });
+  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 3 });
+  assert.ok(floorAmp < 0.7, 'floor rug should reduce floor amplitude');
+  approx(ceilAmp, 0.7, 1e-9, 'a floor rug must not affect the ceiling');
+});
+
+test('boundaryOps applies a ceiling panel to ceiling amplitude only, not floor', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const surfacePanels = [{ surface:'ceil', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
+  const ops = P.boundaryOps(400, ctx);
+  const floorAmp = ops.find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 3 });
+  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 3 });
+  approx(floorAmp, 0.7, 1e-9, 'a ceiling panel must not affect the floor');
+  assert.ok(ceilAmp < 0.7, 'ceiling panel should reduce ceiling amplitude');
+});
+
+test('REGRESSION: floor amplitude does not jump discontinuously as a point sweeps across a rug edge', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const surfacePanels = [{ surface:'floor', x:4, y:3, width:6, height:5, thickness:2, enabled:true }]; // x=[4,10]
+  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
+  const floor = P.boundaryOps(400, ctx).find(o => o.name === 'floor');
+  const amps = [];
+  for(let x = 9; x <= 11; x += 0.05){
+    amps.push(floor.amp({ x, y: 5, z: 3 }));
+  }
+  let maxStep = 0;
+  for(let i = 1; i < amps.length; i++){
+    maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
+  }
+  // 0.5ft taper, 0.05ft step -> ~10% of the full floorReflect*absorb swing per
+  // step (same magnitude as the analogous 1D wall-panel regression test).
+  assert.ok(maxStep < 0.1, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
+});
+
 console.log('\n-- openingOverlap (wall opening / doorway coverage) --');
 
 test('openingOverlap is 1.0 anywhere inside the opening span', () => {
@@ -767,6 +909,155 @@ test('worstMinDb penalty is exactly zero when no listener dips below -20dB', () 
   approx(result.score, result.avgMean, 1e-6, 'with the penalty inactive, score should equal avgMean exactly (stdDev is also 0 here)');
 });
 
+console.log("\n-- scoreSubPosition: mode:'nullAvoidance' (for users with room correction/EQ) --");
+
+test("mode defaults to 'balanced' when omitted (backward compatible)", () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 9, z: 3.5 }];
+  const freqs = [40, 60, 80];
+  const withoutMode = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1);
+  const explicitBalanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'balanced');
+  approx(withoutMode.score, explicitBalanced.score, 1e-9);
+});
+
+test("mode:'nullAvoidance' score equals worstMinDb exactly, ignoring avgMean and worstStdDev", () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 9, z: 3.5 }];
+  const freqs = [40, 60, 80];
+  const result = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  approx(result.score, result.worstMinDb, 1e-9);
+  const balanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'balanced');
+  assert.notStrictEqual(result.score, balanced.score, "nullAvoidance and balanced should generally disagree on the same scene's score");
+});
+
+test("mode:'nullAvoidance' ranks the sharper-dip scenario worse, purely by tracking each scenario's own worst point (not a blend with average level)", () => {
+  // Same construction as the 'balanced' mode null-penalty test above: a
+  // single-source flat scenario vs a two-source scenario with a sharper dip
+  // at one frequency (from partial phase cancellation).
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const freqs = [40, 50, 60, 70, 80];
+  const listeners = [{ x: 9, y: 6, z: 3.5 }];
+  const candidatePos = { x: 9, y: 6.75, z: 1 };
+
+  const flatSources = [
+    { x: 5, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }
+  ];
+  const lambda60 = P.C / 60;
+  const nullySources = [
+    { x: 5, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true },
+    { x: 5 + (lambda60/2)/P.FT_TO_M, y: 2, z: 1, levelDb: 0, delayMs: (1000/(2*60))*0.999, freqLow: 20, freqHigh: 200, enabled: true }
+  ];
+
+  const flatNullAvoid = P.scoreSubPosition(candidatePos, flatSources, room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  const nullyNullAvoid = P.scoreSubPosition(candidatePos, nullySources, room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  assert.ok(nullyNullAvoid.score < flatNullAvoid.score,
+    `expected the nulled candidate to score worse in nullAvoidance mode: flat=${flatNullAvoid.score.toFixed(1)} nully=${nullyNullAvoid.score.toFixed(1)}`);
+
+  // The score should be exactly each scenario's own worstMinDb -- not some
+  // blend involving avgMean or stdDev the way 'balanced' mode uses.
+  approx(flatNullAvoid.score, flatNullAvoid.worstMinDb, 1e-9);
+  approx(nullyNullAvoid.score, nullyNullAvoid.worstMinDb, 1e-9);
+});
+
+test("optimizeSubPlacement threads mode through to scoreSubPosition", () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }];
+  const freqs = [40, 60, 80];
+  const listeners = [{ x: 9, y: 9, z: 3.5 }];
+
+  const result = P.optimizeSubPlacement({
+    room, otherSources: mains, freqList: freqs, listenerPositions: listeners, physicsCtx: ctx,
+    reflectionOrder: 1, offLimitZones: [], preferredZones: [], gridStepFt: 3, subHeightFt: 1, mode: 'nullAvoidance'
+  });
+  assert.ok(result.best, 'expected a best candidate');
+  approx(result.best.score, result.best.worstMinDb, 1e-9, 'in nullAvoidance mode, the winning candidate\'s score should equal its own worstMinDb');
+});
+
+console.log('\n-- nullAvoidanceSpreadPenalty (anti-clustering for nullAvoidance mode) --');
+// REGRESSION context: mode:'nullAvoidance' is a pure maximin objective with no
+// inherent incentive to spread multiple subs out (unlike 'balanced', where
+// averaging level/flatness naturally rewards covering different areas) -- so
+// a greedy multi-sub search in nullAvoidance mode would cluster every sub
+// right at the minimum-separation floor next to the first one, since nothing
+// else discourages it. This penalty exists specifically to counteract that.
+
+test('nullAvoidanceSpreadPenalty is 0 when there are no already-placed points', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  approx(P.nullAvoidanceSpreadPenalty({x:9,y:6}, [], room), 0, 1e-9);
+  approx(P.nullAvoidanceSpreadPenalty({x:9,y:6}, null, room), 0, 1e-9);
+});
+
+test('nullAvoidanceSpreadPenalty is 0 once far enough from every already-placed point', () => {
+  const room = { w: 18, d: 13.5, h: 8 }; // SPREAD_TARGET_FT = max(8, 13.5*0.5) = 8
+  const placed = [{x:1,y:1}];
+  approx(P.nullAvoidanceSpreadPenalty({x:9,y:9}, placed, room), 0, 1e-9, 'well past the 8ft spread target');
+});
+
+test('nullAvoidanceSpreadPenalty ramps up as a candidate gets closer to an already-placed point, maxing out at/inside the spread target', () => {
+  const room = { w: 18, d: 13.5, h: 8 }; // SPREAD_TARGET_FT = 8
+  const placed = [{x:0,y:0}];
+  const far = P.nullAvoidanceSpreadPenalty({x:6,y:0}, placed, room);   // 6ft away -> partial penalty
+  const closer = P.nullAvoidanceSpreadPenalty({x:2,y:0}, placed, room); // 2ft away -> bigger penalty
+  const atZero = P.nullAvoidanceSpreadPenalty({x:0,y:0}, placed, room); // 0ft away -> max penalty
+  assert.ok(far > 0 && far < closer, `expected a partial, increasing penalty: far=${far} closer=${closer}`);
+  assert.ok(closer < atZero, `expected the penalty to keep increasing right up to distance 0: closer=${closer} atZero=${atZero}`);
+  approx(atZero, 12, 1e-9, 'penalty should max out at REDUNDANCY_PENALTY_DB right at the already-placed point');
+});
+
+test('nullAvoidanceSpreadPenalty uses the NEAREST already-placed point, not an average or sum', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const oneNearby = [{x:1,y:0}];
+  const oneNearbyOneFar = [{x:1,y:0}, {x:100,y:100}];
+  const p1 = P.nullAvoidanceSpreadPenalty({x:0,y:0}, oneNearby, room);
+  const p2 = P.nullAvoidanceSpreadPenalty({x:0,y:0}, oneNearbyOneFar, room);
+  approx(p1, p2, 1e-9, 'an additional far-away placed point should not change the penalty at all');
+});
+
+test("scoreSubPosition in nullAvoidance mode subtracts the spread penalty from worstMinDb when alreadyPlaced is given", () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 9, z: 3.5 }];
+  const freqs = [40, 60, 80];
+  const candidatePos = { x: 2, y: 2, z: 1 };
+
+  const withoutPenalty = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  const withNearbyPlaced = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance', [{x:2.5,y:2}]);
+  approx(withoutPenalty.score, withoutPenalty.worstMinDb, 1e-9, 'no alreadyPlaced -> no penalty, score is exactly worstMinDb');
+  assert.ok(withNearbyPlaced.score < withNearbyPlaced.worstMinDb, 'a nearby already-placed point should pull the score below worstMinDb');
+});
+
+test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters subs right at the minimum-separation floor', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const listeners = [{ x: 9, y: 9, z: 3.5 }];
+  const freqs = [];
+  for(let f = 20; f <= 120; f += Math.max(2, (120-20)/12)) freqs.push(f);
+
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: mains, numSubs: 2, freqList: freqs, listenerPositions: listeners,
+    physicsCtx: ctx, reflectionOrder: 1, offLimitZones: [], preferredZones: [],
+    gridStepFt: 0.5, subHeightFt: 1, mode: 'nullAvoidance'
+  });
+  assert.strictEqual(result.placedSubs.length, 2, 'expected both subs to be placed');
+  const [a, b] = result.placedSubs;
+  const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+  // Before the spread penalty existed, this exact scenario clustered the two
+  // subs ~2ft apart (right at the old minimum-separation floor). It should
+  // now land meaningfully farther apart than that.
+  assert.ok(dist > 5, `expected the two subs to be meaningfully spread out, got ${dist.toFixed(2)}ft apart`);
+});
+
 test('empty listenerPositions produces a NaN score rather than throwing', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
@@ -1005,6 +1296,34 @@ test('minSeparationFt is configurable and respected', () => {
     const a = result.placedSubs[0], b = result.placedSubs[1];
     const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
     assert.ok(dist >= 5 - 1e-9, `expected at least 5ft separation, got ${dist.toFixed(2)}ft`);
+  }
+});
+
+test('default minSeparationFt (when not specified) is 25% of the room\'s smaller dimension, floored at 4ft', () => {
+  const room1 = { w: 18, d: 13.5, h: 8 }; // 13.5*0.25 = 3.375 -> floored to 4
+  const room2 = { w: 30, d: 24, h: 8 };   // 24*0.25 = 6
+  const ctx1 = { room: room1, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx2 = { room: room2, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+
+  const r1 = P.optimizeMultipleSubs({
+    room: room1, otherSources: [], numSubs: 2, freqList: [60],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx1, reflectionOrder: 1,
+    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+  });
+  const r2 = P.optimizeMultipleSubs({
+    room: room2, otherSources: [], numSubs: 2, freqList: [60],
+    listenerPositions: [{x:15,y:12,z:3.5}], physicsCtx: ctx2, reflectionOrder: 1,
+    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+  });
+  if(r1.placedSubs.length === 2){
+    const [a,b] = r1.placedSubs;
+    const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+    assert.ok(dist >= 4 - 1e-9, `expected at least the 4ft floor, got ${dist.toFixed(2)}ft`);
+  }
+  if(r2.placedSubs.length === 2){
+    const [a,b] = r2.placedSubs;
+    const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+    assert.ok(dist >= 6 - 1e-9, `expected at least 25% of the smaller dimension (6ft), got ${dist.toFixed(2)}ft`);
   }
 });
 

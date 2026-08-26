@@ -221,6 +221,40 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Floor &amp; ceiling</div>
+    <div class="row"><label>Floor material</label>
+      <select id="floorMaterial" style="width:auto; flex:1;">
+        <option value="hardwood">Hardwood / tile</option>
+        <option value="thinCarpet">Thin carpet</option>
+        <option value="thickCarpet">Thick carpet / padding</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
+    <div class="row"><label>Floor reflectivity</label>
+      <input type="range" id="floorReflect" min="0" max="0.95" step="0.05" value="0.8">
+      <span class="val" id="floorReflectVal">0.80</span>
+    </div>
+    <div class="hint">Base reflectivity of the bare floor. Ceiling always shares the room's wall reflectivity (no separate ceiling material).</div>
+    <div class="section-title" style="margin-top:12px;">
+      Floor &amp; ceiling panels
+      <div style="display:flex; gap:6px; align-items:center;">
+        <label style="font-size:11px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
+          <input type="checkbox" id="surfacePanelsMasterToggle" checked style="margin:0;"> All
+        </label>
+      </div>
+    </div>
+    <div class="row"><label>Draw on map</label>
+      <div style="display:flex; gap:6px;">
+        <button id="drawFloorPanelBtn" class="small">+ Rug</button>
+        <button id="drawCeilingPanelBtn" class="small">+ Ceiling panel</button>
+      </div>
+    </div>
+    <div class="hint" id="surfacePanelDrawHint">Click a button, then click-drag on the map to draw a rectangular rug or ceiling panel. Drag its edge/corner to resize, drag its middle to move.</div>
+    <div id="surfacePanelList"></div>
+    <div class="hint">Like wall panels, thicker rugs/panels absorb lower frequencies more effectively (quarter-wavelength rule).</div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Sub placement optimizer</div>
     <div class="row"><label>Draw on map</label>
       <div style="display:flex; gap:6px;">
@@ -230,6 +264,13 @@
     </div>
     <div class="hint" id="zoneDrawHint">Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.</div>
     <div id="zoneList"></div>
+    <div class="row" style="margin-top:8px;"><label>Optimize for</label>
+      <select id="optimizerMode" style="width:auto; flex:1;">
+        <option value="balanced">Loud &amp; flat (default)</option>
+        <option value="nullAvoidance">Null avoidance (room correction)</option>
+      </select>
+    </div>
+    <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available &mdash; it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
     <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
       <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
       <span style="color:var(--text-dim);font-size:11px;">to</span>
@@ -263,10 +304,16 @@
     <div class="row"><label>Reflection order</label>
       <select id="reflectionOrder" style="width:auto; flex:1;">
         <option value="1">1st order (faster)</option>
-        <option value="2">2nd order (more accurate, slower)</option>
+        <option value="2" selected>2nd order (more accurate, slower)</option>
       </select>
     </div>
     <div class="hint">2nd order adds corner reflections (bounces off two boundaries before reaching the listener) &mdash; more accurate near actual room corners, at the cost of redraw speed.</div>
+    <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
+      <input type="number" id="dbMin" step="1" value="-24" style="width:52px;">
+      <span style="color:var(--text-dim);font-size:11px;">to</span>
+      <input type="number" id="dbMax" step="1" value="12" style="width:52px;">
+    </div>
+    <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color.</div>
     <div class="row" style="margin-top:8px;"><label>Grid resolution</label>
       <input type="range" id="resolutionScale" min="0.5" max="3" step="0.25" value="1">
       <span class="val" id="resolutionScaleVal">1.0x</span>
@@ -299,9 +346,9 @@
   </div>
   <div id="legend">
     <span>Pressure:</span>
-    <span>-24 dB</span>
+    <span id="legendDbMin">-24 dB</span>
     <span class="swatch" id="gradSwatch"></span>
-    <span>+12 dB</span>
+    <span id="legendDbMax">+12 dB</span>
     <span style="margin-left:14px;">● source &nbsp; ✕ listening position</span>
   </div>
   <div id="info">Drag any source or the listening position. Sources outside their frequency range fade out (12 dB/oct rolloff) rather than cutting hard.</div>
@@ -316,6 +363,12 @@
   const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
+  // Rough, relative starting points for the "Floor material" dropdown -- not
+  // measured absorption-coefficient data, just sensible orderings (hard/bare
+  // surfaces reflect more than carpet, thicker carpet reflects less than thin).
+  // Frequency-dependent behavior (e.g. carpet absorbing highs more than lows)
+  // is layered on top via actual rug panels, same as wall panels do for walls.
+  const FLOOR_MATERIALS = { hardwood: 0.8, thinCarpet: 0.4, thickCarpet: 0.15 };
 
   let room = { w: 18, d: 13.5, h: 8 };
   let sources = [];
@@ -324,15 +377,19 @@
   let panelsEnabled = true;
   let openings = [];
   let openingsEnabled = true;
+  let surfacePanels = []; // floor rugs / ceiling panels: { id, name, surface:'floor'|'ceil', x, y, width, height, thickness, enabled }
+  let surfacePanelsEnabled = true;
   let offLimitZones = [];
   let preferredZones = [];
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
-  let zoneDrawMode = null; // null | 'offlimit' | 'preferred' -- which kind of zone the next drag creates
-  let zoneEditTarget = null; // { kind:'offlimit'|'preferred', id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
+  let zoneDrawMode = null; // null | 'offlimit' | 'preferred' | 'floorpanel' | 'ceilingpanel' -- which kind of rect the next drag creates
+  let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
   let listener = { x: 9, y: 9, z: 3.5, facing: 0 };
   let freq = 60;
   let wallReflect = 0.7;
-  let reflectionOrder = 1;
+  let floorReflect = 0.8; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
+  let reflectionOrder = 2;
+  let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
   let nextId = 1;
   let presets = {}; // name -> config
   let currentPresetName = null;
@@ -387,11 +444,21 @@
       panelsEnabled,
       openings: JSON.parse(JSON.stringify(openings)),
       openingsEnabled,
+      surfacePanels: JSON.parse(JSON.stringify(surfacePanels)),
+      surfacePanelsEnabled,
       offLimitZones: JSON.parse(JSON.stringify(offLimitZones)),
       preferredZones: JSON.parse(JSON.stringify(preferredZones)),
       listener: JSON.parse(JSON.stringify(listener)),
-      freq, wallReflect, reflectionOrder
+      freq, wallReflect, floorReflect, reflectionOrder
     };
+  }
+
+  // Sets the "Floor material" dropdown to whichever preset matches the
+  // current floorReflect value, or "custom" if the slider's been moved off
+  // every preset -- so the dropdown never silently lies about the actual state.
+  function syncFloorMaterialDropdown(){
+    const match = Object.keys(FLOOR_MATERIALS).find(k => Math.abs(FLOOR_MATERIALS[k] - floorReflect) < 1e-9);
+    document.getElementById('floorMaterial').value = match || 'custom';
   }
 
   function loadConfig(cfg){
@@ -402,22 +469,29 @@
     panelsEnabled = cfg.panelsEnabled !== false;
     openings = JSON.parse(JSON.stringify(cfg.openings || []));
     openingsEnabled = cfg.openingsEnabled !== false;
+    surfacePanels = JSON.parse(JSON.stringify(cfg.surfacePanels || []));
+    surfacePanelsEnabled = cfg.surfacePanelsEnabled !== false;
     offLimitZones = JSON.parse(JSON.stringify(cfg.offLimitZones || []));
     preferredZones = JSON.parse(JSON.stringify(cfg.preferredZones || []));
     optimizerResult = null; // stale relative to whatever just loaded; clear rather than show outdated results
     for(const s of sources){ if(s.id >= nextId) nextId = s.id + 1; }
     for(const p of panels){ if(p.id >= nextId) nextId = p.id + 1; }
     for(const o of openings){ if(o.id >= nextId) nextId = o.id + 1; }
+    for(const p of surfacePanels){ if(p.id >= nextId) nextId = p.id + 1; }
     for(const z of offLimitZones){ if(z.id >= nextId) nextId = z.id + 1; }
     for(const z of preferredZones){ if(z.id >= nextId) nextId = z.id + 1; }
     listener = JSON.parse(JSON.stringify(cfg.listener));
     freq = cfg.freq; wallReflect = cfg.wallReflect;
-    reflectionOrder = cfg.reflectionOrder ?? 1;
+    floorReflect = cfg.floorReflect ?? cfg.wallReflect;
+    reflectionOrder = cfg.reflectionOrder ?? 2;
     document.getElementById('roomW').value = room.w;
     document.getElementById('roomD').value = room.d;
     document.getElementById('roomH').value = room.h;
     document.getElementById('reflect').value = wallReflect;
     document.getElementById('reflectVal').textContent = wallReflect.toFixed(2);
+    document.getElementById('floorReflect').value = floorReflect;
+    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+    syncFloorMaterialDropdown();
     document.getElementById('reflectionOrder').value = String(reflectionOrder);
     document.getElementById('freq').value = freq;
     document.getElementById('freqVal').textContent = freq + ' Hz';
@@ -426,15 +500,21 @@
     document.getElementById('listenerFacingVal').textContent = (listener.facing ?? 0) + '\u00b0';
     document.getElementById('panelsMasterToggle').checked = panelsEnabled;
     document.getElementById('openingsMasterToggle').checked = openingsEnabled;
+    document.getElementById('surfacePanelsMasterToggle').checked = surfacePanelsEnabled;
     document.getElementById('sourcesMasterToggle').checked = sourcesEnabled;
-    // resolutionScale is intentionally NOT part of the saved config (see makeConfig) --
-    // it's a device/performance preference, not a room property, so we just re-sync
-    // the control to whatever the in-memory value currently is rather than overwriting it.
+    // resolutionScale and the dB color range are intentionally NOT part of the
+    // saved config (see makeConfig) -- they're view/device preferences, not
+    // room properties, so we just re-sync the controls to whatever the
+    // in-memory values currently are rather than overwriting them.
     document.getElementById('resolutionScale').value = resolutionScale;
     document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
+    document.getElementById('dbMin').value = dbMin;
+    document.getElementById('dbMax').value = dbMax;
+    syncLegendDbRange();
     renderSrcList();
     renderPanelList();
     renderOpeningsList();
+    renderSurfacePanelList();
     renderZoneList();
   }
 
@@ -446,13 +526,16 @@
     panelsEnabled = true;
     openings = []; // "symmetric" means no asymmetric doorway either
     openingsEnabled = true;
+    surfacePanels = [];
+    surfacePanelsEnabled = true;
     offLimitZones = defaultOffLimitZones(room);
     preferredZones = [];
     optimizerResult = null;
     listener = { x: 9, y: 9, z: 3.5, facing: 0 };
     freq = 60;
     wallReflect = 0.7;
-    reflectionOrder = 1;
+    floorReflect = FLOOR_MATERIALS.hardwood;
+    reflectionOrder = 2;
     loadConfig(makeConfig());
   }
 
@@ -470,6 +553,64 @@
       return true;
     } catch(e){ return false; }
   }
+
+  // ---- Session/view settings (separate localStorage key from room presets) ----
+  // These aren't room properties -- they're display/device preferences
+  // (grid resolution, color range, render mode) plus the sub-optimizer's
+  // search parameters, none of which belong in makeConfig/loadConfig. Saved
+  // eagerly on every change so they survive a plain page refresh, independent
+  // of whether the user has ever saved a named room preset.
+  const SESSION_STORE_KEY = 'room-viz-session-v1';
+  function saveSessionSettings(){
+    try {
+      const session = {
+        resolutionScale, dbMin, dbMax, renderMode, optimizerMode,
+        optFreqLow: document.getElementById('optFreqLow').value,
+        optFreqHigh: document.getElementById('optFreqHigh').value,
+        optGridStep: document.getElementById('optGridStep').value,
+        optSubHeight: document.getElementById('optSubHeight').value,
+        optNumSubs: document.getElementById('optNumSubs').value
+      };
+      localStorage.setItem(SESSION_STORE_KEY, JSON.stringify(session));
+    } catch(e){ /* non-fatal -- these settings just won't persist this session */ }
+  }
+  function loadSessionSettings(){
+    let session = null;
+    try {
+      const raw = localStorage.getItem(SESSION_STORE_KEY);
+      session = raw ? JSON.parse(raw) : null;
+    } catch(e){ session = null; }
+    if(!session) return;
+
+    if(Number.isFinite(session.resolutionScale)){
+      resolutionScale = session.resolutionScale;
+      document.getElementById('resolutionScale').value = resolutionScale;
+      document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
+    }
+    if(Number.isFinite(session.dbMin) && Number.isFinite(session.dbMax) && session.dbMin < session.dbMax){
+      dbMin = session.dbMin;
+      dbMax = session.dbMax;
+      document.getElementById('dbMin').value = dbMin;
+      document.getElementById('dbMax').value = dbMax;
+      syncLegendDbRange();
+    }
+    // Only restore 'gpu' if GPU is actually available in this browser --
+    // otherwise leave the 'cpu' fallback (already forced earlier in init()) alone.
+    if(session.renderMode === 'cpu' || (session.renderMode === 'gpu' && gpuAvailable)){
+      renderMode = session.renderMode;
+      document.getElementById('renderModeSelect').value = renderMode;
+    }
+    if(session.optimizerMode === 'balanced' || session.optimizerMode === 'nullAvoidance'){
+      optimizerMode = session.optimizerMode;
+      document.getElementById('optimizerMode').value = optimizerMode;
+    }
+    if(session.optFreqLow != null) document.getElementById('optFreqLow').value = session.optFreqLow;
+    if(session.optFreqHigh != null) document.getElementById('optFreqHigh').value = session.optFreqHigh;
+    if(session.optGridStep != null) document.getElementById('optGridStep').value = session.optGridStep;
+    if(session.optSubHeight != null) document.getElementById('optSubHeight').value = session.optSubHeight;
+    if(session.optNumSubs != null) document.getElementById('optNumSubs').value = session.optNumSubs;
+  }
+
   function refreshPresetSelect(){
     const sel = document.getElementById('presetSelect');
     sel.innerHTML = '';
@@ -738,6 +879,10 @@
     panelsEnabled = this.checked;
     draw();
   });
+  document.getElementById('surfacePanelsMasterToggle').addEventListener('change', function(){
+    surfacePanelsEnabled = this.checked;
+    draw();
+  });
   document.getElementById('sourcesMasterToggle').addEventListener('change', function(){
     sourcesEnabled = this.checked;
     draw();
@@ -863,6 +1008,100 @@
     draw();
   });
 
+  // ---- Floor/ceiling surface panel list UI ----
+  // Created primarily via click-drag on the map (see zoneMouseDown/Move/Up,
+  // generalized to also handle 'floorpanel'/'ceilingpanel'), but every field
+  // here is also editable numerically, same as wall panels/openings.
+  const FLOOR_PANEL_COLOR = '#c17a4a';
+  const CEILING_PANEL_COLOR = '#8fa8c2';
+  function surfacePanelColor(p){ return p.surface === 'floor' ? FLOOR_PANEL_COLOR : CEILING_PANEL_COLOR; }
+
+  function renderSurfacePanelList(){
+    const list = document.getElementById('surfacePanelList');
+    list.innerHTML = '';
+    surfacePanels.forEach((p) => {
+      const block = document.createElement('div');
+      block.className = 'src-block';
+      block.innerHTML = `
+        <div class="src-label">
+          <div class="name-wrap">
+            <input type="checkbox" data-field="enabled" ${p.enabled !== false ? 'checked' : ''} style="margin-right:6px; flex-shrink:0;">
+            <span class="dot" style="background:${surfacePanelColor(p)}"></span>
+            <input type="text" data-field="name" value="${escapeHtml(p.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:12px;width:100%;">
+          </div>
+          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
+        </div>
+        <div class="range-row">
+          <label>Surface</label>
+          <select data-field="surface" style="flex:1;">
+            <option value="floor">Floor</option>
+            <option value="ceil">Ceiling</option>
+          </select>
+        </div>
+        <div class="row"><label>Position X (ft)</label>
+          <input type="number" data-field="x" min="0" step="0.5" value="${p.x}" style="width:56px;">
+        </div>
+        <div class="row"><label>Position Y (ft)</label>
+          <input type="number" data-field="y" min="0" step="0.5" value="${p.y}" style="width:56px;">
+        </div>
+        <div class="row"><label>Width (ft)</label>
+          <input type="number" data-field="width" min="0.5" step="0.5" value="${p.width}" style="width:56px;">
+        </div>
+        <div class="row"><label>Depth (ft)</label>
+          <input type="number" data-field="height" min="0.5" step="0.5" value="${p.height}" style="width:56px;">
+        </div>
+        <div class="row"><label>Thickness (ft)</label>
+          <input type="number" data-field="thickness" min="0.1" max="3" step="0.1" value="${p.thickness}" style="width:56px;">
+        </div>
+      `;
+      list.appendChild(block);
+      block.querySelector('[data-field="surface"]').value = p.surface;
+      if(p.enabled === false) block.style.opacity = '0.5';
+
+      block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
+        p.enabled = this.checked;
+        block.style.opacity = this.checked ? '1' : '0.5';
+        draw();
+      });
+      block.querySelector('[data-field="name"]').addEventListener('input', function(){
+        p.name = this.value || ('Panel '+p.id);
+      });
+      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
+        surfacePanels = surfacePanels.filter(x => x.id !== p.id);
+        renderSurfacePanelList();
+        draw();
+      });
+      block.querySelector('[data-field="surface"]').addEventListener('change', function(){
+        p.surface = this.value;
+        draw();
+      });
+      block.querySelector('[data-field="x"]').addEventListener('change', function(){
+        p.x = Math.max(0, Math.min(room.w - p.width, parseFloat(this.value)||0));
+        this.value = p.x;
+        draw();
+      });
+      block.querySelector('[data-field="y"]').addEventListener('change', function(){
+        p.y = Math.max(0, Math.min(room.d - p.height, parseFloat(this.value)||0));
+        this.value = p.y;
+        draw();
+      });
+      block.querySelector('[data-field="width"]').addEventListener('change', function(){
+        p.width = Math.max(0.5, Math.min(room.w, parseFloat(this.value)||0.5));
+        p.x = Math.min(p.x, room.w - p.width);
+        draw();
+      });
+      block.querySelector('[data-field="height"]').addEventListener('change', function(){
+        p.height = Math.max(0.5, Math.min(room.d, parseFloat(this.value)||0.5));
+        p.y = Math.min(p.y, room.d - p.height);
+        draw();
+      });
+      block.querySelector('[data-field="thickness"]').addEventListener('change', function(){
+        p.thickness = Math.max(0.1, Math.min(3, parseFloat(this.value)||0.1));
+        draw();
+      });
+    });
+  }
+
   // ---- Zone (off-limits / preferred) list UI ----
   const OFFLIMIT_COLOR = '#e85c5c';
   const PREFERRED_COLOR = '#4fe89a';
@@ -900,18 +1139,28 @@
     }
   }
 
-  document.getElementById('drawOffLimitBtn').addEventListener('click', function(){
-    zoneDrawMode = zoneDrawMode === 'offlimit' ? null : 'offlimit';
-    document.getElementById('drawPreferredBtn').classList.remove('active');
-    this.classList.toggle('active', zoneDrawMode === 'offlimit');
+  // Every "click-drag a rectangle on the map" entity (optimizer zones, and
+  // floor/ceiling panels) shares one zoneDrawMode/zoneEditTarget state
+  // machine -- only one rectangle-drawing tool can be active at a time,
+  // across all 4 kinds, so selecting one always clears the others' button state.
+  const DRAW_MODE_BUTTONS = {
+    offlimit: 'drawOffLimitBtn',
+    preferred: 'drawPreferredBtn',
+    floorpanel: 'drawFloorPanelBtn',
+    ceilingpanel: 'drawCeilingPanelBtn'
+  };
+  function setZoneDrawMode(mode){
+    zoneDrawMode = (zoneDrawMode === mode) ? null : mode;
+    for(const [m, btnId] of Object.entries(DRAW_MODE_BUTTONS)){
+      document.getElementById(btnId).classList.toggle('active', zoneDrawMode === m);
+    }
     updateZoneDrawHint();
-  });
-  document.getElementById('drawPreferredBtn').addEventListener('click', function(){
-    zoneDrawMode = zoneDrawMode === 'preferred' ? null : 'preferred';
-    document.getElementById('drawOffLimitBtn').classList.remove('active');
-    this.classList.toggle('active', zoneDrawMode === 'preferred');
-    updateZoneDrawHint();
-  });
+  }
+  document.getElementById('drawOffLimitBtn').addEventListener('click', () => setZoneDrawMode('offlimit'));
+  document.getElementById('drawPreferredBtn').addEventListener('click', () => setZoneDrawMode('preferred'));
+  document.getElementById('drawFloorPanelBtn').addEventListener('click', () => setZoneDrawMode('floorpanel'));
+  document.getElementById('drawCeilingPanelBtn').addEventListener('click', () => setZoneDrawMode('ceilingpanel'));
+
   function updateZoneDrawHint(){
     const hint = document.getElementById('zoneDrawHint');
     if(zoneDrawMode === 'offlimit'){
@@ -920,6 +1169,14 @@
       hint.innerHTML = '<span style="color:var(--good)">Drawing preferred zone</span> &mdash; click-drag on the map. Click the button again to stop.';
     } else {
       hint.textContent = "Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.";
+    }
+    const surfaceHint = document.getElementById('surfacePanelDrawHint');
+    if(zoneDrawMode === 'floorpanel'){
+      surfaceHint.innerHTML = `<span style="color:${FLOOR_PANEL_COLOR}">Drawing a rug</span> &mdash; click-drag on the map. Click the button again to stop.`;
+    } else if(zoneDrawMode === 'ceilingpanel'){
+      surfaceHint.innerHTML = `<span style="color:${CEILING_PANEL_COLOR}">Drawing a ceiling panel</span> &mdash; click-drag on the map. Click the button again to stop.`;
+    } else {
+      surfaceHint.textContent = 'Click a button, then click-drag on the map to draw a rectangular rug or ceiling panel. Drag its edge/corner to resize, drag its middle to move.';
     }
   }
 
@@ -946,7 +1203,7 @@
   // every existing call site below is unchanged. RoomPhysics is now the only
   // place the actual math lives — see src/room-physics.test.js for its coverage.
   function physicsCtx(){
-    return { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled };
+    return { room, wallReflect, floorReflect, openings, openingsEnabled, panels, panelsEnabled, surfacePanels, surfacePanelsEnabled };
   }
   const sourceGainAtFreq = RoomPhysics.sourceGainAtFreq;
   const openingOverlap = RoomPhysics.openingOverlap;
@@ -1001,9 +1258,9 @@
   // weighting/tested implementation the optimizer's standalone reference uses),
   // adapted to this file's (cx,cy,czHeight,...) call signature so existing
   // callers below are unchanged.
-  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, order){
+  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, order, excludePoints){
     const result = RoomPhysics.scoreSubPosition(
-      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), order
+      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), order, optimizerMode, excludePoints
     );
     return { score: result.score, avgMean: result.avgMean, worstStdDev: result.worstStdDev, worstMinDb: result.worstMinDb };
   }
@@ -1022,7 +1279,7 @@
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
         if(!isCandidatePositionValid(x, y, excludePoints, minSeparationFt)) continue;
-        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, reflectionOrder);
+        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, reflectionOrder, excludePoints);
         const entry = { x, y, ...result };
         candidates.push(entry);
         if(best === null || entry.score > best.score) best = entry;
@@ -1054,8 +1311,10 @@
     const listenerPositions = [{ x: listener.x, y: listener.y, z: listener.z }];
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than a fixed number that's too
-    // strict in a small room or too loose in a large one.
-    const minSeparationFt = Math.max(1, Math.min(room.w, room.d) * 0.15);
+    // strict in a small room or too loose in a large one. 25%/4ft floor
+    // (rather than 15%/1ft) so subs land meaningfully apart by default -- a
+    // couple feet of separation is essentially meaningless at sub wavelengths.
+    const minSeparationFt = Math.max(4, Math.min(room.w, room.d) * 0.25);
 
     let currentOtherSources = activeMains.slice();
     const placedSubs = [];
@@ -1104,6 +1363,10 @@
   const RES_BASE_ORDER1 = 130;
   const RES_BASE_ORDER2 = 90; // lower baseline at 2nd order (~5x more image sources per point)
   let resolutionScale = 1.0; // user-adjustable multiplier on the baseline grid resolution
+  // Colormap dB range -- a display/view preference (like resolutionScale),
+  // not a saved room property. Narrower ranges make small differences more
+  // visible at the cost of clipping everything past the edges to one color.
+  let dbMin = -24, dbMax = 12;
   let renderMode = 'gpu'; // 'cpu' (canvas2d, always available) | 'gpu' (webgl, default; falls back to cpu if unavailable)
 
   // ---- WebGL context setup ----
@@ -1282,7 +1545,7 @@
     const pz = listener.z;
 
     const renderPath = renderPaths[effectiveMode];
-    renderPath({ RES, w, d, k, precomputed, pz, offX, offY, scale, size });
+    renderPath({ RES, w, d, k, precomputed, pz, offX, offY, scale, size, dbMin, dbMax });
 
     ctx.strokeStyle = '#4a5568';
     ctx.lineWidth = 2;
@@ -1290,6 +1553,7 @@
 
     drawOpenings(offX, offY, scale);
     drawPanels(offX, offY, scale);
+    drawSurfacePanels(offX, offY, scale);
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
     drawZones(offX, offY, scale);
@@ -1490,6 +1754,52 @@
   }
 
   const ZONE_HANDLE_PX = 12; // corner/edge grab-handle visual size and hit radius
+
+  // Renders each floor/ceiling panel as a filled rectangle (visually similar
+  // to an off-limits/preferred zone, since they share the same click-drag
+  // create/move/resize interaction), with fill opacity scaled by absorption
+  // effectiveness AT THE CURRENT FREQUENCY -- same "effectiveness" concept
+  // drawPanels uses for its inward band, just applied to a 2D area fill.
+  function drawSurfacePanels(offX, offY, scale){
+    for(const p of surfacePanels){
+      const isActive = surfacePanelsEnabled && p.enabled !== false;
+      const effectiveness = isActive ? panelAbsorptionAtFreq(p, freq) : 0;
+      const color = surfacePanelColor(p);
+      const rgb = p.surface === 'floor' ? '193,122,74' : '143,168,194';
+      const isBeingDrawn = zoneEditTarget && zoneEditTarget.mode === 'creating' && zoneEditTarget.id === p.id;
+
+      const px = offX + p.x*scale, py = offY + p.y*scale;
+      const pw = p.width*scale, ph = p.height*scale;
+
+      const fillAlpha = isActive ? (0.12 + effectiveness*0.35) : 0.08;
+      ctx.fillStyle = `rgba(${rgb},${fillAlpha})`;
+      ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = isActive ? color : 'rgba(120,120,120,0.6)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash(p.surface === 'floor' ? [5,3] : [2,2]);
+      ctx.strokeRect(px, py, pw, ph);
+      ctx.setLineDash([]);
+
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const label = (p.surface === 'floor' ? 'rug: ' : 'ceiling: ') + p.name + (isActive ? '' : ' (off)');
+      const labelW = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(11,14,18,0.85)';
+      ctx.fillRect(px+2, py+2, labelW+10, 22);
+      ctx.fillStyle = isActive ? color : 'rgba(160,160,160,0.9)';
+      ctx.fillText(label, px+7, py+6);
+
+      // resize handles at the 4 corners (not while actively creating a new one)
+      if(!isBeingDrawn){
+        const corners = [[px,py],[px+pw,py],[px,py+ph],[px+pw,py+ph]];
+        ctx.fillStyle = color;
+        for(const [cx,cy] of corners){
+          ctx.fillRect(cx-ZONE_HANDLE_PX/2, cy-ZONE_HANDLE_PX/2, ZONE_HANDLE_PX, ZONE_HANDLE_PX);
+        }
+      }
+    }
+  }
 
   function drawZones(offX, offY, scale){
     const allZones = [
@@ -1751,13 +2061,29 @@
     const nearCurrent = all.find(m => Math.abs(m.f - freq) < 3);
     const rows = all.map(m => {
       const isNear = m === nearCurrent;
-      return `<span style="${isNear ? 'color:var(--bad);font-weight:600;' : ''}">${m.f.toFixed(1)} Hz (${m.axis})</span>`;
+      return `<span class="modeFreq" data-freq="${m.f}" style="cursor:pointer; text-decoration:underline dotted; ${isNear ? 'color:var(--bad);font-weight:600;' : ''}" title="Click to jump the frequency slider here">${m.f.toFixed(1)} Hz (${m.axis})</span>`;
     }).join(', ');
 
     document.getElementById('modalInfo').innerHTML =
       `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}` +
       (nearCurrent ? `<br><span style="color:var(--bad);">Current frequency is close to a ${nearCurrent.axis}-axis mode &mdash; expect strong standing-wave buildup/nulls.</span>` : '') +
       `</div>`;
+
+    document.querySelectorAll('#modalInfo .modeFreq').forEach(el => {
+      el.addEventListener('click', () => jumpToFrequency(parseFloat(el.dataset.freq)));
+    });
+  }
+
+  // Sets the frequency slider (and app state) to a specific value, clamped and
+  // rounded to match the slider's own range/step -- used when the user clicks
+  // an axial mode frequency to jump straight to it.
+  function jumpToFrequency(f){
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    freq = Math.round(Math.max(min, Math.min(max, f)));
+    slider.value = freq;
+    document.getElementById('freqVal').textContent = freq + ' Hz';
+    draw();
   }
 
   // ---- Controls wiring ----
@@ -1785,6 +2111,19 @@
     document.getElementById('reflectVal').textContent = wallReflect.toFixed(2);
     scheduleDraw();
   });
+  document.getElementById('floorMaterial').addEventListener('change', function(){
+    if(this.value === 'custom') return; // "Custom" is a status display, not a selectable preset action
+    floorReflect = FLOOR_MATERIALS[this.value];
+    document.getElementById('floorReflect').value = floorReflect;
+    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+    scheduleDraw();
+  });
+  document.getElementById('floorReflect').addEventListener('input', function(){
+    floorReflect = parseFloat(this.value);
+    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+    syncFloorMaterialDropdown(); // dragging the slider off a preset value should show "Custom"
+    scheduleDraw();
+  });
   document.getElementById('reflectionOrder').addEventListener('change', function(){
     reflectionOrder = parseInt(this.value, 10);
     draw();
@@ -1792,12 +2131,46 @@
   document.getElementById('resolutionScale').addEventListener('input', function(){
     resolutionScale = parseFloat(this.value);
     document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
+    saveSessionSettings();
     scheduleDraw();
+  });
+  function syncLegendDbRange(){
+    document.getElementById('legendDbMin').textContent = dbMin + ' dB';
+    document.getElementById('legendDbMax').textContent = (dbMax >= 0 ? '+' : '') + dbMax + ' dB';
+  }
+  document.getElementById('dbMin').addEventListener('change', function(){
+    // `|| -24` would treat a legitimate 0 input as falsy and silently fall
+    // back to -24 -- Number.isFinite avoids that pitfall.
+    const parsed = parseFloat(this.value);
+    dbMin = Math.min(Number.isFinite(parsed) ? parsed : -24, dbMax - 1);
+    this.value = dbMin;
+    syncLegendDbRange();
+    saveSessionSettings();
+    draw();
+  });
+  document.getElementById('dbMax').addEventListener('change', function(){
+    const parsed = parseFloat(this.value);
+    dbMax = Math.max(Number.isFinite(parsed) ? parsed : 12, dbMin + 1);
+    this.value = dbMax;
+    syncLegendDbRange();
+    saveSessionSettings();
+    draw();
   });
   document.getElementById('renderModeSelect').addEventListener('change', function(){
     renderMode = this.value;
     if(renderMode !== 'gpu') setTruncationWarning(null);
+    saveSessionSettings();
     draw();
+  });
+  // The sub-optimizer's search parameters have no other listeners (they're
+  // normally just read on-demand when "Find best sub position" runs) -- these
+  // exist solely to persist them to session settings on change.
+  for(const id of ['optFreqLow','optFreqHigh','optGridStep','optSubHeight','optNumSubs']){
+    document.getElementById(id).addEventListener('change', saveSessionSettings);
+  }
+  document.getElementById('optimizerMode').addEventListener('change', function(){
+    optimizerMode = this.value;
+    saveSessionSettings();
   });
   document.getElementById('verifyGpuBtn').addEventListener('click', function(){
     const out = document.getElementById('verifyResult');
@@ -1938,6 +2311,17 @@
     return { x: (cx-offX)/scale, y: (cy-offY)/scale, scale };
   }
 
+  // Backing array for each "rectangle on the map" kind, shared by the
+  // find/create/move/resize machinery below. Surface panels are one array
+  // (surfacePanels) covering both floorpanel/ceilingpanel kinds -- which one
+  // a given item is comes from its own .surface field, set at creation time.
+  function zoneArrayFor(kind){
+    if(kind === 'offlimit') return offLimitZones;
+    if(kind === 'preferred') return preferredZones;
+    if(kind === 'floorpanel' || kind === 'ceilingpanel') return surfacePanels;
+    return null;
+  }
+
   function findZoneAt(x, y){
     for(const z of preferredZones){
       if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'preferred', id: z.id, zone: z };
@@ -1945,11 +2329,18 @@
     for(const z of offLimitZones){
       if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'offlimit', id: z.id, zone: z };
     }
+    for(const z of surfacePanels){
+      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind: z.surface === 'floor' ? 'floorpanel' : 'ceilingpanel', id: z.id, zone: z };
+    }
     return null;
   }
   function findZoneHandleAt(x, y, scale){
     const tolFt = ZONE_HANDLE_PX / scale;
-    const all = [...offLimitZones.map(z=>({...z,kind:'offlimit'})), ...preferredZones.map(z=>({...z,kind:'preferred'}))];
+    const all = [
+      ...offLimitZones.map(z=>({...z,kind:'offlimit'})),
+      ...preferredZones.map(z=>({...z,kind:'preferred'})),
+      ...surfacePanels.map(z=>({...z,kind: z.surface === 'floor' ? 'floorpanel' : 'ceilingpanel'}))
+    ];
     for(const z of all){
       const corners = [
         {hx:z.x, hy:z.y, h:'nw'}, {hx:z.x+z.width, hy:z.y, h:'ne'},
@@ -1988,11 +2379,20 @@
   function zoneMouseDown(evt){
     const {x,y,scale} = getRoomCoords(evt);
 
-    // 1. drawing a brand-new zone
+    // 1. drawing a brand-new zone / floor panel / ceiling panel
     if(zoneDrawMode){
       const id = nextId++;
-      const newZone = { id, name: (zoneDrawMode==='offlimit'?'Off-limits ':'Preferred ') + (id), x, y, width: 0.01, height: 0.01 };
-      if(zoneDrawMode === 'offlimit') offLimitZones.push(newZone); else preferredZones.push(newZone);
+      if(zoneDrawMode === 'offlimit'){
+        offLimitZones.push({ id, name: 'Off-limits ' + id, x, y, width: 0.01, height: 0.01 });
+      } else if(zoneDrawMode === 'preferred'){
+        preferredZones.push({ id, name: 'Preferred ' + id, x, y, width: 0.01, height: 0.01 });
+      } else if(zoneDrawMode === 'floorpanel' || zoneDrawMode === 'ceilingpanel'){
+        const surface = zoneDrawMode === 'floorpanel' ? 'floor' : 'ceil';
+        surfacePanels.push({
+          id, name: (surface==='floor'?'Rug ':'Ceiling panel ') + id, surface,
+          x, y, width: 0.01, height: 0.01, thickness: 0.5, enabled: true
+        });
+      }
       zoneEditTarget = { kind: zoneDrawMode, id, mode: 'creating', startX: x, startY: y };
       return true;
     }
@@ -2016,7 +2416,7 @@
   function zoneMouseMove(evt){
     if(!zoneEditTarget) return false;
     const {x,y} = getRoomCoords(evt);
-    const list = zoneEditTarget.kind === 'offlimit' ? offLimitZones : preferredZones;
+    const list = zoneArrayFor(zoneEditTarget.kind);
     const z = list.find(zz => zz.id === zoneEditTarget.id);
     if(!z) return false;
 
@@ -2057,16 +2457,19 @@
   function zoneMouseUp(){
     if(!zoneEditTarget) return false;
     const wasCreating = zoneEditTarget.mode === 'creating';
+    const wasSurfacePanel = zoneEditTarget.kind === 'floorpanel' || zoneEditTarget.kind === 'ceilingpanel';
     zoneEditTarget = null;
     if(wasCreating){
-      // Auto-exit draw mode after one zone is drawn, so the NEXT click selects/moves/
-      // resizes existing zones instead of always creating another one.
+      // Auto-exit draw mode after one rectangle is drawn, so the NEXT click
+      // selects/moves/resizes existing ones instead of always creating another.
       zoneDrawMode = null;
-      document.getElementById('drawOffLimitBtn').classList.remove('active');
-      document.getElementById('drawPreferredBtn').classList.remove('active');
+      for(const btnId of Object.values(DRAW_MODE_BUTTONS)){
+        document.getElementById(btnId).classList.remove('active');
+      }
       updateZoneDrawHint();
     }
     renderZoneList();
+    if(wasSurfacePanel) renderSurfacePanelList();
     draw();
     return true;
   }
@@ -2161,6 +2564,7 @@
       if(gpuOption){ gpuOption.disabled = true; gpuOption.textContent = 'GPU (WebGL) — unavailable in this browser'; }
       document.getElementById('renderModeHint').textContent = 'WebGL is not available here, so only CPU rendering can be used.';
     }
+    loadSessionSettings();
     await loadPresets();
     const savedNames = Object.keys(presets).filter(n => n !== '__meta__');
     if(savedNames.length > 0){
@@ -2185,7 +2589,7 @@
       optimizerResult = null;
       listener = { x: 9, y: 9, z: 3.5, facing: 0 };
       freq = 60; wallReflect = 0.7;
-      reflectionOrder = 1;
+      reflectionOrder = 2;
       loadConfig(makeConfig());
     }
     draw();

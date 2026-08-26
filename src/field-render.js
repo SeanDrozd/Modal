@@ -233,12 +233,12 @@
       }
     }
 
-    // params: { RES, w, d, k, precomputed, pz, offX, offY, scale, size }
+    // params: { RES, w, d, k, precomputed, pz, offX, offY, scale, size, dbMin, dbMax }
     function renderFieldCPU(params){
       const { RES, w, d, k, precomputed, pz, offX, offY, scale, size } = params;
+      const DB_MIN = params.dbMin ?? -24, DB_MAX = params.dbMax ?? 12;
       const field = new Float32Array(RES*RES);
       const refAmp = 1.0;
-      const DB_MIN = -24, DB_MAX = 12;
       for(let j=0;j<RES;j++){
         const py = (j/(RES-1)) * d;
         for(let i=0;i<RES;i++){
@@ -301,8 +301,8 @@
         gl.uniform2f(gpuUniforms.uRoomSize, w, d);
         gl.uniform1f(gpuUniforms.uListenerZ, pz);
         gl.uniform1f(gpuUniforms.uK, k);
-        gl.uniform1f(gpuUniforms.uDbMin, -24);
-        gl.uniform1f(gpuUniforms.uDbMax, 12);
+        gl.uniform1f(gpuUniforms.uDbMin, params.dbMin ?? -24);
+        gl.uniform1f(gpuUniforms.uDbMax, params.dbMax ?? 12);
         gl.uniform1i(gpuUniforms.uCount, count);
         gl.uniform1i(gpuUniforms.uDebugMode, debugMode ? 1 : 0);
         gl.uniform3fv(gpuUniforms.uImgPos, positions);

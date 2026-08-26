@@ -120,14 +120,58 @@
     return amp;
   }
 
+  // ---- 2D tapered coverage for a rectangular floor/ceiling panel (rug, ----
+  // ceiling tile array) ---- rect: { x, y, width, height }. Unlike wall panels
+  // (a 1D span, since a wall panel implicitly covers the wall's full height),
+  // a floor/ceiling treatment is a genuine 2D area that can sit anywhere on
+  // the surface without touching its edges. Returns 0..1, tapering
+  // independently over TAPER_FT along each axis near the rectangle's edges
+  // (reuses taperedCoverage per axis, multiplied -- corners fade smoothly in
+  // both directions at once, same "no discontinuous jump" reasoning as the
+  // 1D case).
+  function rectCoverage(rect, px, py){
+    const TAPER_FT = 0.5;
+    const covX = taperedCoverage(rect.x, rect.x + rect.width, px, TAPER_FT);
+    const covY = taperedCoverage(rect.y, rect.y + rect.height, py, TAPER_FT);
+    return covX * covY;
+  }
+
+  // surfaceName: 'floor'|'ceil'. basePoint: {x,y,z}. surfacePanels: array of
+  // { surface, x, y, width, height, thickness, enabled }. surfacePanelsEnabled:
+  // bool (master toggle, separate from the wall panels' toggle). Returns the
+  // reflection amplitude for that surface at basePoint after every relevant,
+  // enabled surface panel has absorbed some of it -- same compounding rule,
+  // and the same thickness-vs-quarter-wavelength absorption model
+  // (panelAbsorptionAtFreq), as wall panels use.
+  function wallWithSurfacePanels(surfaceName, basePoint, baseAmp, freqForAbsorption, surfacePanels, surfacePanelsEnabled){
+    if(!surfacePanelsEnabled) return baseAmp;
+    const relevant = (surfacePanels || []).filter(p => p.surface === surfaceName && p.enabled !== false);
+    if(relevant.length === 0) return baseAmp;
+    let amp = baseAmp;
+    for(const pnl of relevant){
+      const coverage = rectCoverage(pnl, basePoint.x, basePoint.y);
+      if(coverage > 0){
+        const absorb = panelAbsorptionAtFreq(pnl, freqForAbsorption) * coverage;
+        amp *= (1 - absorb);
+      }
+    }
+    return amp;
+  }
+
   // ---- Six boundary reflection operators for a room { w, d, h } ----
-  // ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
+  // ctx: { room, wallReflect, floorReflect, openings, openingsEnabled, panels,
+  //        panelsEnabled, surfacePanels, surfacePanelsEnabled }
   // Openings reduce a wall's base reflectivity first (sound passes through into
   // another space); panel absorption is then applied on top of whatever
-  // reflectivity remains. Floor/ceiling are unaffected by either -- both
-  // openings and panels are wall-mounted concepts in this model.
+  // reflectivity remains. floorReflect defaults to wallReflect when not given,
+  // so a room with no floor material specified behaves as it always did
+  // (floor/ceiling = same reflectivity as the walls) unless a floor material
+  // is actually chosen. Openings are wall-mounted only (a "floor opening"
+  // isn't a modeled concept here) -- floor/ceiling only ever go through
+  // surface panels, never wall openings.
   function boundaryOps(freqForAbsorption, ctx){
-    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled } = ctx;
+    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled, surfacePanels, surfacePanelsEnabled } = ctx;
+    const floorReflect = ctx.floorReflect ?? wallReflect;
     const w = room.w, d = room.d, h = room.h;
     function wallAmp(wallName){
       return (p) => {
@@ -140,14 +184,16 @@
       { name:'right', apply:(p)=>({x:2*w-p.x, y:p.y, z:p.z}), amp: wallAmp('right') },
       { name:'front', apply:(p)=>({x:p.x, y:-p.y, z:p.z}), amp: wallAmp('front') },
       { name:'back',  apply:(p)=>({x:p.x, y:2*d-p.y, z:p.z}), amp: wallAmp('back') },
-      { name:'floor', apply:(p)=>({x:p.x, y:p.y, z:-p.z}), amp:(p)=>wallReflect },
-      { name:'ceil',  apply:(p)=>({x:p.x, y:p.y, z:2*h-p.z}), amp:(p)=>wallReflect }
+      { name:'floor', apply:(p)=>({x:p.x, y:p.y, z:-p.z}),
+        amp:(p)=>wallWithSurfacePanels('floor', p, floorReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) },
+      { name:'ceil',  apply:(p)=>({x:p.x, y:p.y, z:2*h-p.z}),
+        amp:(p)=>wallWithSurfacePanels('ceil', p, wallReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) }
     ];
   }
 
   // Generates image sources up to `order` bounces (1 = direct + 6 single-wall
   // bounces; 2 additionally includes every pair of DIFFERENT boundaries bounced
-  // off in sequence). ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
+  // off in sequence). ctx: see boundaryOps above.
   function getImageSources(sx, sy, sz, order, freqForAbsorption, ctx){
     const ops = boundaryOps(freqForAbsorption, ctx);
     const direct = { x: sx, y: sy, z: sz, amp: 1.0 };
@@ -175,7 +221,7 @@
 
   // Precomputes each source's image-source list once per source (position/amp
   // only depend on source+room+panels+frequency, never on the grid point).
-  // ctx: { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled }
+  // ctx: see boundaryOps above.
   function precomputeSourceImages(sources, order, freq, ctx){
     return sources.map(s => {
       const freqGain = sourceGainAtFreq(s, freq);
@@ -307,11 +353,33 @@
     return dbValue < thresholdDb;
   }
 
+  // Soft repulsion penalty (dB) used only by 'nullAvoidance' mode, to counteract
+  // its lack of any inherent spread-out incentive (see scoreSubPosition below).
+  // 0 once a candidate is at least SPREAD_TARGET_FT from every already-placed
+  // point; ramps up linearly to REDUNDANCY_PENALTY_DB right at/inside that
+  // radius. This doesn't forbid close placement outright (isCandidateValid's
+  // minSeparationFt already does that) -- it just makes the optimizer actually
+  // prefer a meaningfully different spot unless the close one is genuinely a
+  // much better null-avoider, rather than defaulting to "closest legal spot."
+  function nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room){
+    if(!alreadyPlaced || alreadyPlaced.length === 0) return 0;
+    const SPREAD_TARGET_FT = Math.max(8, Math.min(room.w, room.d) * 0.5);
+    const REDUNDANCY_PENALTY_DB = 12;
+    const nearestDist = Math.min(...alreadyPlaced.map(p =>
+      Math.sqrt((candidatePos.x - p.x) ** 2 + (candidatePos.y - p.y) ** 2)
+    ));
+    if(nearestDist >= SPREAD_TARGET_FT) return 0;
+    const closeness = 1 - nearestDist / SPREAD_TARGET_FT; // 0..1, 1 = right at/inside the min separation floor
+    return closeness * REDUNDANCY_PENALTY_DB;
+  }
+
   // ---- Sub placement scoring ----
   // Scores one candidate sub position (combined with any other already-placed
   // sources — mains, other subs) by evaluating the field at multiple frequencies
-  // across a target band, at one or more listening positions, and combining
-  // three things a good sub position should deliver:
+  // across a target band, at one or more listening positions.
+  //
+  // mode: 'balanced' (default) combines three things a good sub position
+  // should deliver:
   //   1. Reasonably high average level (not stuck in a general low zone)
   //   2. Low variance across frequency AT EACH listener (flat response — avoids
   //      being loud at some frequencies and nulled at others, the classic
@@ -320,9 +388,27 @@
   //      terrible at another is a worse practical choice than one that's decent
   //      everywhere, even if its single-seat peak score is lower)
   //
+  // mode: 'nullAvoidance' is for someone with room correction/EQ available —
+  // they can flatten peaks after the fact, but can't fill in a null (it's a
+  // position-dependent cancellation, not a tonal dip a filter can undo), so
+  // average level and peak-inclusive variance are irrelevant to them. This
+  // mode scores purely by the worst (lowest) dB anywhere in the band, at the
+  // worst listener position — a maximin objective that directly answers
+  // "how deep is the deepest null this candidate produces," ignoring
+  // everything else 'balanced' cares about.
+  //
+  // Unlike 'balanced' (which naturally spreads multi-sub placements out, since
+  // averaging level/flatness across the room rewards covering different areas),
+  // a pure maximin objective has NO inherent incentive to avoid clustering --
+  // if the best null-avoiding spot for sub 2 happens to be right next to sub 1,
+  // nothing here would prefer a more spread-out alternative. alreadyPlaced
+  // (optional: array of {x,y}, e.g. subs placed in earlier rounds of a
+  // multi-sub search) adds a soft repulsion penalty in 'nullAvoidance' mode
+  // specifically to counteract that -- see nullAvoidanceSpreadPenalty below.
+  //
   // Returns a single scalar score where HIGHER IS BETTER, plus the raw per-listener
   // per-frequency dB values for diagnostics/visualization.
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder){
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder, mode, alreadyPlaced){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
       candidatePos
@@ -361,8 +447,13 @@
 
     // Score weights: level matters, but flatness (avoiding deep nulls) matters more —
     // a loud position with a severe null at one frequency is a worse real-world
-    // outcome than a slightly quieter but consistently flat one.
-    const score = avgMean - (worstStdDev * 1.5) - Math.max(0, -worstMinDb - 20) * 0.5;
+    // outcome than a slightly quieter but consistently flat one. In
+    // 'nullAvoidance' mode, only the worst null anywhere matters (minus a soft
+    // penalty for clustering near already-placed subs) -- see the function
+    // comment above for why average level and peaks are excluded otherwise.
+    const score = mode === 'nullAvoidance'
+      ? worstMinDb - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
+      : avgMean - (worstStdDev * 1.5) - Math.max(0, -worstMinDb - 20) * 0.5;
 
     return {
       score,
@@ -414,7 +505,7 @@
   function optimizeSubPlacement(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx, reflectionOrder,
-      offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt
+      offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -425,7 +516,7 @@
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
         if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)) continue;
-        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder);
+        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder, mode, excludePoints);
         const entry = { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
@@ -451,12 +542,15 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      reflectionOrder, offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt
+      reflectionOrder, offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number that's
-    // too strict in a small room or too loose in a large one.
-    const separation = minSeparationFt ?? Math.max(1, Math.min(room.w, room.d) * 0.15);
+    // too strict in a small room or too loose in a large one. 25%/4ft (rather
+    // than the previous 15%/1ft) so subs land meaningfully apart by default --
+    // a couple feet of separation is essentially meaningless at sub
+    // wavelengths (9-50+ ft across the usual 20-120Hz sub range).
+    const separation = minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25);
 
     const placedSubs = [];
     const placedPositions = [];
@@ -467,7 +561,7 @@
       const roundResult = optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, reflectionOrder, offLimitZones, preferredZones, gridStepFt, subHeightFt,
-        excludePoints: placedPositions, minSeparationFt: separation
+        excludePoints: placedPositions, minSeparationFt: separation, mode
       });
       roundResults.push(roundResult);
       if(roundResult.best === null){
@@ -496,6 +590,8 @@
     panelAbsorptionAtFreq,
     panelCoverage,
     wallWithPanels,
+    rectCoverage,
+    wallWithSurfacePanels,
     boundaryOps,
     getImageSources,
     precomputeSourceImages,
@@ -506,6 +602,7 @@
     earPositions,
     fieldDbAtEars,
     isNearNull,
+    nullAvoidanceSpreadPenalty,
     scoreSubPosition,
     isPointInRect,
     isCandidateValid,
