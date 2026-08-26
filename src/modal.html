@@ -218,6 +218,12 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Frequency response</div>
+    <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
+    <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
+  </div>
+
+  <div class="section">
     <div class="section-title">
       Sources
       <div style="display:flex; gap:6px; align-items:center;">
@@ -2070,6 +2076,8 @@
     ctx.fillText(freqLabel, 16, 16);
 
     updateFreqInfo(lambda);
+    redrawFreqResponseCanvas(); // cheap repaint every frame, so the freq marker tracks the slider live
+    scheduleFreqResponseUpdate(); // debounced recompute of the curve itself (expensive)
   }
 
   function labelFor(name){
@@ -2521,6 +2529,174 @@
     document.querySelectorAll('#modalInfo .modeFreq').forEach(el => {
       el.addEventListener('click', () => jumpToFrequency(parseFloat(el.dataset.freq)));
     });
+  }
+
+  // ---- Frequency response chart ----
+  // A log-frequency-axis line plot of RoomPhysics.spatiallyAveragedResponse
+  // at the listening position -- see that function's own comment for why it
+  // spatially averages (moving-mic-style) rather than reading one exact
+  // point. Computing the curve is meaningfully more expensive than a normal
+  // draw() (tens of frequency points x 20 spatial samples each, vs one
+  // point), so it's split in two: computeFreqResponseData() does the
+  // expensive part and is debounced separately from the main render loop;
+  // redrawFreqResponseCanvas() just repaints from whatever was last computed
+  // (cheap: axis math + canvas strokes) and is called on every normal draw()
+  // so the current-frequency marker tracks the slider live, without waiting
+  // on a recompute of the curve itself.
+  const FREQ_RESPONSE_MIN_HZ = 20;
+  const FREQ_RESPONSE_MAX_HEADROOM_HZ = 100; // how far above the Schroeder frequency the chart extends
+  const FREQ_RESPONSE_NUM_POINTS = 80;
+  function logSpacedFreqs(minHz, maxHz, n){
+    const logMin = Math.log10(minHz), logMax = Math.log10(maxHz);
+    const freqs = [];
+    for(let i = 0; i < n; i++){
+      const t = i / (n - 1);
+      freqs.push(Math.pow(10, logMin + t * (logMax - logMin)));
+    }
+    return freqs;
+  }
+  // "Nice" round-number gridline frequencies for whatever [minHz,maxHz] the
+  // chart currently spans -- the upper bound moves with the room's Schroeder
+  // frequency, so a fixed tick list would either crowd or under-fill the
+  // axis depending on the room.
+  function niceFreqTicks(minHz, maxHz){
+    const range = maxHz - minHz;
+    const step = range <= 80 ? 10 : range <= 160 ? 20 : range <= 320 ? 50 : 100;
+    const ticks = [minHz];
+    for(let f = Math.ceil(minHz / step) * step; f < maxHz; f += step){
+      if(f > minHz) ticks.push(f);
+    }
+    return ticks;
+  }
+  // The Schroeder frequency is itself frequency-dependent (wall/ceiling
+  // materials absorb differently at different frequencies -- see
+  // estimatedT60), so pinning the chart's axis to "Schroeder AT the current
+  // slider position" would make the chart's own scale wobble as you drag the
+  // frequency slider, which is a distracting side effect for an axis bound.
+  // Sampling across a fixed, generous range and taking the worst case (the
+  // frequency where the room is least absorptive, i.e. highest T60) gives a
+  // stable axis that doesn't depend on wherever the slider happens to be.
+  function maxSchroederAcrossRange(){
+    const SEARCH_MIN_HZ = 20, SEARCH_MAX_HZ = 300, SEARCH_POINTS = 24;
+    let maxFs = 0;
+    for(let i = 0; i < SEARCH_POINTS; i++){
+      const f = SEARCH_MIN_HZ + (SEARCH_MAX_HZ - SEARCH_MIN_HZ) * i / (SEARCH_POINTS - 1);
+      const t60 = estimatedT60(room, f, physicsCtx());
+      const fs = schroederFrequency(room, t60);
+      if(fs > maxFs) maxFs = fs;
+    }
+    return maxFs;
+  }
+
+  let freqResponseTimer = null;
+  function scheduleFreqResponseUpdate(){
+    if(freqResponseTimer) clearTimeout(freqResponseTimer);
+    freqResponseTimer = setTimeout(() => {
+      freqResponseTimer = null;
+      computeFreqResponseData();
+      redrawFreqResponseCanvas();
+    }, 200);
+  }
+
+  // { response, maxHz } from the last completed computeFreqResponseData()
+  // call, or null if there are no active sources (nothing to plot) --
+  // distinguished from "not computed yet" (also null, but before the first
+  // debounced compute finishes) only by redrawFreqResponseCanvas() checking
+  // activeSources itself; see there.
+  let freqResponseData = null;
+  function computeFreqResponseData(){
+    const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
+    if(activeSources.length === 0){
+      freqResponseData = null;
+      return;
+    }
+    // Upper bound tracks the room's own (worst-case) Schroeder frequency +
+    // headroom instead of a fixed cap -- below Schroeder, distinct modes are
+    // what this chart is actually useful for; past that the field gets too
+    // dense to mean much anyway (same reasoning as the Schroeder readout
+    // itself), so a livelier/deader room naturally gets a narrower/wider
+    // chart instead of a fixed window that over- or under-fills depending on
+    // the room.
+    const maxHz = Math.max(FREQ_RESPONSE_MIN_HZ + 60, maxSchroederAcrossRange() + FREQ_RESPONSE_MAX_HEADROOM_HZ);
+    const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
+    const response = RoomPhysics.spatiallyAveragedResponse(
+      listener.x, listener.y, listener.z, freqs, activeSources, reflectionOrder, physicsCtx(),
+      { radiusFt: 2, numPoints: 20 }
+    );
+    freqResponseData = { response, maxHz };
+  }
+
+  function redrawFreqResponseCanvas(){
+    const canvas = document.getElementById('freqResponseCanvas');
+    const c2 = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    c2.fillStyle = '#0b0e12';
+    c2.fillRect(0, 0, w, h);
+
+    if(!freqResponseData){
+      c2.fillStyle = '#7a8494';
+      c2.font = '12px system-ui, sans-serif';
+      const msg = sourcesEnabled && sources.some(s => s.enabled !== false) ? '' : 'No active sources';
+      if(msg) c2.fillText(msg, 10, h/2);
+      return;
+    }
+    const { response, maxHz } = freqResponseData;
+
+    const marginL = 32, marginR = 8, marginT = 8, marginB = 16;
+    const plotW = w - marginL - marginR, plotH = h - marginT - marginB;
+    const logMin = Math.log10(FREQ_RESPONSE_MIN_HZ), logMax = Math.log10(maxHz);
+    function xForFreq(f){
+      return marginL + ((Math.log10(f) - logMin) / (logMax - logMin)) * plotW;
+    }
+    function yForDb(db){
+      const t = (db - dbMin) / (dbMax - dbMin);
+      return marginT + (1 - Math.min(1, Math.max(0, t))) * plotH;
+    }
+
+    c2.strokeStyle = 'rgba(255,255,255,0.08)';
+    c2.fillStyle = '#7a8494';
+    c2.font = '9px system-ui, sans-serif';
+    c2.lineWidth = 1;
+    const freqTicks = niceFreqTicks(FREQ_RESPONSE_MIN_HZ, maxHz);
+    for(const f of freqTicks){
+      const x = xForFreq(f);
+      c2.beginPath();
+      c2.moveTo(x, marginT);
+      c2.lineTo(x, marginT + plotH);
+      c2.stroke();
+      c2.fillText(String(f), x - 7, h - 4);
+    }
+    const dbTicks = [dbMin, (dbMin + dbMax) / 2, dbMax];
+    for(const d of dbTicks){
+      const y = yForDb(d);
+      c2.beginPath();
+      c2.moveTo(marginL, y);
+      c2.lineTo(marginL + plotW, y);
+      c2.stroke();
+      c2.fillText(d.toFixed(0), 2, y + 3);
+    }
+
+    c2.strokeStyle = '#4fb0e8';
+    c2.lineWidth = 1.5;
+    c2.beginPath();
+    response.forEach((r, i) => {
+      const x = xForFreq(r.freq);
+      const y = yForDb(r.db);
+      if(i === 0) c2.moveTo(x, y); else c2.lineTo(x, y);
+    });
+    c2.stroke();
+
+    // Tracks the frequency slider live (redrawFreqResponseCanvas runs on
+    // every normal draw(), not just after a debounced recompute), so this
+    // moves in real time even while the curve itself is still debouncing.
+    const curX = xForFreq(Math.max(FREQ_RESPONSE_MIN_HZ, Math.min(maxHz, freq)));
+    c2.strokeStyle = 'rgba(245,213,71,0.6)';
+    c2.setLineDash([3, 3]);
+    c2.beginPath();
+    c2.moveTo(curX, marginT);
+    c2.lineTo(curX, marginT + plotH);
+    c2.stroke();
+    c2.setLineDash([]);
   }
 
   // Sets the frequency slider (and app state) to a specific value, clamped and

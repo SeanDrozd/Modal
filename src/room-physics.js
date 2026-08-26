@@ -357,6 +357,63 @@
     return 20 * Math.log10(Math.max(mag, 1e-6) / refAmp);
   }
 
+  // ---- Spherical spatial sampling (moving-mic-style measurement) ----
+  // Deterministically distributes `n` points through a sphere of `radiusFt`
+  // around (cx,cy,cz): a Fibonacci-lattice direction for even angular
+  // coverage, scaled by a cube-root radius fraction so the points fill the
+  // sphere's VOLUME with roughly uniform density (equal expected volume per
+  // point) rather than clustering on the outer shell. Deterministic (no RNG)
+  // so the same inputs always produce the same cloud -- a UI value shouldn't
+  // flicker between otherwise-identical redraws.
+  function sphereSamplePoints(cx, cy, cz, radiusFt, n){
+    const points = [];
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    for(let i = 0; i < n; i++){
+      const t = (i + 0.5) / n;
+      const zUnit = 1 - 2 * t; // -1..1, evenly stepped
+      const rXY = Math.sqrt(Math.max(0, 1 - zUnit * zUnit));
+      const theta = goldenAngle * i;
+      const r = radiusFt * Math.cbrt(t); // cube-root spacing -> uniform volume density
+      points.push({
+        x: cx + r * rXY * Math.cos(theta),
+        y: cy + r * rXY * Math.sin(theta),
+        z: cz + r * zUnit
+      });
+    }
+    return points;
+  }
+
+  // ---- Spatially-averaged frequency response (moving-mic-method-style) ----
+  // Approximates REW's "moving microphone method": rather than a single exact
+  // point -- which can look artificially nulled or peaked, since a fraction-
+  // of-an-inch shift right at a true null swings dB by tens of decibels even
+  // though a real listener's ears/head occupy a small volume, not a
+  // mathematical point -- this averages POWER across many points swept
+  // through a small sphere, then converts the averaged power back to dB.
+  // Power (not dB, and not raw linear pressure) is the physically appropriate
+  // domain to average in: it mirrors what a physically moving mic captures
+  // (energy over the swept volume) rather than a coherent sum across
+  // positions, which could itself introduce cancellation artifacts.
+  // sources/order/ctx: same shape precomputeSourceImages/boundaryOps expect.
+  // Returns [{freq, db}, ...], one entry per input frequency, in order.
+  function spatiallyAveragedResponse(cx, cy, cz, freqs, sources, order, ctx, opts){
+    const radiusFt = opts?.radiusFt ?? 2;
+    const numPoints = opts?.numPoints ?? 20;
+    const samplePoints = sphereSamplePoints(cx, cy, cz, radiusFt, numPoints);
+    return freqs.map(freq => {
+      const k = 2 * Math.PI * freq / C;
+      const precomputed = precomputeSourceImages(sources, order, freq, ctx);
+      let sumPower = 0;
+      for(const p of samplePoints){
+        const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed, k);
+        sumPower += re*re + im*im;
+      }
+      const avgPower = sumPower / samplePoints.length;
+      const db = 10 * Math.log10(Math.max(avgPower, 1e-12));
+      return { freq, db };
+    });
+  }
+
   // ---- Two-ear listener sampling ----
   // Average adult inter-ear spacing is roughly 17cm (0.17m); this offsets a
   // listener position by half that distance to each side, perpendicular to a
@@ -732,6 +789,8 @@
     precomputeSourceImages,
     computeFieldAtPoint,
     fieldDbAtPoint,
+    sphereSamplePoints,
+    spatiallyAveragedResponse,
     axialModes,
     estimatedT60,
     schroederFrequency,

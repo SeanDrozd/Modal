@@ -917,6 +917,89 @@ test('source outside its frequency range contributes negligible energy', () => {
     `expected far-above-passband level to be much lower: passband=${dbAtPassband}dB farAbove=${dbFarAbove}dB`);
 });
 
+console.log('\n-- sphereSamplePoints --');
+
+test('every generated point is within the requested radius of the center', () => {
+  const pts = P.sphereSamplePoints(9, 6, 3, 1, 20);
+  assert.strictEqual(pts.length, 20);
+  for(const p of pts){
+    const d = Math.sqrt((p.x-9)**2 + (p.y-6)**2 + (p.z-3)**2);
+    assert.ok(d <= 1 + 1e-9, `point at distance ${d} exceeds radius 1`);
+  }
+});
+
+test('points are spread through the volume, not clumped at the center or a single shell', () => {
+  const pts = P.sphereSamplePoints(9, 6, 3, 1, 20);
+  const dists = pts.map(p => Math.sqrt((p.x-9)**2 + (p.y-6)**2 + (p.z-3)**2));
+  const minD = Math.min(...dists), maxD = Math.max(...dists);
+  assert.ok(maxD - minD > 0.5, `expected a spread of radii, got min=${minD.toFixed(2)} max=${maxD.toFixed(2)}`);
+  // no two points should coincide (a degenerate/buggy distribution could collapse points)
+  for(let i = 0; i < pts.length; i++){
+    for(let j = i+1; j < pts.length; j++){
+      const d = Math.sqrt((pts[i].x-pts[j].x)**2 + (pts[i].y-pts[j].y)**2 + (pts[i].z-pts[j].z)**2);
+      assert.ok(d > 1e-6, `points ${i} and ${j} coincide`);
+    }
+  }
+});
+
+test('is deterministic -- same inputs produce the same cloud every time', () => {
+  const a = P.sphereSamplePoints(9, 6, 3, 1, 20);
+  const b = P.sphereSamplePoints(9, 6, 3, 1, 20);
+  assert.deepStrictEqual(a, b);
+});
+
+test('radius 0 collapses every point onto the center', () => {
+  const pts = P.sphereSamplePoints(9, 6, 3, 0, 10);
+  for(const p of pts) assert.deepStrictEqual(p, { x: 9, y: 6, z: 3 });
+});
+
+console.log('\n-- spatiallyAveragedResponse (moving-mic-style measurement) --');
+
+test('radius 0 exactly matches a plain single-point fieldDbAtPoint at every frequency', () => {
+  const ctx = baseCtx({ wallReflect: 0.7 });
+  const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const freqs = [40, 80, 160];
+  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, 2, ctx, { radiusFt: 0, numPoints: 8 });
+  assert.strictEqual(result.length, freqs.length);
+  for(let i = 0; i < freqs.length; i++){
+    assert.strictEqual(result[i].freq, freqs[i]);
+    const direct = P.fieldDbAtPoint(9, 9, 3.5, sources, 2, freqs[i], ctx);
+    approx(result[i].db, direct, 0.01, `freq=${freqs[i]}`);
+  }
+});
+
+test('spatial averaging smooths out a deep coherent null relative to the exact point', () => {
+  // Same antiphase construction as the "DEMONSTRATION" null-sensitivity test
+  // below: two equal-level sources half a wavelength apart, one delayed by
+  // half a period, guarantees a clean destructive-interference null exactly
+  // at the midpoint between them (equal path length + intentional half-period
+  // phase flip = full cancellation) -- the classic worst case for a single
+  // exact-point reading.
+  const ctx = baseCtx({ wallReflect: 0 }); // isolate direct-path interference
+  const freq = 100;
+  const lambda = P.C / freq;
+  const sepFt = (lambda / 2) / P.FT_TO_M;
+  const halfPeriodMs = (1000 / (2 * freq)) * 0.999; // detuned slightly off perfect antiphase, same reasoning as below
+  const sources = [
+    { x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 },
+    { x: 9 + sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: halfPeriodMs, freqLow: 20, freqHigh: 20000 }
+  ];
+  const exactDb = P.fieldDbAtPoint(9, 6, 3, sources, 1, freq, ctx);
+  const averaged = P.spatiallyAveragedResponse(9, 6, 3, [freq], sources, 1, ctx, { radiusFt: 1, numPoints: 20 });
+  assert.ok(exactDb < -25, `expected a deep null at the exact midpoint, got ${exactDb.toFixed(1)}dB`);
+  assert.ok(averaged[0].db > exactDb + 15,
+    `expected spatial averaging to read meaningfully higher than the exact null: exact=${exactDb.toFixed(1)}dB averaged=${averaged[0].db.toFixed(1)}dB`);
+});
+
+test('returns one entry per input frequency, in the same order', () => {
+  const ctx = baseCtx();
+  const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const freqs = [30, 200, 60, 150];
+  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, 1, ctx);
+  assert.deepStrictEqual(result.map(r => r.freq), freqs);
+  for(const r of result) assert.ok(Number.isFinite(r.db), `non-finite dB at freq=${r.freq}`);
+});
+
 console.log('\n-- axialModes --');
 
 test('axial mode formula matches hand-calculated values for a known dimension', () => {

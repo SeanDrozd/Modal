@@ -22,7 +22,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 ## Features
 
 **Sources & listening position**
-- Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff), and height
+- Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff, with a bulk "apply to all" control), and height
 - Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
 - Listener position and facing angle, with a two-ear dB readout (small, frequency-dependent interaural differences)
 
@@ -41,8 +41,10 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 **Rendering & UI**
 - GPU (WebGL) rendering, with a built-in on-demand check that samples points and compares against the CPU path's exact math; GPU falls back to CPU automatically if unavailable
 - Frequency sweep animation (play/pause, adjustable speed) with wrap-around
+- Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis tracking the room's own Schroeder frequency
+- Feet & inches / meters unit toggle, applied consistently to every length field and on-canvas label in the app; internal storage stays in feet regardless
 - Adjustable color range and grid resolution (a device/performance preference, kept separate from saved room presets)
-- Room presets (save/load/update, `localStorage`-backed) and separate session settings (render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
+- Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
 
 ## How it works
 
@@ -84,12 +86,16 @@ T60 = 0.161 · V / A         where A = Σ (surface area × absorption coefficien
 
 Each surface's absorption coefficient is `1 − R²`, converting the amplitude/pressure reflection coefficient used everywhere else in the model into a power/energy quantity, which is what Sabine's formula is defined in terms of. This is a real, live estimate from your room's construction, not a fixed guess, but it deliberately excludes absorption panels, rugs, and openings (localized area patches rather than whole-surface properties), and Sabine's formula itself assumes evenly-distributed, diffuse absorption, which gets less accurate the more a room is dominated by isolated absorptive/reflective patches (furniture, in particular, isn't modeled at all). See the in-app hint next to the Schroeder frequency readout for the live numbers.
 
+### Frequency response: moving-mic-style spatial averaging
+
+The frequency response chart doesn't read dB at one exact point. A true destructive-interference null is a mathematical knife-edge: a fraction-of-an-inch shift can swing the reading by tens of dB even though a real listener's ears occupy a small volume, not a point. Instead, it deterministically samples 20 points through a small sphere (2ft radius) around the listening position, evaluates the field at each, averages their **power** (not dB, and not raw linear pressure), and converts the averaged power back to dB. That mirrors what a real moving-microphone measurement (REW's MMM technique) captures: energy over a swept volume, not a coherent sum across positions or a simple average of already-logarithmic readings. The chart's frequency axis extends to the room's own (worst-case) Schroeder frequency plus 100Hz headroom, sampled across a fixed range so the axis doesn't shift as you drag the frequency slider, rather than a fixed window that's too narrow for a dead room or mostly empty for a live one.
+
 ### What isn't modeled
 
 This is worth being explicit about, since it's easy to over-trust a clean-looking heat map:
 
 - **No furniture, HVAC, window coverings, or anything not explicitly configured.** Real rooms absorb more than their bare wall/floor/ceiling construction suggests.
-- **Exact listener position, not a "typical seating area."** A real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement.
+- **Exact listener position, not a "typical seating area," for the heat map.** A real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement. The frequency response chart addresses this for its one view (see [How it works](#how-it-works)), but the heat map itself is still an exact-point snapshot.
 - **Single frequency at a time.** Real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view.
 - **Material values are illustrative, not measured.** The wall/ceiling presets are typical-construction approximations, not data for your specific walls. Real behavior depends on details a preset can't capture (drywall thickness, stud spacing, how well-sealed the cavity is), so treat the absolute numbers as a starting point, not ground truth.
 
