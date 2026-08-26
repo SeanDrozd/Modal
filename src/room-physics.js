@@ -17,9 +17,14 @@
   const FT_TO_M = 0.3048;
   const C = 343; // speed of sound, m/s
 
-  // ---- Crossover-aware gain: rolloff outside [freqLow, freqHigh] at a fixed slope ----
+  // ---- Crossover-aware gain: rolloff outside [freqLow, freqHigh] ----
+  // slopeDbPerOct is per-source (source.rolloffDbPerOct in the UI), defaulting
+  // to 24 dB/octave (a 4th-order Linkwitz-Riley slope, the common default for
+  // AVR bass-management crossovers -- e.g. THX's 80Hz/LR4 spec) when a source
+  // doesn't specify one, including every source from a preset saved before
+  // this was configurable.
   function sourceGainAtFreq(source, f, slopeDbPerOct){
-    slopeDbPerOct = slopeDbPerOct ?? 12;
+    slopeDbPerOct = slopeDbPerOct ?? source.rolloffDbPerOct ?? 24;
     // A negative frequency has no physical meaning here, and (unlike f===0,
     // which the branches below already resolve to a gain of 0 via -Infinity dB)
     // it drives the log2 ratio negative, producing NaN — treat it as inaudible

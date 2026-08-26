@@ -22,7 +22,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 ## Features
 
 **Sources & listening position**
-- Any number of sources (mains, subs), each with independent level, delay, frequency range (with a 12 dB/octave rolloff outside that range, not a hard cutoff), and height
+- Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff), and height
 - Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
 - Listener position and facing angle, with a two-ear dB readout (small, frequency-dependent interaural differences)
 

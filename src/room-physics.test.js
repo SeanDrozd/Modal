@@ -47,27 +47,27 @@ test('gain is exactly 1.0 at the passband edges', () => {
   approx(P.sourceGainAtFreq(s, 20000), 1.0, 1e-9);
 });
 
-test('gain drops 12dB per octave below freqLow', () => {
+test('gain drops 12dB per octave below freqLow (at an explicit 12dB/oct slope)', () => {
   const s = { freqLow: 80, freqHigh: 20000 };
   // one octave below freqLow (40Hz) -> -12dB -> linear gain = 10^(-12/20)
-  const gain = P.sourceGainAtFreq(s, 40);
+  const gain = P.sourceGainAtFreq(s, 40, 12);
   const expectedDb = -12;
   const actualDb = 20 * Math.log10(gain);
   approx(actualDb, expectedDb, 0.05, '1 octave below freqLow');
 });
 
-test('gain drops 12dB per octave above freqHigh', () => {
+test('gain drops 12dB per octave above freqHigh (at an explicit 12dB/oct slope)', () => {
   const s = { freqLow: 20, freqHigh: 80 };
   // one octave above freqHigh (160Hz) -> -12dB
-  const gain = P.sourceGainAtFreq(s, 160);
+  const gain = P.sourceGainAtFreq(s, 160, 12);
   const actualDb = 20 * Math.log10(gain);
   approx(actualDb, -12, 0.05, '1 octave above freqHigh');
 });
 
 test('gain is symmetric in log-frequency on both sides', () => {
   const s = { freqLow: 100, freqHigh: 100 }; // degenerate passband, both edges coincide
-  const below = 20 * Math.log10(P.sourceGainAtFreq(s, 50));  // 1 oct below
-  const above = 20 * Math.log10(P.sourceGainAtFreq(s, 200)); // 1 oct above
+  const below = 20 * Math.log10(P.sourceGainAtFreq(s, 50, 12));  // 1 oct below
+  const above = 20 * Math.log10(P.sourceGainAtFreq(s, 200, 12)); // 1 oct above
   approx(below, above, 0.05, 'symmetric rolloff around a point passband');
 });
 
@@ -80,6 +80,31 @@ test('gain is 0 (not NaN) for a non-positive evaluation frequency', () => {
   const negGain = P.sourceGainAtFreq(s, -10);
   assert.ok(Number.isFinite(negGain), `expected finite gain for f=-10, got ${negGain}`);
   assert.strictEqual(negGain, 0);
+});
+
+test('a source\'s own rolloffDbPerOct is used when no explicit slope is passed', () => {
+  // Deliberately a value distinct from the 24dB/oct default below, so this
+  // test actually distinguishes "source's own value is used" from "it just
+  // fell through to the default and got lucky".
+  const s = { freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 12 };
+  // one octave below freqLow (40Hz) at 12dB/oct -> -12dB, not the 24dB/oct default
+  const gain = P.sourceGainAtFreq(s, 40);
+  const actualDb = 20 * Math.log10(gain);
+  approx(actualDb, -12, 0.05, '1 octave below freqLow at the source\'s own 12dB/oct slope');
+});
+
+test('an explicit slope argument overrides the source\'s own rolloffDbPerOct', () => {
+  const s = { freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 12 };
+  const gain = P.sourceGainAtFreq(s, 40, 6);
+  const actualDb = 20 * Math.log10(gain);
+  approx(actualDb, -6, 0.05, 'explicit 3rd-arg slope should win over source.rolloffDbPerOct');
+});
+
+test('sources without rolloffDbPerOct default to 24dB/oct (a 4th-order/LR4 AVR-typical slope; backward compatible with older presets)', () => {
+  const s = { freqLow: 80, freqHigh: 20000 }; // no rolloffDbPerOct field at all
+  const gain = P.sourceGainAtFreq(s, 40);
+  const actualDb = 20 * Math.log10(gain);
+  approx(actualDb, -24, 0.05);
 });
 
 console.log('\n-- panelAbsorptionAtFreq (thickness vs quarter-wavelength) --');

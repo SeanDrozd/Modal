@@ -62,6 +62,13 @@
   .row-stacked .row-stacked-head .val { font-size: 11.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
   .row-stacked input[type="range"] { width: 100%; }
   .row-stacked select { width: 100%; }
+  /* A length-valued field: either one meters input, or a feet+inches pair,
+     depending on the current unit toggle -- see lengthFieldHtml(). Always
+     wrapped in one element so existing querySelector('[data-field="x"]')
+     call sites keep working unchanged regardless of which shape is inside. */
+  .length-field { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .length-field input[type="number"] { text-align: right; }
+  .length-suffix { font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
   input[type="range"] { flex: 1; accent-color: var(--accent); }
   input[type="number"] {
     width: 56px; background: var(--panel-2); border: 1px solid var(--border);
@@ -137,7 +144,15 @@
 
 <div id="sidebar">
   <h1>Room wave interference</h1>
-  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 3rd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at 12 dB/octave.</p>
+  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 3rd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
+
+  <div class="row" style="margin-bottom:14px;">
+    <label>Units</label>
+    <select id="unitsSelect" style="width:auto; flex:1;">
+      <option value="ft">Feet &amp; inches</option>
+      <option value="m">Meters</option>
+    </select>
+  </div>
 
   <div class="section">
     <div class="section-title">Saved configurations</div>
@@ -159,20 +174,20 @@
   <div class="section">
     <div class="section-title">Room</div>
     <div class="row">
-      <label>Width (ft)</label>
-      <input type="number" id="roomW" min="6" max="40" step="0.5" value="18">
+      <label>Width</label>
+      <span id="roomWField"></span>
     </div>
     <div class="row">
-      <label>Depth (ft)</label>
-      <input type="number" id="roomD" min="6" max="40" step="0.5" value="13.5">
+      <label>Depth</label>
+      <span id="roomDField"></span>
     </div>
     <div class="row">
-      <label>Ceiling height (ft)</label>
-      <input type="number" id="roomH" min="6" max="20" step="0.25" value="8">
+      <label>Ceiling height</label>
+      <span id="roomHField"></span>
     </div>
     <div class="row" style="margin-top:8px;">
-      <label>Listener ear height (ft)</label>
-      <input type="number" id="listenerZ" min="0" max="20" step="0.25" value="3.5">
+      <label>Listener ear height</label>
+      <span id="listenerZField"></span>
     </div>
     <div class="row-stacked">
       <div class="row-stacked-head"><label>Listener facing (&deg;)</label><span class="val" id="listenerFacingVal">0&deg;</span></div>
@@ -212,6 +227,19 @@
         <button id="addSrcBtn" class="small">+ Add source</button>
       </div>
     </div>
+    <div class="row" style="margin-bottom:8px;">
+      <label>Rolloff (all sources)</label>
+      <div style="display:flex; gap:6px; flex:1;">
+        <select id="bulkRolloffSelect" style="flex:1;">
+          <option value="6">6 dB/oct</option>
+          <option value="12">12 dB/oct</option>
+          <option value="18">18 dB/oct</option>
+          <option value="24" selected>24 dB/oct</option>
+        </select>
+        <button id="applyRolloffAllBtn" class="small">Apply to all</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click &mdash; each source can still be adjusted individually afterward.</div>
     <div id="srcList"></div>
     <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
   </div>
@@ -321,11 +349,11 @@
       <span style="color:var(--text-dim);font-size:11px;">to</span>
       <input type="number" id="optFreqHigh" min="10" max="500" step="1" value="120" style="width:52px;">
     </div>
-    <div class="row"><label>Grid step (ft)</label>
-      <input type="number" id="optGridStep" min="0.25" max="2" step="0.25" value="0.5" style="width:52px;">
+    <div class="row"><label>Grid step</label>
+      <span id="optGridStepField"></span>
     </div>
-    <div class="row"><label>Sub height (ft)</label>
-      <input type="number" id="optSubHeight" min="0" max="10" step="0.25" value="1" style="width:52px;">
+    <div class="row"><label>Sub height</label>
+      <span id="optSubHeightField"></span>
     </div>
     <div class="row"><label># of subs</label>
       <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
@@ -394,7 +422,7 @@
     <span id="legendDbMax">+12 dB</span>
     <span style="margin-left:14px;">● source &nbsp; ✕ listening position</span>
   </div>
-  <div id="info">Drag any source or the listening position. Sources outside their frequency range fade out (12 dB/oct rolloff) rather than cutting hard.</div>
+  <div id="info">Drag any source or the listening position. Sources outside their frequency range fade out (per-source rolloff slope, 24 dB/oct by default) rather than cutting hard.</div>
 </div>
 
 <script src="room-physics.js"></script>
@@ -441,10 +469,152 @@
   let presets = {}; // name -> config
   let currentPresetName = null;
 
+  // ---- Units: display/input only. Every length is still stored and computed
+  // in feet everywhere else in this file and in room-physics.js -- this is a
+  // pure UI-layer conversion, applied at the moment a value is displayed or
+  // parsed. A session setting (like render mode/resolution), not part of a
+  // saved room preset, since it's a personal display preference, not a
+  // property of the room.
+  let lengthUnit = 'ft'; // 'ft' | 'm'
+  const M_PER_FT = RoomPhysics.FT_TO_M;
+  function ftToM(ft){ return ft * M_PER_FT; }
+  function mToFt(m){ return m / M_PER_FT; }
+
+  // Read-only display formatting (canvas labels, sidebar readouts -- anything
+  // that isn't an editable input). Feet mode shows feet+inches (8'8"), which
+  // is how these measurements actually get spoken/written, rather than a
+  // decimal-feet fraction; meters mode shows 2 decimals.
+  function formatLength(ft){
+    if(lengthUnit === 'm') return ftToM(ft).toFixed(2) + ' m';
+    const sign = ft < 0 ? '-' : '';
+    const totalInches = Math.round(Math.abs(ft) * 12);
+    const wholeFt = Math.floor(totalInches / 12);
+    const inches = totalInches % 12;
+    return `${sign}${wholeFt}'${inches}"`;
+  }
+
+  // Renders an editable length control for a feet-valued field: a single
+  // meters input in 'm' mode, or a feet+inches pair in 'ft' mode. Always
+  // wrapped in one element carrying data-field="<dataField>", so existing
+  // `container.querySelector('[data-field="..."]')` call sites keep finding
+  // it as a single node -- readLengthFt/writeLengthFieldValue/wireLengthField
+  // below are what actually reach inside, since the shape differs by unit.
+  function lengthFieldHtml(dataField, ft, opts){
+    opts = opts || {};
+    const widthPx = opts.width || 64;
+    if(lengthUnit === 'm'){
+      const m = ftToM(ft);
+      const stepM = opts.stepM ?? 0.05;
+      return `<span class="length-field" data-field="${dataField}" data-unit="m">
+        <input type="number" data-role="value" step="${stepM}" value="${m.toFixed(2)}" style="width:${widthPx}px;">
+        <span class="length-suffix">m</span>
+      </span>`;
+    }
+    const totalInches = Math.round(Math.max(0, ft) * 12);
+    const wholeFt = Math.floor(totalInches / 12);
+    const inches = totalInches % 12;
+    return `<span class="length-field" data-field="${dataField}" data-unit="ft">
+      <input type="number" data-role="ft" min="0" step="1" value="${wholeFt}" style="width:46px;">
+      <span class="length-suffix">'</span>
+      <input type="number" data-role="in" min="0" max="11" step="1" value="${inches}" style="width:40px;">
+      <span class="length-suffix">"</span>
+    </span>`;
+  }
+  // Reads the current feet value out of a rendered lengthFieldHtml control.
+  function readLengthFt(fieldEl){
+    if(fieldEl.dataset.unit === 'm'){
+      const v = parseFloat(fieldEl.querySelector('[data-role="value"]').value);
+      return mToFt(Number.isFinite(v) ? v : 0);
+    }
+    const ftVal = parseFloat(fieldEl.querySelector('[data-role="ft"]').value);
+    const inVal = parseFloat(fieldEl.querySelector('[data-role="in"]').value);
+    return (Number.isFinite(ftVal) ? ftVal : 0) + (Number.isFinite(inVal) ? inVal : 0) / 12;
+  }
+  // Writes a (possibly clamped) feet value back into an already-rendered
+  // control in place -- mirrors the existing "write the clamped value back
+  // into the input" pattern used after validating a plain numeric field,
+  // without needing to destroy/rebuild/rewire the control.
+  function writeLengthFieldValue(fieldEl, ft){
+    if(fieldEl.dataset.unit === 'm'){
+      fieldEl.querySelector('[data-role="value"]').value = ftToM(ft).toFixed(2);
+      return;
+    }
+    const totalInches = Math.round(Math.max(0, ft) * 12);
+    fieldEl.querySelector('[data-role="ft"]').value = Math.floor(totalInches / 12);
+    fieldEl.querySelector('[data-role="in"]').value = totalInches % 12;
+  }
+  // Attaches a 'change' listener to every sub-input inside a rendered
+  // lengthFieldHtml control (found via data-field on `scope`), calling
+  // onChangeFt(ftValue, fieldEl) whenever any of them changes -- the length-
+  // field equivalent of `input.addEventListener('change', ...)`.
+  function wireLengthField(scope, dataField, onChangeFt){
+    const fieldEl = scope.querySelector(`[data-field="${dataField}"]`);
+    fieldEl.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('change', () => onChangeFt(readLengthFt(fieldEl), fieldEl));
+    });
+  }
+
+  // Renders the Room and Listener height length fields from current state
+  // (room.w/d/h, listener.z) and wires their change handlers -- called from
+  // loadConfig (so every preset load / reset-to-defaults / fresh-install path
+  // already covers this) and from the units toggle.
+  function renderRoomDimFields(){
+    document.getElementById('roomWField').innerHTML = lengthFieldHtml('roomW', room.w);
+    document.getElementById('roomDField').innerHTML = lengthFieldHtml('roomD', room.d);
+    document.getElementById('roomHField').innerHTML = lengthFieldHtml('roomH', room.h);
+    document.getElementById('listenerZField').innerHTML = lengthFieldHtml('listenerZ', listener.z);
+    wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => {
+      room.w = Math.max(6, ft || 16); draw();
+    });
+    wireLengthField(document.getElementById('roomDField'), 'roomD', (ft) => {
+      room.d = Math.max(6, ft || 13.5); draw();
+    });
+    wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => {
+      room.h = Math.max(6, ft || 8);
+      if(listener.z > room.h) listener.z = room.h;
+      draw();
+    });
+    wireLengthField(document.getElementById('listenerZField'), 'listenerZ', (ft) => {
+      listener.z = Math.max(0, Math.min(room.h, ft || 3.5));
+      draw();
+    });
+  }
+
+  // Optimizer grid step / sub height: session settings (like resolutionScale),
+  // not room properties, so they're plain state variables rather than derived
+  // from a saved preset -- see saveSessionSettings/loadSessionSettings.
+  let optGridStepFt = 0.5;
+  let optSubHeightFt = 1;
+  function renderOptimizerLengthFields(){
+    document.getElementById('optGridStepField').innerHTML = lengthFieldHtml('optGridStep', optGridStepFt);
+    document.getElementById('optSubHeightField').innerHTML = lengthFieldHtml('optSubHeight', optSubHeightFt);
+    wireLengthField(document.getElementById('optGridStepField'), 'optGridStep', (ft) => {
+      optGridStepFt = Math.max(0.25, ft || 0.5);
+      saveSessionSettings();
+    });
+    wireLengthField(document.getElementById('optSubHeightField'), 'optSubHeight', (ft) => {
+      optSubHeightFt = Math.max(0, ft || 1);
+      saveSessionSettings();
+    });
+  }
+
+  // Re-renders every length-valued display in the app (fields + canvas
+  // labels) in the newly-selected unit, without touching any underlying
+  // state -- all storage stays in feet regardless of lengthUnit.
+  function refreshAllLengthDisplays(){
+    renderRoomDimFields();
+    renderOptimizerLengthFields();
+    renderSrcList();
+    renderPanelList();
+    renderOpeningsList();
+    renderSurfacePanelList();
+    draw();
+  }
+
   function defaultSources(){
     return [
-      { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true },
-      { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }
+      { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 },
+      { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 }
     ];
   }
 
@@ -547,16 +717,13 @@
     freq = cfg.freq; wallReflect = cfg.wallReflect;
     floorReflect = cfg.floorReflect ?? cfg.wallReflect;
     reflectionOrder = cfg.reflectionOrder ?? 2;
-    document.getElementById('roomW').value = room.w;
-    document.getElementById('roomD').value = room.d;
-    document.getElementById('roomH').value = room.h;
+    renderRoomDimFields();
     document.getElementById('floorReflect').value = floorReflect;
     document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
     syncFloorMaterialDropdown();
     document.getElementById('reflectionOrder').value = String(reflectionOrder);
     document.getElementById('freq').value = freq;
     document.getElementById('freqVal').textContent = freq + ' Hz';
-    document.getElementById('listenerZ').value = listener.z;
     document.getElementById('listenerFacing').value = listener.facing ?? 0;
     document.getElementById('listenerFacingVal').textContent = (listener.facing ?? 0) + '\u00b0';
     document.getElementById('panelsMasterToggle').checked = panelsEnabled;
@@ -632,10 +799,9 @@
     try {
       const session = {
         resolutionScale, dbMin, dbMax, renderMode, optimizerMode, freqSweepSpeed,
+        lengthUnit, optGridStepFt, optSubHeightFt,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
-        optGridStep: document.getElementById('optGridStep').value,
-        optSubHeight: document.getElementById('optSubHeight').value,
         optNumSubs: document.getElementById('optNumSubs').value
       };
       localStorage.setItem(SESSION_STORE_KEY, JSON.stringify(session));
@@ -677,9 +843,13 @@
     }
     if(session.optFreqLow != null) document.getElementById('optFreqLow').value = session.optFreqLow;
     if(session.optFreqHigh != null) document.getElementById('optFreqHigh').value = session.optFreqHigh;
-    if(session.optGridStep != null) document.getElementById('optGridStep').value = session.optGridStep;
-    if(session.optSubHeight != null) document.getElementById('optSubHeight').value = session.optSubHeight;
+    if(Number.isFinite(session.optGridStepFt)) optGridStepFt = session.optGridStepFt;
+    if(Number.isFinite(session.optSubHeightFt)) optSubHeightFt = session.optSubHeightFt;
     if(session.optNumSubs != null) document.getElementById('optNumSubs').value = session.optNumSubs;
+    if(session.lengthUnit === 'ft' || session.lengthUnit === 'm'){
+      lengthUnit = session.lengthUnit;
+      document.getElementById('unitsSelect').value = lengthUnit;
+    }
   }
 
   function refreshPresetSelect(){
@@ -814,8 +984,16 @@
           <span style="color:var(--text-dim);font-size:11px;">to</span>
           <input type="number" data-field="freqHigh" min="10" max="20000" step="1" value="${s.freqHigh}">
         </div>
-        <div class="row"><label>Height (ft)</label>
-          <input type="number" data-field="z" min="0" max="20" step="0.25" value="${s.z}" style="width:56px;">
+        <div class="row"><label>Rolloff outside range</label>
+          <select data-field="rolloffDbPerOct" style="width:auto; flex:1;">
+            <option value="6">6 dB/oct</option>
+            <option value="12">12 dB/oct</option>
+            <option value="18">18 dB/oct</option>
+            <option value="24" selected>24 dB/oct</option>
+          </select>
+        </div>
+        <div class="row"><label>Height</label>
+          ${lengthFieldHtml('z', s.z)}
         </div>
       `;
       list.appendChild(block);
@@ -866,8 +1044,14 @@
         s.freqHigh = Math.max(s.freqLow+1, parseFloat(this.value)||20000);
         draw();
       });
-      block.querySelector('[data-field="z"]').addEventListener('change', function(){
-        s.z = Math.max(0, Math.min(room.h, parseFloat(this.value)||0));
+      const rolloffSelect = block.querySelector('[data-field="rolloffDbPerOct"]');
+      rolloffSelect.value = String(s.rolloffDbPerOct ?? 24);
+      rolloffSelect.addEventListener('change', function(){
+        s.rolloffDbPerOct = parseInt(this.value, 10);
+        draw();
+      });
+      wireLengthField(block, 'z', (ft) => {
+        s.z = Math.max(0, Math.min(room.h, ft || 0));
         draw();
       });
     });
@@ -932,14 +1116,14 @@
             <option value="back">Back</option>
           </select>
         </div>
-        <div class="row"><label>Position along wall (ft)</label>
-          <input type="number" data-field="pos" min="0" step="0.5" value="${pnl.pos}" style="width:56px;">
+        <div class="row"><label>Position along wall</label>
+          ${lengthFieldHtml('pos', pnl.pos)}
         </div>
-        <div class="row"><label>Length (ft)</label>
-          <input type="number" data-field="length" min="0.5" step="0.5" value="${pnl.length}" style="width:56px;">
+        <div class="row"><label>Length</label>
+          ${lengthFieldHtml('length', pnl.length)}
         </div>
-        <div class="row"><label>Thickness (ft)</label>
-          <input type="number" data-field="thickness" min="0.1" max="3" step="0.1" value="${pnl.thickness}" style="width:56px;">
+        <div class="row"><label>Thickness</label>
+          ${lengthFieldHtml('thickness', pnl.thickness)}
         </div>
       `;
       list.appendChild(block);
@@ -970,20 +1154,20 @@
         pnl.pos = Math.min(pnl.pos, Math.max(0, wallSpan(pnl.wall) - pnl.length));
         draw();
       });
-      block.querySelector('[data-field="pos"]').addEventListener('change', function(){
+      wireLengthField(block, 'pos', (ft, fieldEl) => {
         const maxSpan = wallSpan(pnl.wall);
-        pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, parseFloat(this.value)||0));
-        this.value = pnl.pos;
+        pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, ft || 0));
+        writeLengthFieldValue(fieldEl, pnl.pos);
         draw();
       });
-      block.querySelector('[data-field="length"]').addEventListener('change', function(){
+      wireLengthField(block, 'length', (ft) => {
         const maxSpan = wallSpan(pnl.wall);
-        pnl.length = Math.max(0.5, Math.min(maxSpan, parseFloat(this.value)||0.5));
+        pnl.length = Math.max(0.5, Math.min(maxSpan, ft || 0.5));
         pnl.pos = Math.min(pnl.pos, maxSpan - pnl.length);
         draw();
       });
-      block.querySelector('[data-field="thickness"]').addEventListener('change', function(){
-        pnl.thickness = Math.max(0.1, Math.min(3, parseFloat(this.value)||0.1));
+      wireLengthField(block, 'thickness', (ft) => {
+        pnl.thickness = Math.max(0.1, Math.min(3, ft || 0.1));
         draw();
       });
     });
@@ -1047,11 +1231,11 @@
             <option value="back">Back</option>
           </select>
         </div>
-        <div class="row"><label>Position along wall (ft)</label>
-          <input type="number" data-field="pos" min="0" step="0.5" value="${op.pos}" style="width:56px;">
+        <div class="row"><label>Position along wall</label>
+          ${lengthFieldHtml('pos', op.pos)}
         </div>
-        <div class="row"><label>Width (ft)</label>
-          <input type="number" data-field="width" min="0.5" step="0.5" value="${op.width}" style="width:56px;">
+        <div class="row"><label>Width</label>
+          ${lengthFieldHtml('width', op.width)}
         </div>
         <div class="row-stacked">
           <div class="row-stacked-head"><label>Opening amount</label><span class="val" data-out="factor">${op.factor.toFixed(2)}</span></div>
@@ -1080,15 +1264,15 @@
         op.pos = Math.min(op.pos, Math.max(0, wallSpan(op.wall) - op.width));
         draw();
       });
-      block.querySelector('[data-field="pos"]').addEventListener('change', function(){
+      wireLengthField(block, 'pos', (ft, fieldEl) => {
         const maxSpan = wallSpan(op.wall);
-        op.pos = Math.max(0, Math.min(maxSpan - op.width, parseFloat(this.value)||0));
-        this.value = op.pos;
+        op.pos = Math.max(0, Math.min(maxSpan - op.width, ft || 0));
+        writeLengthFieldValue(fieldEl, op.pos);
         draw();
       });
-      block.querySelector('[data-field="width"]').addEventListener('change', function(){
+      wireLengthField(block, 'width', (ft) => {
         const maxSpan = wallSpan(op.wall);
-        op.width = Math.max(0.5, Math.min(maxSpan, parseFloat(this.value)||0.5));
+        op.width = Math.max(0.5, Math.min(maxSpan, ft || 0.5));
         op.pos = Math.min(op.pos, maxSpan - op.width);
         draw();
       });
@@ -1152,20 +1336,20 @@
             <option value="ceil">Ceiling</option>
           </select>
         </div>
-        <div class="row"><label>Position X (ft)</label>
-          <input type="number" data-field="x" min="0" step="0.5" value="${p.x}" style="width:56px;">
+        <div class="row"><label>Position X</label>
+          ${lengthFieldHtml('x', p.x)}
         </div>
-        <div class="row"><label>Position Y (ft)</label>
-          <input type="number" data-field="y" min="0" step="0.5" value="${p.y}" style="width:56px;">
+        <div class="row"><label>Position Y</label>
+          ${lengthFieldHtml('y', p.y)}
         </div>
-        <div class="row"><label>Width (ft)</label>
-          <input type="number" data-field="width" min="0.5" step="0.5" value="${p.width}" style="width:56px;">
+        <div class="row"><label>Width</label>
+          ${lengthFieldHtml('width', p.width)}
         </div>
-        <div class="row"><label>Depth (ft)</label>
-          <input type="number" data-field="height" min="0.5" step="0.5" value="${p.height}" style="width:56px;">
+        <div class="row"><label>Depth</label>
+          ${lengthFieldHtml('height', p.height)}
         </div>
-        <div class="row"><label>Thickness (ft)</label>
-          <input type="number" data-field="thickness" min="0.1" max="3" step="0.1" value="${p.thickness}" style="width:56px;">
+        <div class="row"><label>Thickness</label>
+          ${lengthFieldHtml('thickness', p.thickness)}
         </div>
       `;
       list.appendChild(block);
@@ -1189,28 +1373,28 @@
         p.surface = this.value;
         draw();
       });
-      block.querySelector('[data-field="x"]').addEventListener('change', function(){
-        p.x = Math.max(0, Math.min(room.w - p.width, parseFloat(this.value)||0));
-        this.value = p.x;
+      wireLengthField(block, 'x', (ft, fieldEl) => {
+        p.x = Math.max(0, Math.min(room.w - p.width, ft || 0));
+        writeLengthFieldValue(fieldEl, p.x);
         draw();
       });
-      block.querySelector('[data-field="y"]').addEventListener('change', function(){
-        p.y = Math.max(0, Math.min(room.d - p.height, parseFloat(this.value)||0));
-        this.value = p.y;
+      wireLengthField(block, 'y', (ft, fieldEl) => {
+        p.y = Math.max(0, Math.min(room.d - p.height, ft || 0));
+        writeLengthFieldValue(fieldEl, p.y);
         draw();
       });
-      block.querySelector('[data-field="width"]').addEventListener('change', function(){
-        p.width = Math.max(0.5, Math.min(room.w, parseFloat(this.value)||0.5));
+      wireLengthField(block, 'width', (ft) => {
+        p.width = Math.max(0.5, Math.min(room.w, ft || 0.5));
         p.x = Math.min(p.x, room.w - p.width);
         draw();
       });
-      block.querySelector('[data-field="height"]').addEventListener('change', function(){
-        p.height = Math.max(0.5, Math.min(room.d, parseFloat(this.value)||0.5));
+      wireLengthField(block, 'height', (ft) => {
+        p.height = Math.max(0.5, Math.min(room.d, ft || 0.5));
         p.y = Math.min(p.y, room.d - p.height);
         draw();
       });
-      block.querySelector('[data-field="thickness"]').addEventListener('change', function(){
-        p.thickness = Math.max(0.1, Math.min(3, parseFloat(this.value)||0.1));
+      wireLengthField(block, 'thickness', (ft) => {
+        p.thickness = Math.max(0.1, Math.min(3, ft || 0.1));
         draw();
       });
     });
@@ -1330,7 +1514,7 @@
         <div class="src-label" style="margin-bottom:0;">
           <div class="name-wrap">
             <span class="dot" style="background:${color}"></span>
-            <span style="font-size:12px;">${escapeHtml(z.name)} <span style="color:var(--text-dim);font-weight:400;">(${label}, ${z.width.toFixed(1)}'&times;${z.height.toFixed(1)}')</span></span>
+            <span style="font-size:12px;">${escapeHtml(z.name)} <span style="color:var(--text-dim);font-weight:400;">(${label}, ${formatLength(z.width)}&times;${formatLength(z.height)})</span></span>
           </div>
           <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
         </div>
@@ -1397,9 +1581,17 @@
       levelDb: 0, delayMs: 0,
       freqLow: 20, freqHigh: 80,
       enabled: true,
-      isMain: false
+      isMain: false,
+      rolloffDbPerOct: 24
     };
     sources.push(newSrc);
+    renderSrcList();
+    draw();
+  });
+
+  document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
+    const slope = parseInt(document.getElementById('bulkRolloffSelect').value, 10);
+    sources.forEach(s => { s.rolloffDbPerOct = slope; });
     renderSrcList();
     draw();
   });
@@ -1527,8 +1719,8 @@
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
-    const step = parseFloat(document.getElementById('optGridStep').value) || 0.5;
-    const subHeight = parseFloat(document.getElementById('optSubHeight').value) || 1;
+    const step = optGridStepFt;
+    const subHeight = optSubHeightFt;
     const numSubs = Math.max(1, Math.round(parseFloat(document.getElementById('optNumSubs').value) || 1));
     const status = document.getElementById('optimizerStatus');
 
@@ -1580,7 +1772,7 @@
     }
 
     const partial = placedSubs.length < numSubs;
-    const posList = placedSubs.map(s => `(${s.x.toFixed(1)}',${s.y.toFixed(1)}')`).join(', ');
+    const posList = placedSubs.map(s => `(${formatLength(s.x)},${formatLength(s.y)})`).join(', ');
     status.innerHTML = `<span style="color:${partial ? 'var(--accent)' : 'var(--good)'}">` +
       `${partial ? `Only placed ${placedSubs.length} of ${numSubs} requested (ran out of valid positions). ` : ''}` +
       `Suggested position${placedSubs.length>1?'s':''}: ${posList}.</span>`;
@@ -1820,9 +2012,9 @@
       ctx.stroke();
       ctx.setLineDash([]);
       function distFt(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
-      labelMid(mainPts[0].px,mainPts[0].py,mainPts[1].px,mainPts[1].py, distFt(mainPts[0],mainPts[1]).toFixed(1)+"'", 16);
-      labelMid(mainPts[0].px,mainPts[0].py,lx,ly, distFt(mainPts[0],{x:listener.x,y:listener.y}).toFixed(1)+"'", -16);
-      labelMid(mainPts[1].px,mainPts[1].py,lx,ly, distFt(mainPts[1],{x:listener.x,y:listener.y}).toFixed(1)+"'", 16);
+      labelMid(mainPts[0].px,mainPts[0].py,mainPts[1].px,mainPts[1].py, formatLength(distFt(mainPts[0],mainPts[1])), 16);
+      labelMid(mainPts[0].px,mainPts[0].py,lx,ly, formatLength(distFt(mainPts[0],{x:listener.x,y:listener.y})), -16);
+      labelMid(mainPts[1].px,mainPts[1].py,lx,ly, formatLength(distFt(mainPts[1],{x:listener.x,y:listener.y})), 16);
     }
 
     for(const p of pts) drawWallDists(p.x, p.y, p.px, p.py, offX, offY, scale, p.color);
@@ -2005,7 +2197,7 @@
       ctx.font = 'bold 14px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const label = isActive ? `${pnl.thickness.toFixed(1)}'` : `${pnl.thickness.toFixed(1)}' (off)`;
+      const label = isActive ? formatLength(pnl.thickness) : `${formatLength(pnl.thickness)} (off)`;
       const tw = ctx.measureText(label).width;
       ctx.fillStyle = 'rgba(11,14,18,0.85)';
       ctx.fillRect(midx-tw/2-5, midy-11, tw+10, 22);
@@ -2165,7 +2357,7 @@
       ctx.font = 'bold 14px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const label = b.name ? `${b.name}: (${b.x.toFixed(1)}',${b.y.toFixed(1)}')` : `(${b.x.toFixed(1)}',${b.y.toFixed(1)}')`;
+      const label = b.name ? `${b.name}: (${formatLength(b.x)},${formatLength(b.y)})` : `(${formatLength(b.x)},${formatLength(b.y)})`;
       const tw = ctx.measureText(label).width;
       ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.fillRect(px-tw/2-6, py+16, tw+12, 22);
@@ -2190,14 +2382,14 @@
 
     ctx.font = 'bold 17px sans-serif'; ctx.fillStyle = color; ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    const vLabelX = (px+vwx)/2, vText = nearVert.d.toFixed(1)+"'";
+    const vLabelX = (px+vwx)/2, vText = formatLength(nearVert.d);
     const vtw = ctx.measureText(vText).width;
     ctx.fillStyle = 'rgba(11,14,18,0.9)';
     ctx.fillRect(vLabelX-vtw/2-6, py-13, vtw+12, 26);
     ctx.fillStyle = color;
     ctx.fillText(vText, vLabelX, py);
 
-    const hLabelY = (py+hwy)/2, hText = nearHoriz.d.toFixed(1)+"'";
+    const hLabelY = (py+hwy)/2, hText = formatLength(nearHoriz.d);
     const htw = ctx.measureText(hText).width;
     ctx.fillStyle = 'rgba(11,14,18,0.9)';
     ctx.fillRect(px-htw/2-6, hLabelY-13, htw+12, 26);
@@ -2266,7 +2458,7 @@
   function updateFreqInfo(lambda){
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false && sourceGainAtFreq(s, freq) > 0.05) : [];
     document.getElementById('freqInfo').innerHTML =
-      `Wavelength: <b>${lambda.toFixed(2)} m</b> (${(lambda*3.281).toFixed(1)} ft)<br>` +
+      `Wavelength: <b>${formatLength(mToFt(lambda))}</b><br>` +
       `Active sources at ${Math.round(freq)} Hz: <b>${active.length}</b> of ${sources.length}`;
     updateEarDiffInfo();
     updateModalInfo();
@@ -2454,6 +2646,11 @@
     reflectionOrder = parseInt(this.value, 10);
     draw();
   });
+  document.getElementById('unitsSelect').addEventListener('change', function(){
+    lengthUnit = this.value;
+    saveSessionSettings();
+    refreshAllLengthDisplays();
+  });
   document.getElementById('resolutionScale').addEventListener('input', function(){
     resolutionScale = parseFloat(this.value);
     document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
@@ -2490,8 +2687,10 @@
   });
   // The sub-optimizer's search parameters have no other listeners (they're
   // normally just read on-demand when "Find best sub position" runs) -- these
-  // exist solely to persist them to session settings on change.
-  for(const id of ['optFreqLow','optFreqHigh','optGridStep','optSubHeight','optNumSubs']){
+  // exist solely to persist them to session settings on change. optGridStep/
+  // optSubHeight are length fields now; their own wireLengthField callbacks
+  // in renderOptimizerLengthFields() already call saveSessionSettings().
+  for(const id of ['optFreqLow','optFreqHigh','optNumSubs']){
     document.getElementById(id).addEventListener('change', saveSessionSettings);
   }
   document.getElementById('optimizerMode').addEventListener('change', function(){
@@ -2559,21 +2758,6 @@
         console.log('(verification console detail unavailable in this environment)');
       }
     });
-  });
-  document.getElementById('roomW').addEventListener('change', function(){
-    room.w = Math.max(6, parseFloat(this.value)||16); draw();
-  });
-  document.getElementById('roomD').addEventListener('change', function(){
-    room.d = Math.max(6, parseFloat(this.value)||13.5); draw();
-  });
-  document.getElementById('roomH').addEventListener('change', function(){
-    room.h = Math.max(6, parseFloat(this.value)||8);
-    if(listener.z > room.h) listener.z = room.h;
-    draw();
-  });
-  document.getElementById('listenerZ').addEventListener('change', function(){
-    listener.z = Math.max(0, Math.min(room.h, parseFloat(this.value)||3.5));
-    draw();
   });
   document.getElementById('listenerFacing').addEventListener('input', function(){
     listener.facing = parseFloat(this.value);
@@ -2891,6 +3075,7 @@
       document.getElementById('renderModeHint').textContent = 'WebGL is not available here, so only CPU rendering can be used.';
     }
     loadSessionSettings();
+    renderOptimizerLengthFields();
     await loadPresets();
     const savedNames = Object.keys(presets).filter(n => n !== '__meta__');
     if(savedNames.length > 0){
