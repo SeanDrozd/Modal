@@ -174,6 +174,14 @@
       <input type="range" id="freq" min="20" max="300" step="1" value="60">
       <span class="val" id="freqVal">60 Hz</span>
     </div>
+    <div class="row" style="margin-top:-2px;">
+      <button id="freqSweepPlayBtn" class="small" title="Sweep through the frequency range">&#9654; Sweep</button>
+      <div style="display:flex; align-items:center; gap:6px; margin-left:auto;">
+        <button id="freqSweepSlowerBtn" class="small" title="Slower" style="padding:4px 9px;">&minus;</button>
+        <span class="val" id="freqSweepSpeedVal" style="min-width:28px; text-align:center;">1x</span>
+        <button id="freqSweepFasterBtn" class="small" title="Faster" style="padding:4px 9px;">+</button>
+      </div>
+    </div>
     <div id="freqInfo"></div>
     <div id="schroederInfo" class="hint"></div>
     <div id="modalInfo"></div>
@@ -598,7 +606,7 @@
   function saveSessionSettings(){
     try {
       const session = {
-        resolutionScale, dbMin, dbMax, renderMode, optimizerMode,
+        resolutionScale, dbMin, dbMax, renderMode, optimizerMode, freqSweepSpeed,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
         optGridStep: document.getElementById('optGridStep').value,
@@ -637,6 +645,10 @@
     if(session.optimizerMode === 'balanced' || session.optimizerMode === 'nullAvoidance'){
       optimizerMode = session.optimizerMode;
       document.getElementById('optimizerMode').value = optimizerMode;
+    }
+    if(FREQ_SWEEP_SPEED_LEVELS.includes(session.freqSweepSpeed)){
+      freqSweepSpeed = session.freqSweepSpeed;
+      document.getElementById('freqSweepSpeedVal').textContent = freqSweepSpeed + 'x';
     }
     if(session.optFreqLow != null) document.getElementById('optFreqLow').value = session.optFreqLow;
     if(session.optFreqHigh != null) document.getElementById('optFreqHigh').value = session.optFreqHigh;
@@ -1519,6 +1531,18 @@
   let dbMin = -24, dbMax = 12;
   let renderMode = 'gpu'; // 'cpu' (canvas2d, always available) | 'gpu' (webgl, default; falls back to cpu if unavailable)
 
+  // ---- Frequency sweep animation ----
+  // Auto-advances the freq slider through its full range at FREQ_SWEEP_BASE_HZ_PER_SEC
+  // (at 1x), wrapping from max back to min rather than reversing direction.
+  // Speed is a session/device preference, not a room property; play/pause
+  // state itself is intentionally NOT persisted (never auto-resume on load).
+  const FREQ_SWEEP_BASE_HZ_PER_SEC = 15;
+  const FREQ_SWEEP_SPEED_LEVELS = [0.25, 0.5, 1, 2, 4, 8];
+  let freqSweepSpeed = 1;
+  let freqSweepPlaying = false;
+  let freqSweepRafId = null;
+  let freqSweepLastTs = null;
+
   // ---- WebGL context setup ----
   // gl is null if WebGL is unavailable (older browser, disabled, or sandboxed
   // environment) — renderMode is only allowed to be 'gpu' when gl is non-null,
@@ -1765,6 +1789,19 @@
       ctx.arc(epx, epy, 3.5, 0, Math.PI*2);
       ctx.fill();
     }
+
+    // Current frequency, drawn last so it's always on top -- fixed in the
+    // canvas's own top-left corner (not the room's) so it stays put regardless
+    // of room size/aspect, and stays visible while the sweep animation runs.
+    const freqLabel = `${Math.round(freq)} Hz`;
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const freqLabelW = ctx.measureText(freqLabel).width;
+    ctx.fillStyle = 'rgba(11,14,18,0.85)';
+    ctx.fillRect(8, 8, freqLabelW + 16, 32);
+    ctx.fillStyle = '#4fb0e8';
+    ctx.fillText(freqLabel, 16, 16);
 
     updateFreqInfo(lambda);
   }
@@ -2154,15 +2191,9 @@
 
   function updateFreqInfo(lambda){
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false && sourceGainAtFreq(s, freq) > 0.05) : [];
-    let xoverNote = '';
-    // detect overlapping ranges near current freq (crossover region)
-    const nearCrossover = sources.filter(s => Math.abs(freq - s.freqLow) < s.freqLow*0.5 || Math.abs(freq - s.freqHigh) < s.freqHigh*0.5);
-    if(nearCrossover.length >= 2){
-      xoverNote = `<br><span style="color:var(--good)">${nearCrossover.length} sources overlapping near this frequency (crossover region) &mdash; check for constructive/destructive summing.</span>`;
-    }
     document.getElementById('freqInfo').innerHTML =
       `Wavelength: <b>${lambda.toFixed(2)} m</b> (${(lambda*3.281).toFixed(1)} ft)<br>` +
-      `Active sources at ${freq} Hz: <b>${active.length}</b> of ${sources.length}` + xoverNote;
+      `Active sources at ${Math.round(freq)} Hz: <b>${active.length}</b> of ${sources.length}`;
     updateEarDiffInfo();
     updateModalInfo();
     updateWallReadouts();
@@ -2191,11 +2222,9 @@
   function updateSchroederInfo(){
     const fs = schroederFrequency(room);
     const el = document.getElementById('schroederInfo');
-    const aboveSchroeder = freq > fs;
     el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
       `(estimated from room volume) &mdash; below this, distinct room modes dominate; above it, ` +
-      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.` +
-      (aboveSchroeder ? `<br><span style="color:var(--bad)">Current frequency (${freq} Hz) is above the Schroeder frequency &mdash; results here are less meaningful as room-mode analysis.</span>` : '');
+      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.`;
   }
 
   function updateModalInfo(){
@@ -2217,9 +2246,7 @@
     }).join(', ');
 
     document.getElementById('modalInfo').innerHTML =
-      `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}` +
-      (nearCurrent ? `<br><span style="color:var(--bad);">Current frequency is close to a ${nearCurrent.axis}-axis mode &mdash; expect strong standing-wave buildup/nulls.</span>` : '') +
-      `</div>`;
+      `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}</div>`;
 
     document.querySelectorAll('#modalInfo .modeFreq').forEach(el => {
       el.addEventListener('click', () => jumpToFrequency(parseFloat(el.dataset.freq)));
@@ -2254,9 +2281,71 @@
   }
 
   document.getElementById('freq').addEventListener('input', function(){
-    freq = parseFloat(this.value);
+    // Capture the user's drag target BEFORE stopping the sweep -- stopFreqSweep
+    // also writes this same slider's .value (snapped to an integer), so reading
+    // `this.value` AFTER that call would read back its rounded value instead
+    // of where the user actually dragged to.
+    const userValue = parseFloat(this.value);
+    if(freqSweepPlaying) stopFreqSweep();
+    freq = userValue;
     document.getElementById('freqVal').textContent = freq + ' Hz';
     scheduleDraw();
+  });
+
+  function freqSweepTick(ts){
+    if(!freqSweepPlaying) return;
+    if(freqSweepLastTs === null) freqSweepLastTs = ts;
+    const dtSec = (ts - freqSweepLastTs) / 1000;
+    freqSweepLastTs = ts;
+
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    freq += FREQ_SWEEP_BASE_HZ_PER_SEC * freqSweepSpeed * dtSec;
+    if(freq > max) freq = min + (freq - max); // wrap, preserving overshoot for smooth continuity
+
+    slider.value = freq;
+    document.getElementById('freqVal').textContent = Math.round(freq) + ' Hz';
+    scheduleDraw();
+
+    freqSweepRafId = requestAnimationFrame(freqSweepTick);
+  }
+  function startFreqSweep(){
+    if(freqSweepPlaying) return;
+    freqSweepPlaying = true;
+    freqSweepLastTs = null;
+    const btn = document.getElementById('freqSweepPlayBtn');
+    btn.innerHTML = '&#10074;&#10074; Pause';
+    btn.classList.add('active');
+    freqSweepRafId = requestAnimationFrame(freqSweepTick);
+  }
+  function stopFreqSweep(){
+    if(!freqSweepPlaying) return;
+    freqSweepPlaying = false;
+    if(freqSweepRafId != null) cancelAnimationFrame(freqSweepRafId);
+    freqSweepRafId = null;
+    const btn = document.getElementById('freqSweepPlayBtn');
+    btn.innerHTML = '&#9654; Sweep';
+    btn.classList.remove('active');
+    // Snap to an integer on pause, matching the slider's own step and normal manual-drag behavior.
+    freq = Math.round(freq);
+    document.getElementById('freq').value = freq;
+    document.getElementById('freqVal').textContent = freq + ' Hz';
+    draw();
+  }
+  document.getElementById('freqSweepPlayBtn').addEventListener('click', function(){
+    if(freqSweepPlaying) stopFreqSweep(); else startFreqSweep();
+  });
+  document.getElementById('freqSweepSlowerBtn').addEventListener('click', function(){
+    const idx = FREQ_SWEEP_SPEED_LEVELS.indexOf(freqSweepSpeed);
+    freqSweepSpeed = FREQ_SWEEP_SPEED_LEVELS[Math.max(0, idx - 1)];
+    document.getElementById('freqSweepSpeedVal').textContent = freqSweepSpeed + 'x';
+    saveSessionSettings();
+  });
+  document.getElementById('freqSweepFasterBtn').addEventListener('click', function(){
+    const idx = FREQ_SWEEP_SPEED_LEVELS.indexOf(freqSweepSpeed);
+    freqSweepSpeed = FREQ_SWEEP_SPEED_LEVELS[Math.min(FREQ_SWEEP_SPEED_LEVELS.length - 1, idx + 1)];
+    document.getElementById('freqSweepSpeedVal').textContent = freqSweepSpeed + 'x';
+    saveSessionSettings();
   });
   document.getElementById('floorMaterial').addEventListener('change', function(){
     if(this.value === 'custom') return; // "Custom" is a status display, not a selectable preset action
