@@ -388,6 +388,157 @@ test('REGRESSION: floor amplitude does not jump discontinuously as a point sweep
   assert.ok(maxStep < 0.1, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
 });
 
+console.log('\n-- wallMaterialReflectAtFreq / WALL_MATERIALS (frequency-dependent bare-wall reflectivity) --');
+
+test('wallMaterialReflectAtFreq returns null for a null/undefined material (caller should fall back to flat wallReflect)', () => {
+  assert.strictEqual(P.wallMaterialReflectAtFreq(null, 80), null);
+  assert.strictEqual(P.wallMaterialReflectAtFreq(undefined, 80), null);
+});
+
+test('wallMaterialReflectAtFreq is flat baseReflect at every frequency when peakDepth is 0 (e.g. masonry -- no resonance mechanism)', () => {
+  const masonry = P.WALL_MATERIALS.masonry;
+  approx(P.wallMaterialReflectAtFreq(masonry, 20), masonry.baseReflect, 1e-9);
+  approx(P.wallMaterialReflectAtFreq(masonry, 80), masonry.baseReflect, 1e-9);
+  approx(P.wallMaterialReflectAtFreq(masonry, 300), masonry.baseReflect, 1e-9);
+});
+
+test('wallMaterialReflectAtFreq dips to baseReflect*(1-peakDepth) exactly at peakFreq', () => {
+  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
+  approx(P.wallMaterialReflectAtFreq(material, 80), 0.8 * (1 - 0.4), 1e-9);
+});
+
+test('wallMaterialReflectAtFreq approaches baseReflect far from peakFreq', () => {
+  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
+  const farBelow = P.wallMaterialReflectAtFreq(material, 20);
+  const farAbove = P.wallMaterialReflectAtFreq(material, 300);
+  assert.ok(farBelow > 0.79, `expected near-baseReflect far below peakFreq, got ${farBelow}`);
+  assert.ok(farAbove > 0.79, `expected near-baseReflect far above peakFreq, got ${farAbove}`);
+});
+
+test('wallMaterialReflectAtFreq is symmetric around peakFreq', () => {
+  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
+  const below = P.wallMaterialReflectAtFreq(material, 60); // 20 below
+  const above = P.wallMaterialReflectAtFreq(material, 100); // 20 above
+  approx(below, above, 1e-9);
+});
+
+test('WALL_MATERIALS.drywallInsulated dips deeper AND wider than drywallHollow (insulation damps the resonance more)', () => {
+  const insulated = P.WALL_MATERIALS.drywallInsulated;
+  const hollow = P.WALL_MATERIALS.drywallHollow;
+  assert.ok(insulated.peakDepth > hollow.peakDepth, 'insulated should have a deeper dip');
+  assert.ok(insulated.bandwidth > hollow.bandwidth, 'insulated should have a wider (more damped) dip');
+});
+
+console.log('\n-- boundaryOps: per-wall materials --');
+
+test('boundaryOps uses each wall\'s own assigned material independently', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const wallMaterials = {
+    left: P.WALL_MATERIALS.drywallInsulated,
+    front: P.WALL_MATERIALS.masonry
+  };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, wallMaterials };
+  const ops = P.boundaryOps(P.WALL_MATERIALS.drywallInsulated.peakFreq, ctx);
+  const leftAmp = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
+  const frontAmp = ops.find(o => o.name === 'front').amp({ x: 9, y: 0, z: 3 });
+  approx(leftAmp, P.wallMaterialReflectAtFreq(P.WALL_MATERIALS.drywallInsulated, P.WALL_MATERIALS.drywallInsulated.peakFreq), 1e-9);
+  approx(frontAmp, P.WALL_MATERIALS.masonry.baseReflect, 1e-9);
+  assert.notStrictEqual(leftAmp, frontAmp);
+});
+
+test('boundaryOps falls back to flat wallReflect for a wall missing from the wallMaterials map', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const wallMaterials = { left: P.WALL_MATERIALS.drywallInsulated }; // right/front/back intentionally unset
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, wallMaterials };
+  const rightAmp = P.boundaryOps(80, ctx).find(o => o.name === 'right').amp({ x: 18, y: 6, z: 3 });
+  approx(rightAmp, 0.7, 1e-9, 'a wall with no assigned material should use the flat wallReflect scalar');
+});
+
+test('boundaryOps falls back to flat wallReflect for every wall when wallMaterials is omitted entirely (backward compatible)', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ops = P.boundaryOps(80, ctx);
+  for(const name of ['left','right','front','back']){
+    approx(ops.find(o => o.name === name).amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, `${name} should use flat wallReflect`);
+  }
+});
+
+test('boundaryOps applies wall panel absorption ON TOP OF a material-derived base reflectivity (both stack multiplicatively)', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const wallMaterials = { left: P.WALL_MATERIALS.masonry }; // flat 0.9 baseline, easy to predict
+  const panels = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels, panelsEnabled: true, wallMaterials };
+  const freq = 400;
+  const leftAmp = P.boundaryOps(freq, ctx).find(o => o.name === 'left').amp({ x: 0, y: 5, z: 3 });
+  const absorb = P.panelAbsorptionAtFreq(panels[0], freq);
+  approx(leftAmp, P.WALL_MATERIALS.masonry.baseReflect * (1 - absorb), 1e-9);
+});
+
+console.log("\n-- wallMaterialReflectAtFreq: shape:'porousRamp' (e.g. suspended acoustic ceiling tile) --");
+
+test("porousRamp absorption is negligible well below midFreq", () => {
+  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
+  const reflectAt20 = P.wallMaterialReflectAtFreq(material, 20);
+  assert.ok(reflectAt20 > 0.74, `expected near-baseReflect well below midFreq, got ${reflectAt20}`);
+});
+
+test("porousRamp absorption is exactly maxAbsorb/2 (the logistic midpoint) AT midFreq", () => {
+  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
+  const reflectAtMid = P.wallMaterialReflectAtFreq(material, 280);
+  approx(reflectAtMid, 0.75 * (1 - 0.6/2), 1e-9);
+});
+
+test("porousRamp absorption increases monotonically with frequency (opposite trend from 'resonant')", () => {
+  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
+  const r1 = P.wallMaterialReflectAtFreq(material, 20);
+  const r2 = P.wallMaterialReflectAtFreq(material, 150);
+  const r3 = P.wallMaterialReflectAtFreq(material, 300);
+  assert.ok(r1 > r2 && r2 > r3, `expected monotonically decreasing reflectivity (increasing absorption) with frequency: ${r1}, ${r2}, ${r3}`);
+});
+
+test('WALL_MATERIALS.suspendedTile shows only modest absorption within this app\'s typical sub-bass range, more by the top of the range', () => {
+  const tile = P.WALL_MATERIALS.suspendedTile;
+  const at40 = P.wallMaterialReflectAtFreq(tile, 40);
+  const at300 = P.wallMaterialReflectAtFreq(tile, 300);
+  assert.ok(at40 > tile.baseReflect * 0.9, `expected tile to do little at 40Hz (a real, worth-knowing limitation), got ${at40}`);
+  assert.ok(at300 < at40, 'expected more absorption by 300Hz than at 40Hz');
+});
+
+console.log('\n-- boundaryOps: ceiling material --');
+
+test('boundaryOps applies ctx.ceilingMaterial to the ceiling only, independent of wallMaterials', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = {
+    room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true,
+    wallMaterials: { left: P.WALL_MATERIALS.masonry },
+    ceilingMaterial: P.WALL_MATERIALS.suspendedTile
+  };
+  const freq = 300;
+  const ops = P.boundaryOps(freq, ctx);
+  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 8 });
+  const leftAmp = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
+  approx(ceilAmp, P.wallMaterialReflectAtFreq(P.WALL_MATERIALS.suspendedTile, freq), 1e-9);
+  approx(leftAmp, P.WALL_MATERIALS.masonry.baseReflect, 1e-9, 'the wall material assignment should be unaffected by ceilingMaterial');
+  assert.notStrictEqual(ceilAmp, leftAmp);
+});
+
+test('boundaryOps falls back to flat wallReflect for the ceiling when ceilingMaterial is omitted', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ceilAmp = P.boundaryOps(80, ctx).find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 8 });
+  approx(ceilAmp, 0.7, 1e-9);
+});
+
+test('ceilingMaterial does not affect the floor (they are independent surfaces)', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = {
+    room, wallReflect: 0.7, floorReflect: 0.8, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true,
+    ceilingMaterial: P.WALL_MATERIALS.masonry
+  };
+  const floorAmp = P.boundaryOps(80, ctx).find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 0 });
+  approx(floorAmp, 0.8, 1e-9, 'floorReflect should be untouched by ceilingMaterial');
+});
+
 console.log('\n-- openingOverlap (wall opening / doorway coverage) --');
 
 test('openingOverlap is 1.0 anywhere inside the opening span', () => {

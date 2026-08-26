@@ -158,24 +158,95 @@
     return amp;
   }
 
+  // ---- Wall/ceiling material: frequency-dependent reflectivity for a BARE ----
+  // surface (as opposed to panelAbsorptionAtFreq, which models an added
+  // treatment). Two distinct real mechanisms, selected by material.shape:
+  //
+  // shape: 'resonant' (default when omitted) -- ordinary drywall-on-studs/
+  // joists construction behaves as a mass-spring-mass "membrane absorber":
+  // the surface + the air cavity behind it resonate at a frequency set mostly
+  // by mass and cavity depth, and the surface absorbs MORE right around that
+  // resonance than elsewhere. Rigid materials (masonry/concrete) have no such
+  // mechanism (peakDepth: 0 collapses this to a flat baseReflect).
+  //   { baseReflect, peakFreq, peakDepth, bandwidth }
+  //   peakFreq/bandwidth: center and width (Hz) of the extra-absorptive dip.
+  //   peakDepth: 0..1, fraction of baseReflect additionally absorbed AT peakFreq.
+  //
+  // shape: 'porousRamp' -- broadband porous absorption (e.g. suspended
+  // acoustic ceiling tile) -- the same underlying mechanism panelAbsorptionAtFreq
+  // models for an added treatment, but here as a SURFACE's own base behavior.
+  // Absorption ramps UP with frequency (a logistic curve centered at midFreq)
+  // -- the opposite trend from 'resonant'. Within this app's sub-300Hz range,
+  // typical acoustic tile shows only modest absorption; it's much more
+  // effective well above what a room-mode tool models -- itself a real,
+  // worth-knowing fact (acoustic tile is not a bass fix).
+  //   { shape:'porousRamp', baseReflect, midFreq, slope, maxAbsorb }
+  //
+  // A null/undefined material means "no material assigned" -- callers should
+  // fall back to a plain flat scalar (e.g. the legacy wallReflect slider).
+  //
+  // These are illustrative/typical values (see WALL_MATERIALS below), not
+  // measured data -- real wall/ceiling behavior depends on construction
+  // details no small preset set can capture exactly. Treat this the same way
+  // as panelAbsorptionAtFreq's tuned curve: a reasonable approximation, not a
+  // substitute for measurement.
+  function wallMaterialReflectAtFreq(material, f){
+    if(!material) return null;
+    if(material.shape === 'porousRamp'){
+      const x = (f - material.midFreq) * material.slope;
+      const absorb = material.maxAbsorb / (1 + Math.exp(-x));
+      return material.baseReflect * (1 - absorb);
+    }
+    if(!(material.peakDepth > 0)) return material.baseReflect;
+    const x = (f - material.peakFreq) / material.bandwidth;
+    const dip = material.peakDepth * Math.exp(-(x * x));
+    return material.baseReflect * (1 - dip);
+  }
+
+  // Named presets for the "Wall material" / "Ceiling material" UI pickers.
+  // Roughly: insulation in the cavity damps the panel's resonant motion,
+  // converting more of it to heat (deeper AND broader absorption) rather than
+  // letting it ring/re-radiate (hollowCavity's narrower, shallower dip);
+  // masonry has no membrane at all; suspendedTile is ceiling-only in the UI
+  // (walls essentially never use it) and uses the porousRamp shape instead.
+  const WALL_MATERIALS = {
+    drywallInsulated: { baseReflect: 0.75, peakFreq: 80, peakDepth: 0.35, bandwidth: 60 },
+    drywallHollow:    { baseReflect: 0.80, peakFreq: 90, peakDepth: 0.15, bandwidth: 30 },
+    masonry:          { baseReflect: 0.90, peakFreq: 0,  peakDepth: 0,    bandwidth: 1 },
+    suspendedTile:    { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 }
+  };
+
   // ---- Six boundary reflection operators for a room { w, d, h } ----
-  // ctx: { room, wallReflect, floorReflect, openings, openingsEnabled, panels,
-  //        panelsEnabled, surfacePanels, surfacePanelsEnabled }
+  // ctx: { room, wallReflect, floorReflect, ceilingMaterial, openings,
+  //        openingsEnabled, panels, panelsEnabled, surfacePanels,
+  //        surfacePanelsEnabled, wallMaterials }
+  // wallMaterials (optional): { left, right, front, back } -> material objects
+  // (see wallMaterialReflectAtFreq). Any wall missing from this map (or if the
+  // map itself is omitted) falls back to the flat wallReflect scalar, same as
+  // before per-wall materials existed. ceilingMaterial (optional): a single
+  // material object for the ceiling, same fallback-to-wallReflect behavior.
   // Openings reduce a wall's base reflectivity first (sound passes through into
   // another space); panel absorption is then applied on top of whatever
-  // reflectivity remains. floorReflect defaults to wallReflect when not given,
-  // so a room with no floor material specified behaves as it always did
-  // (floor/ceiling = same reflectivity as the walls) unless a floor material
-  // is actually chosen. Openings are wall-mounted only (a "floor opening"
-  // isn't a modeled concept here) -- floor/ceiling only ever go through
-  // surface panels, never wall openings.
+  // reflectivity remains. floorReflect/ceilingMaterial default to wallReflect
+  // when not given, so a room with no floor/ceiling material specified
+  // behaves as it always did (floor/ceiling = same reflectivity as the walls)
+  // unless one is actually chosen. Openings are wall-mounted only (a "floor
+  // opening" isn't a modeled concept here) -- floor/ceiling only ever go
+  // through surface panels, never wall openings.
   function boundaryOps(freqForAbsorption, ctx){
-    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled, surfacePanels, surfacePanelsEnabled } = ctx;
+    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled, surfacePanels, surfacePanelsEnabled, wallMaterials } = ctx;
     const floorReflect = ctx.floorReflect ?? wallReflect;
+    const ceilingFromMaterial = ctx.ceilingMaterial ? wallMaterialReflectAtFreq(ctx.ceilingMaterial, freqForAbsorption) : null;
+    const ceilingReflect = ceilingFromMaterial ?? wallReflect;
     const w = room.w, d = room.d, h = room.h;
+    function baseReflectFor(wallName){
+      const material = wallMaterials && wallMaterials[wallName];
+      const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
+      return fromMaterial ?? wallReflect;
+    }
     function wallAmp(wallName){
       return (p) => {
-        const afterOpenings = wallWithOpenings(wallName, p, wallReflect, openings, openingsEnabled);
+        const afterOpenings = wallWithOpenings(wallName, p, baseReflectFor(wallName), openings, openingsEnabled);
         return wallWithPanels(wallName, p, afterOpenings, freqForAbsorption, panels, panelsEnabled);
       };
     }
@@ -187,7 +258,7 @@
       { name:'floor', apply:(p)=>({x:p.x, y:p.y, z:-p.z}),
         amp:(p)=>wallWithSurfacePanels('floor', p, floorReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) },
       { name:'ceil',  apply:(p)=>({x:p.x, y:p.y, z:2*h-p.z}),
-        amp:(p)=>wallWithSurfacePanels('ceil', p, wallReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) }
+        amp:(p)=>wallWithSurfacePanels('ceil', p, ceilingReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) }
     ];
   }
 
@@ -592,6 +663,8 @@
     wallWithPanels,
     rectCoverage,
     wallWithSurfacePanels,
+    wallMaterialReflectAtFreq,
+    WALL_MATERIALS,
     boundaryOps,
     getImageSources,
     precomputeSourceImages,
