@@ -137,7 +137,7 @@
 
 <div id="sidebar">
   <h1>Room wave interference</h1>
-  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 2nd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at 12 dB/octave.</p>
+  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 3rd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at 12 dB/octave.</p>
 
   <div class="section">
     <div class="section-title">Saved configurations</div>
@@ -2292,13 +2292,17 @@
 
   const axialModes = RoomPhysics.axialModes;
   const schroederFrequency = RoomPhysics.schroederFrequency;
+  const estimatedT60 = RoomPhysics.estimatedT60;
 
   function updateSchroederInfo(){
-    const fs = schroederFrequency(room);
+    const t60 = estimatedT60(room, freq, physicsCtx());
+    const fs = schroederFrequency(room, t60);
     const el = document.getElementById('schroederInfo');
     el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
-      `(estimated from room volume) &mdash; below this, distinct room modes dominate; above it, ` +
-      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.`;
+      `(estimated from room volume and your configured wall/floor/ceiling materials at ${freq} Hz, ` +
+      `T60 &asymp; ${t60.toFixed(2)}s) &mdash; below this, distinct room modes dominate; above it, ` +
+      `the field gets too dense/diffuse for a single-frequency snapshot to mean much. Doesn't factor ` +
+      `in absorption panels, rugs, or openings.`;
   }
 
   function updateModalInfo(){

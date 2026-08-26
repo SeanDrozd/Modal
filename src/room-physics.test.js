@@ -1548,6 +1548,63 @@ test('returns 0 (not NaN) for a room with a negative dimension', () => {
   assert.strictEqual(fs, 0);
 });
 
+console.log('\n-- estimatedT60 (Sabine reverberation estimate) --');
+
+test('matches hand-calculated Sabine T60 for a uniform-reflectivity room', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { wallReflect: 0.7 };
+  const alpha = 1 - 0.7*0.7;
+  const areaFt2 = 2*(room.d*room.h) + 2*(room.w*room.h) + 2*(room.w*room.d);
+  const totalAbsorptionM2 = areaFt2 * alpha * (P.FT_TO_M ** 2);
+  const volumeM3 = (room.w*room.d*room.h) * (P.FT_TO_M ** 3);
+  const expected = 0.161 * volumeM3 / totalAbsorptionM2;
+  approx(P.estimatedT60(room, 100, ctx), expected, 0.001);
+});
+
+test('more reflective (less absorptive) surfaces produce a LONGER T60', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const liveT60 = P.estimatedT60(room, 100, { wallReflect: 0.9 });
+  const deadT60 = P.estimatedT60(room, 100, { wallReflect: 0.3 });
+  assert.ok(liveT60 > deadT60, `expected a more reflective room to ring longer: live=${liveT60.toFixed(2)}s dead=${deadT60.toFixed(2)}s`);
+});
+
+test('per-wall materials are respected -- masonry walls ring longer than insulated drywall', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const allMaterial = (key) => ({ left: P.WALL_MATERIALS[key], right: P.WALL_MATERIALS[key], front: P.WALL_MATERIALS[key], back: P.WALL_MATERIALS[key] });
+  const masonryT60 = P.estimatedT60(room, 500, { wallReflect: 0.7, wallMaterials: allMaterial('masonry') });
+  const drywallT60 = P.estimatedT60(room, 500, { wallReflect: 0.7, wallMaterials: allMaterial('drywallInsulated') });
+  assert.ok(masonryT60 > drywallT60, `expected masonry (less absorptive) to outlast insulated drywall: masonry=${masonryT60.toFixed(2)}s drywall=${drywallT60.toFixed(2)}s`);
+});
+
+test('frequency-dependent -- T60 dips at a resonant wall material\'s peak absorption frequency', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const wallMaterials = { left: P.WALL_MATERIALS.drywallInsulated, right: P.WALL_MATERIALS.drywallInsulated, front: P.WALL_MATERIALS.drywallInsulated, back: P.WALL_MATERIALS.drywallInsulated };
+  const atPeak = P.estimatedT60(room, 80, { wallReflect: 0.7, wallMaterials }); // drywallInsulated's peakFreq
+  const farFromPeak = P.estimatedT60(room, 2000, { wallReflect: 0.7, wallMaterials });
+  assert.ok(atPeak < farFromPeak, `expected shorter T60 right at the resonant absorption peak: atPeak=${atPeak.toFixed(2)}s farFromPeak=${farFromPeak.toFixed(2)}s`);
+});
+
+test('floorReflect and ceilingMaterial each independently affect the result', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const base = P.estimatedT60(room, 100, { wallReflect: 0.7 });
+  const deaderFloor = P.estimatedT60(room, 100, { wallReflect: 0.7, floorReflect: 0.2 });
+  const deaderCeiling = P.estimatedT60(room, 100, { wallReflect: 0.7, ceilingMaterial: { baseReflect: 0.2, peakDepth: 0 } });
+  assert.ok(deaderFloor < base, 'a more absorptive floor should shorten T60');
+  assert.ok(deaderCeiling < base, 'a more absorptive ceiling should shorten T60');
+});
+
+test('feeds sensibly into schroederFrequency (finite, positive result)', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const t60 = P.estimatedT60(room, 60, { wallReflect: 0.75, ceilingMaterial: P.WALL_MATERIALS.suspendedTile });
+  const fs = P.schroederFrequency(room, t60);
+  assert.ok(Number.isFinite(fs) && fs > 0, `expected a finite, positive Schroeder frequency, got ${fs}`);
+});
+
+test('returns 0 (not NaN/Infinity) for a degenerate room with zero volume', () => {
+  const room = { w: 0, d: 13.5, h: 8 };
+  assert.strictEqual(P.estimatedT60(room, 100, { wallReflect: 0.7 }), 0);
+});
+
 console.log('\n-- earPositions / fieldDbAtEars --');
 
 test('ears are offset by the correct total spacing (~0.17m / ~0.558ft)', () => {

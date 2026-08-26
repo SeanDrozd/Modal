@@ -400,6 +400,54 @@
     return modes;
   }
 
+  // ---- Reverberation time (T60) estimate, via Sabine's formula ----
+  // T60 = 0.161 * V / A (metric: V in m^3, A in metric sabins/m^2), where A is
+  // the room's total absorption: area x absorption-coefficient, summed over
+  // all 6 surfaces. Each surface's absorption coefficient is 1 - R^2, where R
+  // is the amplitude/pressure reflection coefficient this module already uses
+  // everywhere else (boundaryOps etc.) -- squaring it converts to power/energy
+  // absorption, which is what Sabine's formula is defined in terms of.
+  // Frequency-dependent, since wall/ceiling materials are (see
+  // wallMaterialReflectAtFreq) -- callers pick whichever frequency matters to
+  // them (e.g. the frequency currently on screen).
+  // Deliberately room-construction-level only: doesn't factor in absorption
+  // panels, rugs, or openings, which are localized area patches rather than
+  // whole-surface properties. That's a real accuracy gap versus a true T60
+  // measurement (as is the whole Sabine model, which itself assumes diffuse,
+  // evenly-distributed absorption) -- treat this as a real improvement over a
+  // fixed guess, not a substitute for measurement.
+  // ctx: { wallReflect, floorReflect, wallMaterials, ceilingMaterial } -- same
+  // shape as boundaryOps' ctx (a subset of it is fine; only these fields are read).
+  function estimatedT60(room, freqForAbsorption, ctx){
+    const { wallReflect, wallMaterials, ceilingMaterial } = ctx;
+    const floorReflect = ctx.floorReflect ?? wallReflect;
+    const ceilingFromMaterial = ceilingMaterial ? wallMaterialReflectAtFreq(ceilingMaterial, freqForAbsorption) : null;
+    const ceilingReflect = ceilingFromMaterial ?? wallReflect;
+    function wallReflectFor(wallName){
+      const material = wallMaterials && wallMaterials[wallName];
+      const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
+      return fromMaterial ?? wallReflect;
+    }
+    const w = room.w, d = room.d, h = room.h;
+    const surfaces = [
+      { area: d*h, reflect: wallReflectFor('left') },
+      { area: d*h, reflect: wallReflectFor('right') },
+      { area: w*h, reflect: wallReflectFor('front') },
+      { area: w*h, reflect: wallReflectFor('back') },
+      { area: w*d, reflect: floorReflect },
+      { area: w*d, reflect: ceilingReflect }
+    ];
+    let totalAbsorptionFt2 = 0;
+    for(const s of surfaces){
+      const alpha = 1 - s.reflect * s.reflect;
+      totalAbsorptionFt2 += s.area * alpha;
+    }
+    const totalAbsorptionM2 = totalAbsorptionFt2 * (FT_TO_M ** 2);
+    const volumeM3 = (w * d * h) * (FT_TO_M ** 3);
+    if(totalAbsorptionM2 <= 0 || volumeM3 <= 0) return 0;
+    return 0.161 * volumeM3 / totalAbsorptionM2;
+  }
+
   // ---- Schroeder frequency ----
   // The crossover between "discrete, individually-identifiable room modes"
   // (below f_s) and "statistically dense/diffuse reverberant field" (above f_s),
@@ -408,8 +456,10 @@
   // that a single-frequency room-mode visualization stops being a meaningful
   // diagnostic — the response is no longer dominated by a few distinct peaks/
   // nulls, so there's little point extending a room-mode tool's range past it.
-  // T60 (reverberation time) isn't measured by this tool, so a typical
-  // untreated-to-lightly-treated small/medium room value is assumed by default.
+  // T60 (reverberation time) isn't measured by this tool -- pass one in (e.g.
+  // from estimatedT60 above) when you have real wall/ceiling/floor data to
+  // work with; a typical untreated-to-lightly-treated small/medium room value
+  // is assumed by default when the caller doesn't have one.
   function schroederFrequency(room, t60Seconds){
     const t60 = t60Seconds ?? 0.4;
     const volumeM3 = (room.w * room.d * room.h) * (FT_TO_M ** 3);
@@ -678,6 +728,7 @@
     computeFieldAtPoint,
     fieldDbAtPoint,
     axialModes,
+    estimatedT60,
     schroederFrequency,
     earPositions,
     fieldDbAtEars,
