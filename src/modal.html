@@ -330,9 +330,10 @@
       <select id="reflectionOrder" style="width:auto; flex:1;">
         <option value="1">1st order (faster)</option>
         <option value="2" selected>2nd order (more accurate, slower)</option>
+        <option value="3">3rd order (most accurate, slowest)</option>
       </select>
     </div>
-    <div class="hint">2nd order adds corner reflections (bounces off two boundaries before reaching the listener) &mdash; more accurate near actual room corners, at the cost of redraw speed.</div>
+    <div class="hint">2nd order adds corner reflections (bounces off two boundaries before reaching the listener) &mdash; more accurate near actual room corners, at the cost of redraw speed. 3rd order adds a further bounce (~5x more image sources per source than 2nd order) &mdash; noticeably slower, and with many sources active at once (subs, panels) GPU rendering may start truncating/warning.</div>
     <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
       <input type="number" id="dbMin" step="1" value="-24" style="width:52px;">
       <span style="color:var(--text-dim);font-size:11px;">to</span>

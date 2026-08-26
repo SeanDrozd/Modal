@@ -698,30 +698,38 @@ test('order 2 produces exactly 1 + 6 + 6*5 = 37 image sources', () => {
   assert.strictEqual(imgs.length, 37, `expected 37, got ${imgs.length}`);
 });
 
-test('order=0 (and negative order) still includes first-order reflections -- only the order>=2 second-bounce expansion is gated', () => {
-  // The "generate first-order mirrors" step is unconditional in this function;
-  // only the SECOND round of reflections is gated on `order >= 2`. So order=0
-  // or a negative order is NOT "direct source only" as the parameter name might
-  // suggest -- it behaves identically to order=1 (7 sources).
+test('order<=0 returns only the direct source (no bounces)', () => {
+  // getImageSources now loops `order` times rather than having the first
+  // bounce hardcoded unconditionally, so order=0 (or negative) correctly
+  // means "zero bounces" -- a behavior fix vs. an earlier version of this
+  // function, where order<=0 still returned the 6 first-order bounces.
   const ctx = baseCtx();
-  const order1 = P.getImageSources(9, 6, 3, 1, 100, ctx);
+  const direct = P.getImageSources(9, 6, 3, 1, 100, ctx)[0];
   const order0 = P.getImageSources(9, 6, 3, 0, 100, ctx);
   const orderNeg = P.getImageSources(9, 6, 3, -5, 100, ctx);
-  assert.strictEqual(order0.length, 7, `expected order=0 to still produce 7 sources, got ${order0.length}`);
-  assert.strictEqual(orderNeg.length, 7, `expected a negative order to still produce 7 sources, got ${orderNeg.length}`);
-  assert.deepStrictEqual(order0, order1, 'order=0 should be indistinguishable from order=1');
+  assert.strictEqual(order0.length, 1, `expected order=0 to return only the direct source, got ${order0.length}`);
+  assert.strictEqual(orderNeg.length, 1, `expected a negative order to return only the direct source, got ${orderNeg.length}`);
+  assert.deepStrictEqual(order0[0], direct);
 });
 
-test('order>=3 behaves identically to order=2 -- higher orders are not actually supported', () => {
-  // There is no loop/recursion for a third bounce; the order>=2 branch only
-  // ever runs once no matter how high `order` is set.
+test('order 3 produces exactly 1 + 6 + 30 + 150 = 187 image sources (each level multiplies the previous by 5)', () => {
   const ctx = baseCtx();
   const order2 = P.getImageSources(9, 6, 3, 2, 100, ctx);
   const order3 = P.getImageSources(9, 6, 3, 3, 100, ctx);
-  const order10 = P.getImageSources(9, 6, 3, 10, 100, ctx);
-  assert.strictEqual(order3.length, 37, `expected order=3 to produce the same 37 sources as order=2, got ${order3.length}`);
-  assert.deepStrictEqual(order3, order2, 'order=3 should be indistinguishable from order=2 (no 3rd-bounce reflections exist)');
-  assert.deepStrictEqual(order10, order2, 'order=10 should also collapse to the order=2 result');
+  assert.strictEqual(order3.length, 187, `expected 187, got ${order3.length}`);
+  assert.notStrictEqual(order3.length, order2.length, 'order 3 should genuinely differ from order 2, not collapse to it');
+  // order 3 should still contain every order<=2 entry (each level is
+  // cumulative, not a replacement of the previous ones).
+  for(const img of order2){
+    assert.ok(order3.some(o => o.x === img.x && o.y === img.y && o.z === img.z && o.amp === img.amp),
+      'every order-2 image source should still be present in the order-3 result');
+  }
+});
+
+test('order 4 continues the same pattern (937 sources), confirming this is a genuine N-level loop, not a hardcoded 3rd level', () => {
+  const ctx = baseCtx();
+  const order4 = P.getImageSources(9, 6, 3, 4, 100, ctx);
+  assert.strictEqual(order4.length, 937, `expected 937, got ${order4.length}`);
 });
 
 test('direct source position/amplitude is unchanged (first entry)', () => {

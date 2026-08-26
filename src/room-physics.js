@@ -262,30 +262,37 @@
     ];
   }
 
-  // Generates image sources up to `order` bounces (1 = direct + 6 single-wall
-  // bounces; 2 additionally includes every pair of DIFFERENT boundaries bounced
-  // off in sequence). ctx: see boundaryOps above.
+  // Generates image sources up to `order` bounces. Each level reflects every
+  // source from the PREVIOUS level off every boundary except the one it just
+  // came from (no immediate same-wall-twice-in-a-row bounce) -- order 1 is
+  // direct + 6 single-wall bounces (7 total); order 2 additionally includes
+  // every pair of DIFFERENT boundaries bounced off in sequence (37 total);
+  // each further order multiplies the PREVIOUS level's count by 5 (six walls
+  // minus the one just used), so the source count grows steeply: order 3 is
+  // 187, order 4 is 937. ctx: see boundaryOps above.
+  //
+  // order <= 0 returns just the direct source (no bounces) -- note this is a
+  // real behavior fix versus an earlier version of this function, which (due
+  // to the first-bounce step running unconditionally) returned the 6
+  // first-order bounces even for order <= 0.
   function getImageSources(sx, sy, sz, order, freqForAbsorption, ctx){
     const ops = boundaryOps(freqForAbsorption, ctx);
     const direct = { x: sx, y: sy, z: sz, amp: 1.0 };
     let result = [direct];
+    let currentLevel = [direct]; // sources produced by the PREVIOUS level; direct has no lastOp, so its first bounce can be off any wall
 
-    const firstOrder = ops.map(op => {
-      const pos = op.apply(direct);
-      const amp = op.amp(direct);
-      return { ...pos, amp, lastOp: op.name };
-    });
-    result = result.concat(firstOrder);
-
-    if(order >= 2){
-      for(const img of firstOrder){
+    for(let level = 1; level <= order; level++){
+      const nextLevel = [];
+      for(const img of currentLevel){
         for(const op of ops){
-          if(op.name === img.lastOp) continue;
+          if(op.name === img.lastOp) continue; // skip re-reflecting off the same boundary consecutively
           const pos = op.apply(img);
           const amp = img.amp * op.amp(img);
-          result.push({ ...pos, amp, lastOp: op.name });
+          nextLevel.push({ ...pos, amp, lastOp: op.name });
         }
       }
+      result = result.concat(nextLevel);
+      currentLevel = nextLevel;
     }
     return result;
   }

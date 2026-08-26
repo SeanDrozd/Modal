@@ -19,7 +19,19 @@
   }
 })(typeof self !== 'undefined' ? self : this, function(){
 
-  const MAX_IMAGE_SOURCES = 320; // headroom for up to 8 sources @ order 2 (8*37=296); see flattenImageSources for what happens if this is ever exceeded
+  // Image-source data is uploaded to the GPU as two floating-point textures
+  // (see IMG_TEX_W/H below) rather than uniform arrays -- a 1500+ entry
+  // uniform array blows WebGL1's MAX_FRAGMENT_UNIFORM_VECTORS budget (spec
+  // guarantees only 1024 total, and each array entry here cost 3 vectors:
+  // a vec3 position + 2 floats), which fails to link on real hardware, not
+  // just weak/theoretical devices. A texture's size budget (MAX_TEXTURE_SIZE)
+  // is a completely different, far larger limit, so this cap now only exists
+  // as a sane ceiling -- comfortably above order 3 with 8+ sources (8*187=1496)
+  // -- not a hardware-forced constraint. See flattenImageSources for what
+  // happens if this is ever exceeded.
+  const IMG_TEX_W = 64;
+  const IMG_TEX_H = 64;
+  const MAX_IMAGE_SOURCES = IMG_TEX_W * IMG_TEX_H; // 4096
 
   const VERTEX_SRC = `
     attribute vec2 aPos;
@@ -38,12 +50,25 @@
     uniform float uK;           // wavenumber 2*pi/lambda
     uniform float uDbMin;
     uniform float uDbMax;
-    uniform int uCount;         // number of valid entries in the arrays below
+    uniform int uCount;         // number of valid entries in the textures below
     uniform bool uDebugMode;    // true: encode raw dB into RGBA instead of colormap (for CPU/GPU verification)
 
-    uniform vec3 uImgPos[${MAX_IMAGE_SOURCES}];  // x,y,z in feet
-    uniform float uImgAmp[${MAX_IMAGE_SOURCES}]; // amp/r scale already includes src.amp * levelGain
-    uniform float uImgPhase[${MAX_IMAGE_SOURCES}]; // extraPhase (per-source delay term)
+    // Image-source data, packed into two float textures instead of uniform
+    // arrays (see IMG_TEX_W/H in JS -- this sidesteps WebGL1's small
+    // uniform-vector budget entirely). uImgPosAmpTex.rgb = x,y,z (feet),
+    // .a = amp (already includes src.amp * levelGain). uImgPhaseTex.r =
+    // extraPhase (per-source delay term); g/b/a unused.
+    uniform sampler2D uImgPosAmpTex;
+    uniform sampler2D uImgPhaseTex;
+    uniform vec2 uImgTexSize; // (IMG_TEX_W, IMG_TEX_H)
+
+    vec2 imgTexelUV(int i){
+      float w = uImgTexSize.x;
+      float fi = float(i);
+      float col = mod(fi, w);
+      float row = floor(fi / w);
+      return vec2((col + 0.5) / uImgTexSize.x, (row + 0.5) / uImgTexSize.y);
+    }
 
     const float FT_TO_M = 0.3048;
 
@@ -86,14 +111,17 @@
       float im = 0.0;
       for(int i = 0; i < ${MAX_IMAGE_SOURCES}; i++){
         if(i >= uCount) break;
-        vec3 src = uImgPos[i];
+        vec2 uv = imgTexelUV(i);
+        vec4 posAmp = texture2D(uImgPosAmpTex, uv);
+        float srcPhase = texture2D(uImgPhaseTex, uv).r;
+        vec3 src = posAmp.xyz;
         float dx = (px - src.x) * FT_TO_M;
         float dy = (py - src.y) * FT_TO_M;
         float dz = (uListenerZ - src.z) * FT_TO_M;
         float r = sqrt(dx*dx + dy*dy + dz*dz);
         r = max(r, 0.3);
-        float amp = uImgAmp[i] / r;
-        float phase = uK * r + uImgPhase[i];
+        float amp = posAmp.w / r;
+        float phase = uK * r + srcPhase;
         re += amp * cos(phase);
         im += amp * sin(phase);
       }
@@ -166,6 +194,27 @@
     return { positions, amps, phases, count, totalWanted };
   }
 
+  // Repacks flattenImageSources' flat arrays into the two RGBA texel buffers
+  // the shader samples (see the uImgPosAmpTex/uImgPhaseTex comment in
+  // FRAGMENT_SRC). Only allocates/fills as many full rows as `count` actually
+  // needs (not the full IMG_TEX_W*IMG_TEX_H capacity) -- the caller uploads
+  // just those rows via texSubImage2D, so a typical order-1/2 frame (tens of
+  // sources) touches one row instead of re-uploading all 4096 texels.
+  function packImageSourceTextures(flattened){
+    const { positions, amps, phases, count } = flattened;
+    const rows = count === 0 ? 0 : Math.min(IMG_TEX_H, Math.ceil(count / IMG_TEX_W));
+    const posAmp = new Float32Array(IMG_TEX_W * rows * 4);
+    const phaseBuf = new Float32Array(IMG_TEX_W * rows * 4);
+    for(let i=0; i<count; i++){
+      posAmp[i*4] = positions[i*3];
+      posAmp[i*4+1] = positions[i*3+1];
+      posAmp[i*4+2] = positions[i*3+2];
+      posAmp[i*4+3] = amps[i];
+      phaseBuf[i*4] = phases[i];
+    }
+    return { posAmp, phaseBuf, rows };
+  }
+
   function compileShader(gl, type, src){
     const sh = gl.createShader(type);
     gl.shaderSource(sh, src);
@@ -188,10 +237,42 @@
     let gpuProgram = null;
     let gpuUniforms = null;
     let gpuInitFailed = false;
+    // Double-buffered: writing into a texture the GPU may still be reading
+    // from the previous frame's draw call forces the driver to stall the CPU
+    // until that read finishes (a classic single-buffered-streaming-texture
+    // antipattern) -- alternating between two textures per channel each frame
+    // lets the CPU write into the "other" one while the GPU finishes with the
+    // one it just sampled, avoiding the stall entirely.
+    let posAmpTextures = null;
+    let phaseTextures = null;
+    let texBufferIndex = 0;
+
+    // Allocates the texture's full IMG_TEX_W x IMG_TEX_H storage ONCE (a
+    // no-op-sized initial upload) so later frames can use texSubImage2D to
+    // update only the rows actually in use, instead of re-uploading all 4096
+    // texels every frame regardless of how many sources are active.
+    function makeImageSourceTexture(){
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, IMG_TEX_W, IMG_TEX_H, 0, gl.RGBA, gl.FLOAT, null);
+      return tex;
+    }
 
     function initGPUProgram(){
       if(gpuProgram || gpuInitFailed || !gl) return;
       try {
+        // Image-source data rides on float textures (see FRAGMENT_SRC); this
+        // extension is what makes gl.FLOAT a legal texImage2D type in WebGL1.
+        // It's been supported on essentially all desktop and most mobile GPUs
+        // for years, but isn't core WebGL1, so we still check and fall back.
+        if(!gl.getExtension('OES_texture_float')){
+          throw new Error('OES_texture_float extension unavailable');
+        }
+
         const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
         const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
         const prog = gl.createProgram();
@@ -212,6 +293,9 @@
         gl.enableVertexAttribArray(aPos);
         gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
+        posAmpTextures = [makeImageSourceTexture(), makeImageSourceTexture()];
+        phaseTextures = [makeImageSourceTexture(), makeImageSourceTexture()];
+
         gpuUniforms = {
           uCanvasSize: gl.getUniformLocation(prog, 'uCanvasSize'),
           uFieldOrigin: gl.getUniformLocation(prog, 'uFieldOrigin'),
@@ -223,9 +307,9 @@
           uDbMax: gl.getUniformLocation(prog, 'uDbMax'),
           uCount: gl.getUniformLocation(prog, 'uCount'),
           uDebugMode: gl.getUniformLocation(prog, 'uDebugMode'),
-          uImgPos: gl.getUniformLocation(prog, 'uImgPos'),
-          uImgAmp: gl.getUniformLocation(prog, 'uImgAmp'),
-          uImgPhase: gl.getUniformLocation(prog, 'uImgPhase')
+          uImgPosAmpTex: gl.getUniformLocation(prog, 'uImgPosAmpTex'),
+          uImgPhaseTex: gl.getUniformLocation(prog, 'uImgPhaseTex'),
+          uImgTexSize: gl.getUniformLocation(prog, 'uImgTexSize')
         };
       } catch(e){
         console.error('GPU shader init failed, falling back to CPU:', e);
@@ -305,9 +389,29 @@
         gl.uniform1f(gpuUniforms.uDbMax, params.dbMax ?? 12);
         gl.uniform1i(gpuUniforms.uCount, count);
         gl.uniform1i(gpuUniforms.uDebugMode, debugMode ? 1 : 0);
-        gl.uniform3fv(gpuUniforms.uImgPos, positions);
-        gl.uniform1fv(gpuUniforms.uImgAmp, amps);
-        gl.uniform1fv(gpuUniforms.uImgPhase, phases);
+        gl.uniform2f(gpuUniforms.uImgTexSize, IMG_TEX_W, IMG_TEX_H);
+
+        const { posAmp, phaseBuf, rows } = packImageSourceTextures({ positions, amps, phases, count });
+
+        // texSubImage2D, not texImage2D: only re-uploads the rows actually
+        // holding source data (typically 1 row for order 1/2's tens of
+        // sources) instead of the full IMG_TEX_W*IMG_TEX_H=4096 texels every
+        // frame -- storage was already allocated once in makeImageSourceTexture.
+        // Alternates between the two buffered textures per channel (see the
+        // double-buffering comment above) to avoid a CPU-GPU sync stall.
+        texBufferIndex = 1 - texBufferIndex;
+        const posAmpTexture = posAmpTextures[texBufferIndex];
+        const phaseTexture = phaseTextures[texBufferIndex];
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, posAmpTexture);
+        if(rows > 0) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, IMG_TEX_W, rows, gl.RGBA, gl.FLOAT, posAmp);
+        gl.uniform1i(gpuUniforms.uImgPosAmpTex, 0);
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, phaseTexture);
+        if(rows > 0) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, IMG_TEX_W, rows, gl.RGBA, gl.FLOAT, phaseBuf);
+        gl.uniform1i(gpuUniforms.uImgPhaseTex, 1);
 
         const glErrBeforeDraw = gl.getError();
         if(glErrBeforeDraw !== gl.NO_ERROR){
@@ -345,11 +449,14 @@
 
   return {
     MAX_IMAGE_SOURCES,
+    IMG_TEX_W,
+    IMG_TEX_H,
     VERTEX_SRC,
     FRAGMENT_SRC,
     colormap,
     decodeFloatFromRGBA,
     flattenImageSources,
+    packImageSourceTextures,
     compileShader,
     createRenderer
   };
