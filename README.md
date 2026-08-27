@@ -29,6 +29,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 
 **Sources & listening position**
 - Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff, with a bulk "apply to all" control), and height
+- "Time-align to listener": sets every source's delay so its direct sound arrives at the listening position together (see [How it works](#how-it-works) below for the real-world caveat this assumes away)
 - Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
 - Listener position and facing angle, with a two-ear dB readout (small, frequency-dependent interaural differences)
 
@@ -78,6 +79,12 @@ dB = 20 · log10( √(re² + im²) )
 
 where `r` is the distance from that image source to the point (floored at 0.3 m to avoid a singularity right at a source), and `φ` bundles per-source delay and any other phase offset. This is plain complex-exponential wave superposition. The interesting physics is entirely in what feeds into `A`, `r`, and `φ` for each image source, not in the summation itself.
 
+### Delay, time alignment, and a real-world caveat worth knowing
+
+Each source's delay is a genuine time delay (`φ` grows linearly with frequency, `φ = 2π·f·Δt`), the same thing an AVR's per-channel "speaker distance" setting or a DSP delay line does in real life. "Time-align to listener" computes each source's distance to the listening position and delays every source except the farthest one (delay can only push a signal later, never earlier) so their direct sound all arrives together.
+
+Applying that number in real life assumes you actually have a way to enter it: a real per-channel delay/distance control (an AVR or DSP setup), not just a subwoofer's 0/180° phase switch. A polarity switch isn't a delay at all, it's a fixed 180° flip applied identically at every frequency, whereas true time delay's phase shift grows with frequency. A continuous phase knob is a step up but still isn't equivalent: it's usually an analog all-pass network tuned around one reference frequency, not a frequency-proportional delay, and it has no ms readout to map back onto this tool's numbers anyway. Even with a real delay control, the number you calculate from a tape-measured distance is only the *geometric* delay, a sub's own onboard DSP/crossover/limiter processing adds its own latency that's rarely published and isn't captured by distance alone, so the calculated starting point is exactly that: a starting point, not the final answer. Verifying (or finding) the true delay in practice means measuring it (e.g. REW's impulse/step response alignment tools), the same instinct as previewing here before trusting the math on its own.
+
 ### Absorption: two material shapes
 
 Real wall assemblies (drywall on studs) behave like a lightly-damped mass-spring-mass system: they absorb unusually well in a narrow band around their own resonance (more insulation in the cavity means deeper, broader absorption) and are comparatively reflective elsewhere. That's modeled as a Gaussian dip in reflectivity around a `peakFreq`. Masonry has no membrane to resonate, so it's modeled as flat. Porous/broadband absorbers (rugs, acoustic panels, suspended ceiling tile) don't resonate; they absorb progressively more at higher frequencies, modeled as a logistic ramp instead. Wall/floor/ceiling absorption panels use a separate quarter-wavelength-rule curve: thicker panels absorb lower frequencies more effectively, tapered smoothly at panel edges so a fraction-of-an-inch move can't flip constructive/destructive interference outright.
@@ -95,6 +102,10 @@ Each surface's absorption coefficient is `1 − R²`, converting the amplitude/p
 ### Frequency response: moving-mic-style spatial averaging
 
 The frequency response chart doesn't read dB at one exact point. A true destructive-interference null is a mathematical knife-edge: a fraction-of-an-inch shift can swing the reading by tens of dB even though a real listener's ears occupy a small volume, not a point. Instead, it deterministically samples 20 points through a small sphere (2ft radius) around the listening position, evaluates the field at each, averages their **power** (not dB, and not raw linear pressure), and converts the averaged power back to dB. That mirrors what a real moving-microphone measurement (REW's MMM technique) captures: energy over a swept volume, not a coherent sum across positions or a simple average of already-logarithmic readings. The chart's frequency axis extends to the room's own (worst-case) Schroeder frequency plus 100Hz headroom, sampled across a fixed range so the axis doesn't shift as you drag the frequency slider, rather than a fixed window that's too narrow for a dead room or mostly empty for a live one.
+
+![The 20 sample points rotating inside their 2ft sampling sphere, color-graded blue (near center) to yellow (near the outer shell)](docs/sphere-sampling-demo.gif)
+
+The 20 points themselves aren't randomly scattered: directions come from a Fibonacci lattice (each point stepped by the golden angle) for even angular coverage, and each point's radius is scaled by a cube root rather than linearly, so the cloud fills the sphere's volume with uniform density instead of clustering near the center. Deterministic, not random, so the same inputs always produce the same cloud rather than flickering between redraws. 20 points at this radius already converges to within ~0.01–0.04 dB of a 2000-point reference average across a range of test frequencies, including right at a null; going to 30 or more doesn't meaningfully improve on that.
 
 ### What isn't modeled
 

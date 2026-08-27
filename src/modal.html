@@ -246,6 +246,8 @@
       </div>
     </div>
     <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click &mdash; each source can still be adjusted individually afterward.</div>
+    <button id="timeAlignBtn" class="full" style="margin-bottom:8px;">Time-align to listener</button>
+    <div class="hint" style="margin-bottom:10px;">Sets every source's delay (below) so its direct sound arrives at the listening position at the same time as the farthest source &mdash; the farthest source itself gets 0 delay, since delay can only push a signal later, never earlier. Each source's delay can still be adjusted individually afterward (e.g. to intentionally detune and watch the frequency response chart). Assumes you have a way to actually apply per-source delay in real life (an AVR's speaker-distance trim, or DSP) &mdash; see the README for the practical caveats.</div>
     <div id="srcList"></div>
     <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
   </div>
@@ -981,7 +983,7 @@
           <span class="val" data-out="levelDb">${s.levelDb.toFixed(1)}</span>
         </div>
         <div class="row"><label>Delay (ms)</label>
-          <input type="range" data-field="delayMs" min="0" max="15" step="0.1" value="${s.delayMs}">
+          <input type="range" data-field="delayMs" min="0" max="50" step="0.1" value="${s.delayMs}">
           <span class="val" data-out="delayMs">${s.delayMs.toFixed(1)}</span>
         </div>
         <div class="range-row">
@@ -1598,6 +1600,18 @@
   document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
     const slope = parseInt(document.getElementById('bulkRolloffSelect').value, 10);
     sources.forEach(s => { s.rolloffDbPerOct = slope; });
+    renderSrcList();
+    draw();
+  });
+
+  document.getElementById('timeAlignBtn').addEventListener('click', () => {
+    const activeSources = sources.filter(s => s.enabled !== false);
+    if(activeSources.length < 2){ showStatus('Need at least 2 active sources to time-align', false); return; }
+    const results = RoomPhysics.timeAlignDelays(activeSources, listener);
+    const byId = new Map(results.map(r => [r.id, r.delayMs]));
+    for(const s of sources){
+      if(byId.has(s.id)) s.delayMs = Math.round(byId.get(s.id) * 10) / 10; // match the 0.1ms slider step
+    }
     renderSrcList();
     draw();
   });

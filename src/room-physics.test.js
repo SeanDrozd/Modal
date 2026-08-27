@@ -1713,6 +1713,74 @@ test('returns 0 (not NaN/Infinity) for a degenerate room with zero volume', () =
   assert.strictEqual(P.estimatedT60(room, 100, { wallReflect: 0.7 }), 0);
 });
 
+console.log('\n-- timeAlignDelays --');
+
+test('the farthest source gets exactly 0 delay', () => {
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const sources = [
+    { id: 1, x: 0, y: 9, z: 3.5 },  // 9ft away
+    { id: 2, x: 18, y: 9, z: 3.5 }, // 9ft away (tie for farthest)
+    { id: 3, x: 9, y: 10, z: 3.5 }  // 1ft away
+  ];
+  const result = P.timeAlignDelays(sources, listener);
+  const byId = Object.fromEntries(result.map(r => [r.id, r.delayMs]));
+  approx(byId[1], 0, 1e-9);
+  approx(byId[2], 0, 1e-9);
+  assert.ok(byId[3] > 0, `expected the closer source to get positive delay, got ${byId[3]}`);
+});
+
+test('matches a hand-calculated delay for a known distance difference', () => {
+  const listener = { x: 0, y: 0, z: 0 };
+  const sources = [
+    { id: 'far', x: 20, y: 0, z: 0 },  // 20ft
+    { id: 'near', x: 10, y: 0, z: 0 }  // 10ft, 10ft closer
+  ];
+  const result = P.timeAlignDelays(sources, listener);
+  const near = result.find(r => r.id === 'near');
+  const far = result.find(r => r.id === 'far');
+  const expectedMs = (10 * P.FT_TO_M) / P.C * 1000; // 10ft closer -> that much extra delay needed
+  approx(far.delayMs, 0, 1e-9);
+  approx(near.delayMs, expectedMs, 1e-6);
+});
+
+test('equidistant sources all get 0 delay', () => {
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const sources = [
+    { id: 1, x: 4.5, y: 9, z: 3.5 },
+    { id: 2, x: 13.5, y: 9, z: 3.5 }
+  ];
+  const result = P.timeAlignDelays(sources, listener);
+  for(const r of result) approx(r.delayMs, 0, 1e-9);
+});
+
+test('accounts for height (z), not just horizontal distance', () => {
+  const listener = { x: 9, y: 9, z: 0 };
+  const sources = [
+    { id: 'floor', x: 9, y: 9, z: 0 },  // directly at listener height, 0ft away
+    { id: 'high', x: 9, y: 9, z: 10 }   // same x/y, 10ft straight up
+  ];
+  const result = P.timeAlignDelays(sources, listener);
+  const high = result.find(r => r.id === 'high');
+  const floor = result.find(r => r.id === 'floor');
+  approx(high.delayMs, 0, 1e-9); // it's the farther one
+  assert.ok(floor.delayMs > 0, `expected the co-located-in-plan-but-closer source to need delay, got ${floor.delayMs}`);
+});
+
+test('defaults a missing z to 0', () => {
+  const listener = { x: 0, y: 0, z: 0 };
+  const sources = [{ id: 1, x: 3, y: 4 }]; // no z field -- 3-4-5 triangle, 5ft away if z=0
+  const result = P.timeAlignDelays(sources, listener);
+  approx(result[0].delayMs, 0, 1e-9); // only source -> automatically the "farthest"
+});
+
+test('returns one entry per source, in the same order, empty array for no sources', () => {
+  const listener = { x: 0, y: 0, z: 0 };
+  assert.deepStrictEqual(P.timeAlignDelays([], listener), []);
+  const sources = [{ id: 'a', x: 1, y: 0, z: 0 }, { id: 'b', x: 2, y: 0, z: 0 }, { id: 'c', x: 3, y: 0, z: 0 }];
+  const result = P.timeAlignDelays(sources, listener);
+  assert.deepStrictEqual(result.map(r => r.id), ['a', 'b', 'c']);
+});
+
 console.log('\n-- earPositions / fieldDbAtEars --');
 
 test('ears are offset by the correct total spacing (~0.17m / ~0.558ft)', () => {

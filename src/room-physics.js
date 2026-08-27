@@ -414,6 +414,26 @@
     });
   }
 
+  // ---- Time alignment: delay each source so all arrive at a point together ----
+  // Real speaker/sub distances from the listener differ, so their direct
+  // sound arrives at different times -- AVR "speaker distance" settings (or
+  // any DSP-based delay line) exist specifically to compensate for this.
+  // Delay can only push a signal later, never earlier, so every source is
+  // delayed relative to whichever one is FARTHEST away (that one gets 0 --
+  // it's already the latest natural arrival, nothing to align it to).
+  // sources: array of {id, x, y, z}. listener: {x, y, z}. Returns
+  // [{id, delayMs}, ...], one entry per input source, in order.
+  function timeAlignDelays(sources, listener){
+    const distM = sources.map(s => {
+      const dx = (s.x - listener.x) * FT_TO_M;
+      const dy = (s.y - listener.y) * FT_TO_M;
+      const dz = ((s.z ?? 0) - listener.z) * FT_TO_M;
+      return Math.sqrt(dx*dx + dy*dy + dz*dz);
+    });
+    const maxDist = distM.length ? Math.max(...distM) : 0;
+    return sources.map((s, i) => ({ id: s.id, delayMs: (maxDist - distM[i]) / C * 1000 }));
+  }
+
   // ---- Two-ear listener sampling ----
   // Average adult inter-ear spacing is roughly 17cm (0.17m); this offsets a
   // listener position by half that distance to each side, perpendicular to a
@@ -794,6 +814,7 @@
     axialModes,
     estimatedT60,
     schroederFrequency,
+    timeAlignDelays,
     earPositions,
     fieldDbAtEars,
     isNearNull,
