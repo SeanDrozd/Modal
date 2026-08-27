@@ -676,8 +676,8 @@
 
   function defaultSources(){
     return [
-      { id: nextId++, name: 'Left', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 },
-      { id: nextId++, name: 'Right', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 }
+      { id: nextId++, name: 'FL', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 },
+      { id: nextId++, name: 'FR', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 }
     ];
   }
 
@@ -1728,7 +1728,7 @@
     const n = sources.length;
     const newSrc = {
       id: nextId++,
-      name: 'Sub ' + (sources.filter(s=>s.freqHigh<=150).length + 1),
+      name: 'SW' + (sources.filter(s=>s.freqHigh<=150).length + 1),
       x: Math.min(room.w-1, 2 + n*1.5),
       y: room.d - 1.5,
       z: 1,
