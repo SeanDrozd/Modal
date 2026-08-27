@@ -1,0 +1,14 @@
+{
+  "name": "modal-tools",
+  "private": true,
+  "description": "Dev-only scripts for regenerating README media (docs/*.png, docs/*.gif). Not part of the app itself -- see the root README's \"No build step, no dependencies\" claim, which is about src/modal.html, not these.",
+  "scripts": {
+    "capture-docs-media": "node capture-docs-media.js",
+    "render-sphere-demo": "node render-sphere-demo.js"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1",
+    "pngjs": "^7.0.0",
+    "gifenc": "^1.0.3"
+  }
+}

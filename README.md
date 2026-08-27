@@ -1,6 +1,6 @@
 # Modal
 
-Interactive room acoustics simulator: visualize standing waves, find optimal subwoofer placement, and model absorption treatment in real time (CPU + GPU rendering).
+Interactive room acoustics simulator: visualize standing waves, find optimal subwoofer placement, and model absorption treatment in real time.
 
 A browser-based tool for reasoning about bass response in a real room. It renders a single-frequency sound-pressure field across the room floor plan (including wall/floor/ceiling reflections), lets you configure speakers, subs, absorption treatment, and room construction, and can automatically search for subwoofer positions that minimize peaks and nulls at your listening position.
 
@@ -51,6 +51,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis tracking the room's own Schroeder frequency
 - Feet & inches / meters unit toggle, applied consistently to every length field and on-canvas label in the app; internal storage stays in feet regardless
 - Multi-level undo/redo (Ctrl+Z / Ctrl+Y, or buttons) covering the same state a saved preset does; continuous edits like a drag or a held slider collapse into one undo step instead of one per intermediate frame
+- Frequency control (slider, sweep, wavelength/active-sources/Schroeder/ear-diff readouts) lives in a panel below the map, next to the visualization it controls; sidebar sections are collapsible (click the chevron) and organized into a workflow (Room → Sources → Frequency response → Optimizer, with less-frequently-touched treatment/rendering sections collapsed by default), and each section's collapsed state persists across reloads
 - Adjustable color range and grid resolution (a device/performance preference, kept separate from saved room presets)
 - Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
 
@@ -121,15 +122,17 @@ This is worth being explicit about, since it's easy to over-trust a clean-lookin
 
 - `src/room-physics.js`: the entire physics model (image sources, absorption, optimizer scoring, Schroeder/T60 estimate), as pure functions with no DOM/browser dependency. This is the single source of truth; nothing else reimplements this math.
 - `src/room-physics.test.js`: a hand-rolled test suite (no framework, no dependencies) covering the physics module. Run with `node src/room-physics.test.js`.
-- `src/field-render.js`: turns a precomputed image-source list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU image-source data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget the way an early version of this was.
+- `src/field-render.js`: turns a precomputed image-source list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU image-source data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget.
 - `src/modal.html`: the UI. DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
+- `tools/`: dev-only scripts for regenerating the screenshots/GIFs in `docs/` (Playwright-driven UI capture, plus a from-scratch renderer for the sphere-sampling visualization). Not part of the app; has its own `package.json`. See `tools/capture-docs-media.js` and `tools/render-sphere-demo.js`.
 
 ## Running it
 
-No build step or install required.
+No build step or install required for the app itself.
 
 - **App**: open `src/modal.html` directly in a browser.
 - **Tests**: `node src/room-physics.test.js` (plain Node, no dependencies).
+- **Regenerating docs/ media**: `cd tools && npm install`, then `npm run capture-docs-media` and/or `npm run render-sphere-demo`.
 
 ## Credits
 

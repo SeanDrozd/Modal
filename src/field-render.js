@@ -52,6 +52,7 @@
     uniform float uDbMax;
     uniform int uCount;         // number of valid entries in the textures below
     uniform bool uDebugMode;    // true: encode raw dB into RGBA instead of colormap (for CPU/GPU verification)
+    uniform int uColormapId;    // 0=thermal (default), 1=full spectrum, 2=viridis (colorblind-safe)
 
     // Image-source data, packed into two float textures instead of uniform
     // arrays (see IMG_TEX_W/H in JS -- this sidesteps WebGL1's small
@@ -72,17 +73,62 @@
 
     const float FT_TO_M = 0.3048;
 
-    vec3 colormap(float t){
-      t = clamp(t, 0.0, 1.0);
+    // 8 stops -- the original 5 (black/blue/teal/yellow/orange-red) plus a
+    // cyan and a green detour inserted in the middle, each deliberately off
+    // the straight RGB line a plain 4-segment version would have drawn
+    // through that gap, plus a true red past orange-red at the very top.
+    vec3 colormapThermal(float t){
       vec3 c0 = vec3(11.0,14.0,18.0)/255.0;
       vec3 c1 = vec3(24.0,64.0,110.0)/255.0;
-      vec3 c2 = vec3(40.0,150.0,150.0)/255.0;
-      vec3 c3 = vec3(230.0,200.0,60.0)/255.0;
-      vec3 c4 = vec3(230.0,80.0,50.0)/255.0;
+      vec3 c2 = vec3(20.0,130.0,160.0)/255.0;
+      vec3 c3 = vec3(40.0,150.0,150.0)/255.0;
+      vec3 c4 = vec3(70.0,190.0,70.0)/255.0;
+      vec3 c5 = vec3(230.0,200.0,60.0)/255.0;
+      vec3 c6 = vec3(230.0,80.0,50.0)/255.0;
+      vec3 c7 = vec3(200.0,30.0,30.0)/255.0;
+      if(t < 0.25) return mix(c0, c1, t/0.25);
+      if(t < 0.375) return mix(c1, c2, (t-0.25)/0.125);
+      if(t < 0.50) return mix(c2, c3, (t-0.375)/0.125);
+      if(t < 0.625) return mix(c3, c4, (t-0.50)/0.125);
+      if(t < 0.75) return mix(c4, c5, (t-0.625)/0.125);
+      if(t < 0.875) return mix(c5, c6, (t-0.75)/0.125);
+      return mix(c6, c7, (t-0.875)/0.125);
+    }
+
+    vec3 hsv2rgb(vec3 c){
+      vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
+
+    // Full-spectrum: continuous hue sweep from violet (low) through blue,
+    // cyan, green, yellow, orange to red (high) -- the classic rainbow ramp,
+    // via HSV rather than fixed stops since a hue rotation IS the spectrum.
+    vec3 colormapSpectrum(float t){
+      float hue = (1.0 - t) * 0.75; // 0.75*360=270deg (violet) down to 0deg (red)
+      return hsv2rgb(vec3(hue, 1.0, 0.95));
+    }
+
+    // Viridis: perceptually-uniform, monotonic in lightness, distinguishable
+    // under deuteranopia/protanopia/tritanopia -- the standard colorblind-safe
+    // scientific colormap (matplotlib default since 2015).
+    vec3 colormapViridis(float t){
+      vec3 c0 = vec3(68.0,1.0,84.0)/255.0;
+      vec3 c1 = vec3(59.0,82.0,139.0)/255.0;
+      vec3 c2 = vec3(33.0,145.0,140.0)/255.0;
+      vec3 c3 = vec3(94.0,201.0,98.0)/255.0;
+      vec3 c4 = vec3(253.0,231.0,37.0)/255.0;
       if(t < 0.25) return mix(c0, c1, t/0.25);
       if(t < 0.50) return mix(c1, c2, (t-0.25)/0.25);
       if(t < 0.75) return mix(c2, c3, (t-0.50)/0.25);
       return mix(c3, c4, (t-0.75)/0.25);
+    }
+
+    vec3 colormap(float t){
+      t = clamp(t, 0.0, 1.0);
+      if(uColormapId == 1) return colormapSpectrum(t);
+      if(uColormapId == 2) return colormapViridis(t);
+      return colormapThermal(t);
     }
 
     // Encodes a value in [0,1] into RGBA at 8 bits/channel (~32 bits total),
@@ -148,8 +194,20 @@
   // (same reasoning as the GLSL/JS physics split: this is a small, stable
   // function, and duplicating just the color ramp is far cheaper to keep in
   // sync than duplicating the whole field computation).
-  function colormap(t){
-    const stops = [[0.00,[11,14,18]],[0.25,[24,64,110]],[0.50,[40,150,150]],[0.75,[230,200,60]],[1.00,[230,80,50]]];
+  const COLORMAP_STOPS = {
+    thermal: [[0.00,[11,14,18]],[0.25,[24,64,110]],[0.375,[20,130,160]],[0.50,[40,150,150]],[0.625,[70,190,70]],[0.75,[230,200,60]],[0.875,[230,80,50]],[1.00,[200,30,30]]],
+    viridis: [[0.00,[68,1,84]],[0.25,[59,82,139]],[0.50,[33,145,140]],[0.75,[94,201,98]],[1.00,[253,231,37]]]
+  };
+
+  // Metadata for building a colormap picker UI -- id matches what colormap()
+  // accepts and what the GLSL uColormapId int maps to (0/1/2, same order).
+  const COLORMAPS = [
+    { id: 'thermal', label: 'Thermal (default)' },
+    { id: 'spectrum', label: 'Full spectrum' },
+    { id: 'viridis', label: 'Colorblind-safe (Viridis)' }
+  ];
+
+  function colormapFromStops(t, stops){
     for(let i=0;i<stops.length-1;i++){
       const [t0,c0]=stops[i], [t1,c1]=stops[i+1];
       if(t>=t0 && t<=t1){
@@ -157,8 +215,39 @@
         return [Math.round(c0[0]+(c1[0]-c0[0])*f), Math.round(c0[1]+(c1[1]-c0[1])*f), Math.round(c0[2]+(c1[2]-c0[2])*f)];
       }
     }
-    return [230,80,50];
+    return stops[stops.length-1][1];
   }
+
+  function hsvToRgb(h, s, v){
+    const i = Math.floor(h*6);
+    const f = h*6 - i;
+    const p = v*(1-s), q = v*(1-f*s), tt = v*(1-(1-f)*s);
+    let r,g,b;
+    switch(i%6){
+      case 0: r=v; g=tt; b=p; break;
+      case 1: r=q; g=v; b=p; break;
+      case 2: r=p; g=v; b=tt; break;
+      case 3: r=p; g=q; b=v; break;
+      case 4: r=tt; g=p; b=v; break;
+      default: r=v; g=p; b=q; break;
+    }
+    return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+  }
+
+  // Mirrors the shader's colormapSpectrum: continuous hue sweep, violet to red.
+  function colormapSpectrum(t){
+    const hue = (1 - t) * 0.75;
+    return hsvToRgb(hue, 1.0, 0.95);
+  }
+
+  function colormap(t, id){
+    t = Math.max(0, Math.min(1, t));
+    if(id === 'spectrum') return colormapSpectrum(t);
+    if(id === 'viridis') return colormapFromStops(t, COLORMAP_STOPS.viridis);
+    return colormapFromStops(t, COLORMAP_STOPS.thermal);
+  }
+
+  const COLORMAP_ID_TO_INT = { thermal: 0, spectrum: 1, viridis: 2 };
 
   // Inverse of the shader's encodeFloat: reconstruct the normalized [0,1] value
   // from 8-bit RGBA channels (dividing by 255 since readPixels gives 0-255 ints).
@@ -307,6 +396,7 @@
           uDbMax: gl.getUniformLocation(prog, 'uDbMax'),
           uCount: gl.getUniformLocation(prog, 'uCount'),
           uDebugMode: gl.getUniformLocation(prog, 'uDebugMode'),
+          uColormapId: gl.getUniformLocation(prog, 'uColormapId'),
           uImgPosAmpTex: gl.getUniformLocation(prog, 'uImgPosAmpTex'),
           uImgPhaseTex: gl.getUniformLocation(prog, 'uImgPhaseTex'),
           uImgTexSize: gl.getUniformLocation(prog, 'uImgTexSize')
@@ -317,10 +407,11 @@
       }
     }
 
-    // params: { RES, w, d, k, precomputed, pz, offX, offY, scale, size, dbMin, dbMax }
+    // params: { RES, w, d, k, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId }
     function renderFieldCPU(params){
-      const { RES, w, d, k, precomputed, pz, offX, offY, scale, size } = params;
+      const { RES, w, d, k, precomputed, pz, offX, offY, scale, sizeW, sizeH } = params;
       const DB_MIN = params.dbMin ?? -24, DB_MAX = params.dbMax ?? 12;
+      const colormapId = params.colormapId;
       const field = new Float32Array(RES*RES);
       const refAmp = 1.0;
       for(let j=0;j<RES;j++){
@@ -336,7 +427,7 @@
       const imgData = ctx2d.createImageData(RES, RES);
       for(let idx=0; idx<RES*RES; idx++){
         const t = Math.max(0, Math.min(1, (field[idx] - DB_MIN) / (DB_MAX - DB_MIN)));
-        const c = colormap(t);
+        const c = colormap(t, colormapId);
         imgData.data[idx*4] = c[0]; imgData.data[idx*4+1] = c[1]; imgData.data[idx*4+2] = c[2]; imgData.data[idx*4+3] = 255;
       }
       const off = document.createElement('canvas');
@@ -345,7 +436,7 @@
 
       // CPU path owns the field canvas: opaque background fill, then the field.
       ctx2d.fillStyle = '#0b0e12';
-      ctx2d.fillRect(0,0,size,size);
+      ctx2d.fillRect(0,0,sizeW,sizeH);
       ctx2d.imageSmoothingEnabled = true;
       ctx2d.drawImage(off, 0, 0, RES, RES, offX, offY, w*scale, d*scale);
     }
@@ -359,11 +450,11 @@
       if(gpuInitFailed || !gpuProgram){ renderFieldCPU(params); return; }
 
       try {
-        const { w, d, k, precomputed, pz, offX, offY, scale, size } = params;
+        const { w, d, k, precomputed, pz, offX, offY, scale, sizeW, sizeH } = params;
 
-        if(canvasGL.width !== size || canvasGL.height !== size){
-          canvasGL.width = size;
-          canvasGL.height = size;
+        if(canvasGL.width !== sizeW || canvasGL.height !== sizeH){
+          canvasGL.width = sizeW;
+          canvasGL.height = sizeH;
         }
         gl.viewport(0, 0, canvasGL.width, canvasGL.height);
         gl.useProgram(gpuProgram);
@@ -379,7 +470,7 @@
           }
         }
 
-        gl.uniform2f(gpuUniforms.uCanvasSize, size, size);
+        gl.uniform2f(gpuUniforms.uCanvasSize, sizeW, sizeH);
         gl.uniform2f(gpuUniforms.uFieldOrigin, offX, offY);
         gl.uniform2f(gpuUniforms.uFieldSize, w*scale, d*scale);
         gl.uniform2f(gpuUniforms.uRoomSize, w, d);
@@ -389,6 +480,7 @@
         gl.uniform1f(gpuUniforms.uDbMax, params.dbMax ?? 12);
         gl.uniform1i(gpuUniforms.uCount, count);
         gl.uniform1i(gpuUniforms.uDebugMode, debugMode ? 1 : 0);
+        gl.uniform1i(gpuUniforms.uColormapId, COLORMAP_ID_TO_INT[params.colormapId] ?? 0);
         gl.uniform2f(gpuUniforms.uImgTexSize, IMG_TEX_W, IMG_TEX_H);
 
         const { posAmp, phaseBuf, rows } = packImageSourceTextures({ positions, amps, phases, count });
@@ -429,7 +521,7 @@
 
         if(!debugMode){
           // The 2D canvas still owns overlays; clear it to fully transparent so cvGL shows through.
-          ctx2d.clearRect(0, 0, size, size);
+          ctx2d.clearRect(0, 0, sizeW, sizeH);
         }
       } catch(e){
         console.error('GPU render failed, falling back to CPU for this frame:', e);
@@ -454,6 +546,7 @@
     VERTEX_SRC,
     FRAGMENT_SRC,
     colormap,
+    COLORMAPS,
     decodeFloatFromRGBA,
     flattenImageSources,
     packImageSourceTextures,
