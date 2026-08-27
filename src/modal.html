@@ -154,6 +154,11 @@
     </select>
   </div>
 
+  <div class="row" style="margin-bottom:14px; gap:6px;">
+    <button id="undoBtn" class="small" style="flex:1;" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
+    <button id="redoBtn" class="small" style="flex:1;" disabled title="Redo (Ctrl+Y)">&#8631; Redo</button>
+  </div>
+
   <div class="section">
     <div class="section-title">Saved configurations</div>
     <select id="presetSelect"></select>
@@ -754,6 +759,77 @@
     renderWallList();
     syncCeilingUI();
     renderZoneList();
+  }
+
+  // ---- Undo/redo ----
+  // Snapshots exactly the same state shape a saved preset does (makeConfig/
+  // loadConfig) any time it changes and settles for a moment, rather than
+  // instrumenting every individual mutation call site (there are dozens,
+  // scattered across sliders, drags, buttons, and text fields). draw() is
+  // already the one universal "something changed" hook everything routes
+  // through, so this piggybacks on that. Continuous operations (dragging a
+  // source, holding a slider) call draw() many times in a row; debouncing the
+  // actual snapshot means those collapse into ONE undo step (before the drag
+  // vs. after it), not one step per intermediate frame -- the same coalescing
+  // idea as the frequency-response chart's debounce, applied to history instead.
+  // Deliberately scoped to the same fields as makeConfig -- view/device
+  // preferences (units, render mode, color range, resolution) are excluded,
+  // same reasoning as why presets exclude them: they're not "the room."
+  const UNDO_LIMIT = 50;
+  let undoStack = [];
+  let redoStack = [];
+  let lastSnapshotJSON = null;
+  let undoSnapshotTimer = null;
+  let isRestoringHistory = false; // true while undo()/redo() itself calls loadConfig, so that doesn't get captured as a new change
+
+  function currentSnapshotJSON(){
+    return JSON.stringify(makeConfig());
+  }
+  function updateUndoRedoButtons(){
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    if(undoBtn) undoBtn.disabled = undoStack.length === 0;
+    if(redoBtn) redoBtn.disabled = redoStack.length === 0;
+  }
+  function scheduleUndoSnapshot(){
+    if(isRestoringHistory) return;
+    if(undoSnapshotTimer) clearTimeout(undoSnapshotTimer);
+    undoSnapshotTimer = setTimeout(commitUndoSnapshotIfChanged, 500);
+  }
+  function commitUndoSnapshotIfChanged(){
+    undoSnapshotTimer = null;
+    const nowJSON = currentSnapshotJSON();
+    if(lastSnapshotJSON === null){ lastSnapshotJSON = nowJSON; return; } // establishing the baseline, not a user change
+    if(nowJSON === lastSnapshotJSON) return; // settled back to the same state -- nothing to record
+    undoStack.push(lastSnapshotJSON);
+    if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = []; // a fresh change invalidates whatever redo branch existed
+    lastSnapshotJSON = nowJSON;
+    updateUndoRedoButtons();
+  }
+  function undo(){
+    if(undoStack.length === 0) return;
+    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
+    redoStack.push(currentSnapshotJSON());
+    const prev = undoStack.pop();
+    isRestoringHistory = true;
+    loadConfig(JSON.parse(prev));
+    draw();
+    isRestoringHistory = false;
+    lastSnapshotJSON = prev;
+    updateUndoRedoButtons();
+  }
+  function redo(){
+    if(redoStack.length === 0) return;
+    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
+    undoStack.push(currentSnapshotJSON());
+    const next = redoStack.pop();
+    isRestoringHistory = true;
+    loadConfig(JSON.parse(next));
+    draw();
+    isRestoringHistory = false;
+    lastSnapshotJSON = next;
+    updateUndoRedoButtons();
   }
 
   function applySymmetricDefaults(){
@@ -2092,6 +2168,7 @@
     updateFreqInfo(lambda);
     redrawFreqResponseCanvas(); // cheap repaint every frame, so the freq marker tracks the slider live
     scheduleFreqResponseUpdate(); // debounced recompute of the curve itself (expensive)
+    scheduleUndoSnapshot();
   }
 
   function labelFor(name){
@@ -2841,6 +2918,20 @@
     saveSessionSettings();
     refreshAllLengthDisplays();
   });
+  document.getElementById('undoBtn').addEventListener('click', undo);
+  document.getElementById('redoBtn').addEventListener('click', redo);
+  // Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z as the common redo alternate) -- skipped
+  // while focus is in a text-editing field so the browser's own native
+  // undo/redo for that field's text still works as expected, rather than
+  // being hijacked by the app-level history.
+  document.addEventListener('keydown', function(e){
+    if(!(e.ctrlKey || e.metaKey)) return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const key = e.key.toLowerCase();
+    if(key === 'z' && !e.shiftKey){ e.preventDefault(); undo(); }
+    else if(key === 'y' || (key === 'z' && e.shiftKey)){ e.preventDefault(); redo(); }
+  });
   document.getElementById('resolutionScale').addEventListener('input', function(){
     resolutionScale = parseFloat(this.value);
     document.getElementById('resolutionScaleVal').textContent = resolutionScale.toFixed(2) + 'x';
@@ -3294,6 +3385,11 @@
       loadConfig(makeConfig());
     }
     draw();
+    // Establish the undo baseline immediately (rather than waiting for the
+    // debounce) so a change made in the first instant after load still has a
+    // real "before" state to undo back to.
+    lastSnapshotJSON = currentSnapshotJSON();
+    updateUndoRedoButtons();
   }
   init();
 })();

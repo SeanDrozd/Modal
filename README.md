@@ -50,6 +50,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - Frequency sweep animation (play/pause, adjustable speed) with wrap-around
 - Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis tracking the room's own Schroeder frequency
 - Feet & inches / meters unit toggle, applied consistently to every length field and on-canvas label in the app; internal storage stays in feet regardless
+- Multi-level undo/redo (Ctrl+Z / Ctrl+Y, or buttons) covering the same state a saved preset does; continuous edits like a drag or a held slider collapse into one undo step instead of one per intermediate frame
 - Adjustable color range and grid resolution (a device/performance preference, kept separate from saved room presets)
 - Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
 
@@ -81,7 +82,7 @@ where `r` is the distance from that image source to the point (floored at 0.3 m 
 
 ### Delay, time alignment, and a real-world caveat worth knowing
 
-Each source's delay is a genuine time delay (`φ` grows linearly with frequency, `φ = 2π·f·Δt`), the same thing an AVR's per-channel "speaker distance" setting or a DSP delay line does in real life. "Time-align to listener" computes each source's distance to the listening position and delays every source except the farthest one (delay can only push a signal later, never earlier) so their direct sound all arrives together.
+Each source's delay is a genuine time delay (`φ` grows linearly with frequency, `φ = 2π·f·Δt`), the same thing an AVR's per-channel "speaker distance" setting or a DSP delay line does in real life. "Time-align to listener" computes each source's distance to the listening position and delays every source except the farthest one so their direct sound all arrives together.
 
 Applying that number in real life assumes you actually have a way to enter it: a real per-channel delay/distance control (an AVR or DSP setup), not just a subwoofer's 0/180° phase switch. A polarity switch isn't a delay at all, it's a fixed 180° flip applied identically at every frequency, whereas true time delay's phase shift grows with frequency. A continuous phase knob is a step up but still isn't equivalent: it's usually an analog all-pass network tuned around one reference frequency, not a frequency-proportional delay, and it has no ms readout to map back onto this tool's numbers anyway. Even with a real delay control, the number you calculate from a tape-measured distance is only the *geometric* delay, a sub's own onboard DSP/crossover/limiter processing adds its own latency that's rarely published and isn't captured by distance alone, so the calculated starting point is exactly that: a starting point, not the final answer. Verifying (or finding) the true delay in practice means measuring it (e.g. REW's impulse/step response alignment tools), the same instinct as previewing here before trusting the math on its own.
 
