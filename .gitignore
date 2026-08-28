@@ -1,1 +1,5 @@
 tools/node_modules/
+
+# Local source/scratch files for re-rendering docs/ media -- not published,
+# not referenced by the README.
+docs/*.mp4

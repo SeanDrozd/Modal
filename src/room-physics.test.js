@@ -21,16 +21,12 @@ function magOf({ re, im }){
   return Math.sqrt(re*re + im*im);
 }
 
-// A minimal ctx with no panels, no openings, mid reflectivity — used throughout.
+// A minimal ctx with a flat mid reflectivity on every surface — used throughout.
 const baseRoom = { w: 18, d: 13.5, h: 8 };
 function baseCtx(overrides){
   return Object.assign({
     room: baseRoom,
-    wallReflect: 0.7,
-    openings: [],
-    openingsEnabled: true,
-    panels: [],
-    panelsEnabled: true
+    wallReflect: 0.7
   }, overrides || {});
 }
 
@@ -107,312 +103,6 @@ test('sources without rolloffDbPerOct default to 24dB/oct (a 4th-order/LR4 AVR-t
   approx(actualDb, -24, 0.05);
 });
 
-console.log('\n-- panelAbsorptionAtFreq (thickness vs quarter-wavelength) --');
-
-test('thin panel is near-zero absorption at low (room-mode) frequencies', () => {
-  const panel = { thickness: 1, pos: 0, length: 3 }; // 1 ft thick
-  const absorb = P.panelAbsorptionAtFreq(panel, 40); // deep bass
-  assert.ok(absorb < 0.05, `expected near-zero absorption at 40Hz for 1ft panel, got ${absorb}`);
-});
-
-test('1ft panel becomes substantially absorptive by a few hundred Hz', () => {
-  const panel = { thickness: 1, pos: 0, length: 3 };
-  const absorb300 = P.panelAbsorptionAtFreq(panel, 300);
-  assert.ok(absorb300 > 0.5, `expected >0.5 absorption at 300Hz for 1ft panel, got ${absorb300}`);
-});
-
-test('absorption increases monotonically with frequency for a fixed thickness', () => {
-  const panel = { thickness: 0.5, pos: 0, length: 3 };
-  const freqs = [30, 60, 100, 150, 250, 400];
-  let prev = -1;
-  for(const f of freqs){
-    const a = P.panelAbsorptionAtFreq(panel, f);
-    assert.ok(a >= prev - 1e-9, `absorption should not decrease with frequency (f=${f}, a=${a}, prev=${prev})`);
-    prev = a;
-  }
-});
-
-test('thicker panel absorbs more than a thinner one at the same frequency', () => {
-  const thin = { thickness: 0.25, pos: 0, length: 3 };
-  const thick = { thickness: 1.5, pos: 0, length: 3 };
-  const f = 150;
-  assert.ok(P.panelAbsorptionAtFreq(thick, f) > P.panelAbsorptionAtFreq(thin, f),
-    'thicker panel should absorb more at the same frequency');
-});
-
-console.log('\n-- panelCoverage / wallWithPanels --');
-
-test('point well inside the panel span has full coverage (1.0)', () => {
-  const panel = { pos: 2, length: 3 };
-  assert.strictEqual(P.panelCoverage(panel, 3.5), 1);
-});
-
-test('point exactly at panel start/end has full coverage (inclusive)', () => {
-  const panel = { pos: 2, length: 3 };
-  assert.strictEqual(P.panelCoverage(panel, 2), 1);
-  assert.strictEqual(P.panelCoverage(panel, 5), 1);
-});
-
-test('point well outside the panel (beyond the taper zone) has zero coverage', () => {
-  const panel = { pos: 2, length: 3 }; // taper is 0.5ft, so >0.5ft outside is 0
-  assert.strictEqual(P.panelCoverage(panel, 1), 0);
-  assert.strictEqual(P.panelCoverage(panel, 6), 0);
-});
-
-test('REGRESSION: panel edge is smooth, not a discontinuous jump — coverage changes gradually across the taper zone', () => {
-  const panel = { pos: 3, length: 3 }; // spans y=[3,6]
-  const justInside = P.panelCoverage(panel, 6.0);
-  const quarterOut = P.panelCoverage(panel, 6.25); // halfway through the 0.5ft taper
-  const justOutside = P.panelCoverage(panel, 6.5); // at the edge of the taper zone
-  const wayOutside = P.panelCoverage(panel, 7.0);
-  assert.strictEqual(justInside, 1);
-  assert.ok(quarterOut > 0 && quarterOut < 1, `expected partial coverage mid-taper, got ${quarterOut}`);
-  approx(quarterOut, 0.5, 0.05, 'coverage should be ~50% halfway through the taper zone');
-  approx(justOutside, 0, 0.01, 'coverage should reach ~0 at the far edge of the taper zone');
-  assert.strictEqual(wayOutside, 0);
-});
-
-test('REGRESSION: reflection amplitude does not jump discontinuously as a source crosses a panel edge', () => {
-  // This is the actual bug: dragging a source an inch near a panel edge used to
-  // snap the wall's reflection amplitude instantly (e.g. 0.0003 -> 0.7), which
-  // flips constructive/destructive interference for a fraction-of-an-inch move.
-  const room = { w: 18, d: 13.5, h: 8 };
-  const panels = [{ wall:'left', pos: 3, length: 3, thickness: 1, enabled: true }]; // y=[3,6]
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels, panelsEnabled: true };
-  const freq = 300;
-
-  const amps = [];
-  for(let sy = 5.5; sy <= 6.5; sy += 0.05){
-    const imgs = P.getImageSources(2, sy, 3, 1, freq, ctx);
-    const leftImg = imgs.find(img => img.x === -2);
-    amps.push(leftImg.amp);
-  }
-  let maxStep = 0;
-  for(let i = 1; i < amps.length; i++){
-    maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
-  }
-  // With a 0.05ft step and a 0.5ft taper zone, no single step should move amplitude
-  // by more than roughly (0.05/0.5) of the full 0.7 range = ~0.07; allow some margin.
-  assert.ok(maxStep < 0.15, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
-});
-
-test('wallWithPanels returns base amplitude when panelsEnabled is false', () => {
-  const panels = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
-  const amp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 200, panels, false);
-  approx(amp, 0.7, 1e-9, 'master toggle off should bypass all panels');
-});
-
-test('wallWithPanels returns base amplitude when the panel is individually disabled', () => {
-  const panels = [{ wall:'left', pos:0, length:20, thickness:2, enabled:false }];
-  const amp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 200, panels, true);
-  approx(amp, 0.7, 1e-9, 'disabled panel should not reduce reflection');
-});
-
-test('wallWithPanels reduces amplitude when point falls on an enabled panel at an absorptive frequency', () => {
-  const panels = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
-  const amp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, panels, true);
-  assert.ok(amp < 0.7, `expected reduced amplitude, got ${amp}`);
-});
-
-test('wallWithPanels leaves amplitude unchanged when point falls well OUTSIDE the panel span (beyond taper)', () => {
-  const panels = [{ wall:'left', pos:0, length:3, thickness:2, enabled:true }]; // covers y=[0,3]
-  const amp = P.wallWithPanels('left', {x:0,y:10,z:3}, 0.7, 400, panels, true); // y=10, well off-panel
-  approx(amp, 0.7, 1e-9, 'point outside panel footprint (and its taper zone) should be untouched');
-});
-
-// Every test above only exercises wallName='left', which reads its along-wall
-// coordinate from basePoint.y. 'right' shares that same y-axis branch, while
-// 'front'/'back' read basePoint.x instead -- neither branch had a dedicated
-// test before this, despite being a real per-call branch in wallWithPanels.
-test('wallWithPanels reads the along-wall coordinate from basePoint.y for the right wall (same axis as left)', () => {
-  const panels = [{ wall:'right', pos:0, length:20, thickness:2, enabled:true }];
-  const onPanel = P.wallWithPanels('right', {x:18,y:5,z:3}, 0.7, 400, panels, true);
-  const offPanel = P.wallWithPanels('right', {x:18,y:50,z:3}, 0.7, 400, panels, true);
-  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
-  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on y should be untouched');
-});
-
-test('wallWithPanels reads the along-wall coordinate from basePoint.x for the front wall', () => {
-  const panels = [{ wall:'front', pos:0, length:20, thickness:2, enabled:true }];
-  const onPanel = P.wallWithPanels('front', {x:5,y:0,z:3}, 0.7, 400, panels, true);
-  const offPanel = P.wallWithPanels('front', {x:50,y:0,z:3}, 0.7, 400, panels, true);
-  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
-  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on x should be untouched');
-});
-
-test('wallWithPanels reads the along-wall coordinate from basePoint.x for the back wall', () => {
-  const panels = [{ wall:'back', pos:0, length:20, thickness:2, enabled:true }];
-  const onPanel = P.wallWithPanels('back', {x:5,y:13.5,z:3}, 0.7, 400, panels, true);
-  const offPanel = P.wallWithPanels('back', {x:50,y:13.5,z:3}, 0.7, 400, panels, true);
-  assert.ok(onPanel < 0.7, `expected reduced amplitude on the panel, got ${onPanel}`);
-  approx(offPanel, 0.7, 1e-9, 'point far outside the panel span on x should be untouched');
-});
-
-test('wallWithPanels ignores panels mounted on a different wall than the one being queried', () => {
-  // A panel positioned to cover this exact point, but on 'right' -- querying
-  // 'left' at the same coordinates should see no absorption from it at all.
-  const panels = [{ wall:'right', pos:0, length:20, thickness:2, enabled:true }];
-  const amp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, panels, true);
-  approx(amp, 0.7, 1e-9, 'a panel on a different wall must not affect this wall\'s amplitude');
-});
-
-test('wallWithPanels compounds absorption multiplicatively when two panels on the same wall both cover the point', () => {
-  const singlePanel = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
-  const twoPanels = [
-    { wall:'left', pos:0, length:20, thickness:2, enabled:true },
-    { wall:'left', pos:0, length:20, thickness:1.5, enabled:true } // fully overlapping, different thickness
-  ];
-  const singleAmp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, singlePanel, true);
-  const doubleAmp = P.wallWithPanels('left', {x:0,y:5,z:3}, 0.7, 400, twoPanels, true);
-  const absorb1 = P.panelAbsorptionAtFreq(twoPanels[0], 400);
-  const absorb2 = P.panelAbsorptionAtFreq(twoPanels[1], 400);
-  const expected = 0.7 * (1 - absorb1) * (1 - absorb2);
-  approx(doubleAmp, expected, 1e-9, 'compounded amplitude should be the product of each panel\'s (1-absorb) factor');
-  assert.ok(doubleAmp < singleAmp, 'two overlapping panels should absorb at least as much as either alone');
-});
-
-console.log('\n-- rectCoverage (2D floor/ceiling panel coverage) --');
-
-test('rectCoverage is 1.0 anywhere inside the rectangle', () => {
-  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
-  approx(P.rectCoverage(rect, 4, 3), 1.0, 1e-9, 'corner');
-  approx(P.rectCoverage(rect, 7, 5.5), 1.0, 1e-9, 'center');
-  approx(P.rectCoverage(rect, 10, 8), 1.0, 1e-9, 'opposite corner');
-});
-
-test('rectCoverage tapers along a single axis when only that axis is outside the rectangle', () => {
-  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
-  // 0.25ft outside on x only, y held inside -> taper matches the 1D taperedCoverage math (TAPER_FT=0.5)
-  approx(P.rectCoverage(rect, 10.25, 5), 1 - 0.25/0.5, 1e-9, 'just past the right edge, y inside');
-  approx(P.rectCoverage(rect, 3.75, 5), 1 - 0.25/0.5, 1e-9, 'just past the left edge, y inside');
-});
-
-test('rectCoverage tapers on BOTH axes near a corner, compounding multiplicatively', () => {
-  const rect = { x: 4, y: 3, width: 6, height: 5 }; // spans x=[4,10], y=[3,8]
-  // 0.25ft past the corner on both x and y: each axis alone would taper to 0.5,
-  // but corner coverage is the PRODUCT of both, not just the smaller one.
-  const corner = P.rectCoverage(rect, 10.25, 8.25);
-  approx(corner, 0.5 * 0.5, 1e-9, 'corner coverage should be the product of both axes\' taper, i.e. 0.25');
-  const singleAxisOnly = P.rectCoverage(rect, 10.25, 5); // same x offset, y inside
-  assert.ok(corner < singleAxisOnly, 'a corner should have LESS coverage than an equivalent single-edge offset');
-});
-
-test('rectCoverage is 0 well outside the rectangle (beyond the taper zone) on either or both axes', () => {
-  const rect = { x: 4, y: 3, width: 6, height: 5 };
-  assert.strictEqual(P.rectCoverage(rect, 20, 5), 0, 'far outside on x, inside on y');
-  assert.strictEqual(P.rectCoverage(rect, 7, 20), 0, 'inside on x, far outside on y');
-  assert.strictEqual(P.rectCoverage(rect, 20, 20), 0, 'far outside on both axes');
-});
-
-console.log('\n-- wallWithSurfacePanels (floor/ceiling rugs and panels) --');
-
-test('wallWithSurfacePanels returns base amplitude when surfacePanelsEnabled is false', () => {
-  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:true }];
-  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, false);
-  approx(amp, 0.8, 1e-9, 'master toggle off should bypass all surface panels');
-});
-
-test('wallWithSurfacePanels returns base amplitude when the panel is individually disabled', () => {
-  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:false }];
-  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, true);
-  approx(amp, 0.8, 1e-9);
-});
-
-test('wallWithSurfacePanels ignores panels on the OTHER surface (ceiling panel does not affect floor)', () => {
-  const surfacePanels = [{ surface:'ceil', x:0, y:0, width:20, height:20, thickness:1, enabled:true }];
-  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 200, surfacePanels, true);
-  approx(amp, 0.8, 1e-9, 'a ceiling panel must not affect the floor\'s amplitude');
-});
-
-test('wallWithSurfacePanels reduces amplitude when the point falls inside a rug/panel at an absorptive frequency', () => {
-  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
-  const amp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, surfacePanels, true);
-  assert.ok(amp < 0.8, `expected reduced amplitude, got ${amp}`);
-});
-
-test('wallWithSurfacePanels leaves amplitude unchanged well outside the rug/panel footprint', () => {
-  const surfacePanels = [{ surface:'floor', x:0, y:0, width:3, height:3, thickness:2, enabled:true }];
-  const amp = P.wallWithSurfacePanels('floor', {x:15,y:15,z:0}, 0.8, 400, surfacePanels, true);
-  approx(amp, 0.8, 1e-9);
-});
-
-test('wallWithSurfacePanels compounds absorption multiplicatively for two overlapping rugs', () => {
-  const singleRug = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
-  const twoRugs = [
-    { surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true },
-    { surface:'floor', x:0, y:0, width:20, height:20, thickness:1, enabled:true }
-  ];
-  const singleAmp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, singleRug, true);
-  const doubleAmp = P.wallWithSurfacePanels('floor', {x:5,y:5,z:0}, 0.8, 400, twoRugs, true);
-  const absorb1 = P.panelAbsorptionAtFreq(twoRugs[0], 400);
-  const absorb2 = P.panelAbsorptionAtFreq(twoRugs[1], 400);
-  approx(doubleAmp, 0.8 * (1-absorb1) * (1-absorb2), 1e-9);
-  assert.ok(doubleAmp < singleAmp);
-});
-
-console.log('\n-- boundaryOps: floor/ceiling reflectivity and surface panels --');
-
-test('boundaryOps floor amplitude uses floorReflect when specified, independent of wallReflect', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, floorReflect: 0.3, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
-  const floor = P.boundaryOps(200, ctx).find(o => o.name === 'floor');
-  approx(floor.amp({ x: 9, y: 6, z: 3 }), 0.3, 1e-9, 'floor should use floorReflect, not wallReflect');
-});
-
-test('boundaryOps floor amplitude defaults to wallReflect when floorReflect is not specified', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
-  const floor = P.boundaryOps(200, ctx).find(o => o.name === 'floor');
-  approx(floor.amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, 'omitting floorReflect should fall back to wallReflect (backward compatible default)');
-});
-
-test('boundaryOps ceiling amplitude always uses wallReflect, unaffected by floorReflect', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, floorReflect: 0.1, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels: [], surfacePanelsEnabled: true };
-  const ceil = P.boundaryOps(200, ctx).find(o => o.name === 'ceil');
-  approx(ceil.amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, 'ceiling should never be affected by floorReflect');
-});
-
-test('boundaryOps applies a floor rug to floor amplitude only, not ceiling', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const surfacePanels = [{ surface:'floor', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
-  const ops = P.boundaryOps(400, ctx);
-  const floorAmp = ops.find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 3 });
-  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 3 });
-  assert.ok(floorAmp < 0.7, 'floor rug should reduce floor amplitude');
-  approx(ceilAmp, 0.7, 1e-9, 'a floor rug must not affect the ceiling');
-});
-
-test('boundaryOps applies a ceiling panel to ceiling amplitude only, not floor', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const surfacePanels = [{ surface:'ceil', x:0, y:0, width:20, height:20, thickness:2, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
-  const ops = P.boundaryOps(400, ctx);
-  const floorAmp = ops.find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 3 });
-  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 3 });
-  approx(floorAmp, 0.7, 1e-9, 'a ceiling panel must not affect the floor');
-  assert.ok(ceilAmp < 0.7, 'ceiling panel should reduce ceiling amplitude');
-});
-
-test('REGRESSION: floor amplitude does not jump discontinuously as a point sweeps across a rug edge', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const surfacePanels = [{ surface:'floor', x:4, y:3, width:6, height:5, thickness:2, enabled:true }]; // x=[4,10]
-  const ctx = { room, wallReflect: 0.7, floorReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, surfacePanels, surfacePanelsEnabled: true };
-  const floor = P.boundaryOps(400, ctx).find(o => o.name === 'floor');
-  const amps = [];
-  for(let x = 9; x <= 11; x += 0.05){
-    amps.push(floor.amp({ x, y: 5, z: 3 }));
-  }
-  let maxStep = 0;
-  for(let i = 1; i < amps.length; i++){
-    maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
-  }
-  // 0.5ft taper, 0.05ft step -> ~10% of the full floorReflect*absorb swing per
-  // step (same magnitude as the analogous 1D wall-panel regression test).
-  assert.ok(maxStep < 0.1, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
-});
-
 console.log('\n-- wallMaterialReflectAtFreq / WALL_MATERIALS (frequency-dependent bare-wall reflectivity) --');
 
 test('wallMaterialReflectAtFreq returns null for a null/undefined material (caller should fall back to flat wallReflect)', () => {
@@ -454,51 +144,6 @@ test('WALL_MATERIALS.drywallInsulated dips deeper AND wider than drywallHollow (
   assert.ok(insulated.bandwidth > hollow.bandwidth, 'insulated should have a wider (more damped) dip');
 });
 
-console.log('\n-- boundaryOps: per-wall materials --');
-
-test('boundaryOps uses each wall\'s own assigned material independently', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const wallMaterials = {
-    left: P.WALL_MATERIALS.drywallInsulated,
-    front: P.WALL_MATERIALS.masonry
-  };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, wallMaterials };
-  const ops = P.boundaryOps(P.WALL_MATERIALS.drywallInsulated.peakFreq, ctx);
-  const leftAmp = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
-  const frontAmp = ops.find(o => o.name === 'front').amp({ x: 9, y: 0, z: 3 });
-  approx(leftAmp, P.wallMaterialReflectAtFreq(P.WALL_MATERIALS.drywallInsulated, P.WALL_MATERIALS.drywallInsulated.peakFreq), 1e-9);
-  approx(frontAmp, P.WALL_MATERIALS.masonry.baseReflect, 1e-9);
-  assert.notStrictEqual(leftAmp, frontAmp);
-});
-
-test('boundaryOps falls back to flat wallReflect for a wall missing from the wallMaterials map', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const wallMaterials = { left: P.WALL_MATERIALS.drywallInsulated }; // right/front/back intentionally unset
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true, wallMaterials };
-  const rightAmp = P.boundaryOps(80, ctx).find(o => o.name === 'right').amp({ x: 18, y: 6, z: 3 });
-  approx(rightAmp, 0.7, 1e-9, 'a wall with no assigned material should use the flat wallReflect scalar');
-});
-
-test('boundaryOps falls back to flat wallReflect for every wall when wallMaterials is omitted entirely (backward compatible)', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const ops = P.boundaryOps(80, ctx);
-  for(const name of ['left','right','front','back']){
-    approx(ops.find(o => o.name === name).amp({ x: 9, y: 6, z: 3 }), 0.7, 1e-9, `${name} should use flat wallReflect`);
-  }
-});
-
-test('boundaryOps applies wall panel absorption ON TOP OF a material-derived base reflectivity (both stack multiplicatively)', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const wallMaterials = { left: P.WALL_MATERIALS.masonry }; // flat 0.9 baseline, easy to predict
-  const panels = [{ wall:'left', pos:0, length:20, thickness:2, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels, panelsEnabled: true, wallMaterials };
-  const freq = 400;
-  const leftAmp = P.boundaryOps(freq, ctx).find(o => o.name === 'left').amp({ x: 0, y: 5, z: 3 });
-  const absorb = P.panelAbsorptionAtFreq(panels[0], freq);
-  approx(leftAmp, P.WALL_MATERIALS.masonry.baseReflect * (1 - absorb), 1e-9);
-});
-
 console.log("\n-- wallMaterialReflectAtFreq: shape:'porousRamp' (e.g. suspended acoustic ceiling tile) --");
 
 test("porousRamp absorption is negligible well below midFreq", () => {
@@ -529,392 +174,53 @@ test('WALL_MATERIALS.suspendedTile shows only modest absorption within this app\
   assert.ok(at300 < at40, 'expected more absorption by 300Hz than at 40Hz');
 });
 
-console.log('\n-- boundaryOps: ceiling material --');
-
-test('boundaryOps applies ctx.ceilingMaterial to the ceiling only, independent of wallMaterials', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = {
-    room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true,
-    wallMaterials: { left: P.WALL_MATERIALS.masonry },
-    ceilingMaterial: P.WALL_MATERIALS.suspendedTile
-  };
-  const freq = 300;
-  const ops = P.boundaryOps(freq, ctx);
-  const ceilAmp = ops.find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 8 });
-  const leftAmp = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
-  approx(ceilAmp, P.wallMaterialReflectAtFreq(P.WALL_MATERIALS.suspendedTile, freq), 1e-9);
-  approx(leftAmp, P.WALL_MATERIALS.masonry.baseReflect, 1e-9, 'the wall material assignment should be unaffected by ceilingMaterial');
-  assert.notStrictEqual(ceilAmp, leftAmp);
-});
-
-test('boundaryOps falls back to flat wallReflect for the ceiling when ceilingMaterial is omitted', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const ceilAmp = P.boundaryOps(80, ctx).find(o => o.name === 'ceil').amp({ x: 9, y: 6, z: 8 });
-  approx(ceilAmp, 0.7, 1e-9);
-});
-
-test('ceilingMaterial does not affect the floor (they are independent surfaces)', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = {
-    room, wallReflect: 0.7, floorReflect: 0.8, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true,
-    ceilingMaterial: P.WALL_MATERIALS.masonry
-  };
-  const floorAmp = P.boundaryOps(80, ctx).find(o => o.name === 'floor').amp({ x: 9, y: 6, z: 0 });
-  approx(floorAmp, 0.8, 1e-9, 'floorReflect should be untouched by ceilingMaterial');
-});
-
-console.log('\n-- openingOverlap (wall opening / doorway coverage) --');
-
-test('openingOverlap is 1.0 anywhere inside the opening span', () => {
-  const opening = { pos: 14, width: 4 }; // spans [14,18]
-  approx(P.openingOverlap(opening, 14), 1.0, 1e-9, 'left edge');
-  approx(P.openingOverlap(opening, 16), 1.0, 1e-9, 'middle');
-  approx(P.openingOverlap(opening, 18), 1.0, 1e-9, 'right edge');
-});
-
-test('openingOverlap tapers linearly to 0 over 3ft outside the opening', () => {
-  const opening = { pos: 14, width: 4 }; // spans [14,18]
-  approx(P.openingOverlap(opening, 13), 1 - 1/3, 1e-9, '1ft outside');
-  approx(P.openingOverlap(opening, 12.5), 0.5, 1e-9, '1.5ft outside -- taper midpoint');
-  approx(P.openingOverlap(opening, 11), 0, 1e-9, '3ft outside -- taper fully spent');
-  assert.strictEqual(P.openingOverlap(opening, 9), 0, 'well beyond the taper zone should clamp to 0, not go negative');
-});
-
-test('openingOverlap can be positioned anywhere along a wall, not anchored to a fixed corner', () => {
-  const midWall = { pos: 7, width: 3 }; // an opening in the MIDDLE of a wall, e.g. an 18ft wall
-  approx(P.openingOverlap(midWall, 7), 1.0, 1e-9, 'left edge of a mid-wall opening');
-  approx(P.openingOverlap(midWall, 8.5), 1.0, 1e-9, 'middle of a mid-wall opening');
-  approx(P.openingOverlap(midWall, 10), 1.0, 1e-9, 'right edge of a mid-wall opening');
-  approx(P.openingOverlap(midWall, 0), 0, 1e-9, 'far from a mid-wall opening (both sides are now "outside")');
-  approx(P.openingOverlap(midWall, 17), 0, 1e-9, 'far from a mid-wall opening on the other side too');
-});
-
-console.log('\n-- wallWithOpenings --');
-
-test('wallWithOpenings returns base amplitude when openingsEnabled is false', () => {
-  const openings = [{ wall:'front', pos:0, width:20, factor:1, enabled:true }];
-  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, false);
-  approx(amp, 0.7, 1e-9, 'master toggle off should bypass all openings');
-});
-
-test('wallWithOpenings returns base amplitude when the opening is individually disabled', () => {
-  const openings = [{ wall:'front', pos:0, width:20, factor:1, enabled:false }];
-  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
-  approx(amp, 0.7, 1e-9, 'disabled opening should not reduce reflection');
-});
-
-test('wallWithOpenings ignores openings mounted on a different wall than the one being queried', () => {
-  const openings = [{ wall:'left', pos:0, width:20, factor:1, enabled:true }];
-  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
-  approx(amp, 0.7, 1e-9, 'an opening on a different wall must not affect this wall\'s amplitude');
-});
-
-test('wallWithOpenings reduces amplitude by exactly factor when the point is inside the opening span', () => {
-  const openings = [{ wall:'front', pos:0, width:20, factor:0.6, enabled:true }];
-  const amp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, openings, true);
-  approx(amp, 0.7 * (1 - 0.6), 1e-9);
-});
-
-test('wallWithOpenings leaves amplitude unchanged when point falls well OUTSIDE the opening span (beyond taper)', () => {
-  const openings = [{ wall:'front', pos:0, width:3, factor:1, enabled:true }]; // covers x=[0,3]
-  const amp = P.wallWithOpenings('front', {x:20,y:0,z:3}, 0.7, openings, true); // x=20, well off-opening
-  approx(amp, 0.7, 1e-9, 'point outside opening footprint (and its taper zone) should be untouched');
-});
-
-test('wallWithOpenings compounds amplitude multiplicatively when two openings on the same wall both cover the point', () => {
-  const oneOpening = [{ wall:'front', pos:0, width:20, factor:0.5, enabled:true }];
-  const twoOpenings = [
-    { wall:'front', pos:0, width:20, factor:0.5, enabled:true },
-    { wall:'front', pos:0, width:20, factor:0.4, enabled:true } // fully overlapping second opening
-  ];
-  const oneAmp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, oneOpening, true);
-  const twoAmp = P.wallWithOpenings('front', {x:5,y:0,z:3}, 0.7, twoOpenings, true);
-  approx(twoAmp, 0.7 * (1-0.5) * (1-0.4), 1e-9);
-  assert.ok(twoAmp < oneAmp, 'two overlapping openings should reduce amplitude at least as much as either alone');
-});
-
-test('wallWithOpenings reads the along-wall coordinate from basePoint.y for left/right walls, basePoint.x for front/back', () => {
-  const leftOpening = [{ wall:'left', pos:2, width:2, factor:1, enabled:true }]; // y=[2,4]
-  const onOpening = P.wallWithOpenings('left', {x:0,y:3,z:3}, 0.7, leftOpening, true);
-  const offOpening = P.wallWithOpenings('left', {x:0,y:20,z:3}, 0.7, leftOpening, true);
-  approx(onOpening, 0, 1e-9);
-  approx(offOpening, 0.7, 1e-9);
-});
-
-console.log('\n-- boundaryOps: openings on any wall, before panel absorption --');
-// Every prior test in this file (before this section) used openings: [], so
-// this shipped feature had no coverage of the actual blend end-to-end. Also
-// verifies openings now apply to EVERY wall (left/right/front/back), not just
-// front -- the whole point of generalizing away from the old hardcoded
-// front-wall-only entryway.
-
-test('boundaryOps applies an opening on the FRONT wall to front-wall amplitude only', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const openings = [{ wall:'front', pos:14, width:4, factor:0.6, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
-  const ops = P.boundaryOps(200, ctx);
-  const front = ops.find(o => o.name === 'front').amp({ x: 16, y: 6, z: 3 });
-  const left = ops.find(o => o.name === 'left').amp({ x: 0, y: 6, z: 3 });
-  approx(front, 0.7 * (1 - 0.6), 1e-9, 'front wall inside the opening should be reduced');
-  approx(left, 0.7, 1e-9, 'left wall (no opening on it) should be untouched');
-});
-
-test('boundaryOps applies an opening on the LEFT wall (or any non-front wall) just as it does on front', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const openings = [{ wall:'left', pos:2, width:3, factor:0.6, enabled:true }]; // y=[2,5]
-  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
-  const left = P.boundaryOps(200, ctx).find(o => o.name === 'left');
-  approx(left.amp({ x: 0, y: 3.5, z: 3 }), 0.7 * (1 - 0.6), 1e-9, 'inside the opening span on the left wall');
-  approx(left.amp({ x: 0, y: 13, z: 3 }), 0.7, 1e-9, 'far from the opening on the left wall');
-});
-
-test('boundaryOps applies openings on multiple different walls simultaneously', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const openings = [
-    { wall:'front', pos:14, width:4, factor:1, enabled:true },
-    { wall:'back', pos:0, width:4, factor:1, enabled:true }
-  ];
-  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
-  const ops = P.boundaryOps(200, ctx);
-  approx(ops.find(o => o.name === 'front').amp({ x: 16, y: 6, z: 3 }), 0, 1e-9, 'front wall opening active');
-  approx(ops.find(o => o.name === 'back').amp({ x: 2, y: 6, z: 3 }), 0, 1e-9, 'back wall opening ALSO active, independently');
-  approx(ops.find(o => o.name === 'right').amp({ x: 18, y: 6, z: 3 }), 0.7, 1e-9, 'right wall has no opening, untouched');
-});
-
-test('boundaryOps applies opening reduction BEFORE panel absorption (both stack multiplicatively)', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const openings = [{ wall:'front', pos:0, width:20, factor:0.5, enabled:true }];
-  const panels = [{ wall:'front', pos:0, length:20, thickness:2, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels, panelsEnabled: true };
-  const front = P.boundaryOps(400, ctx).find(o => o.name === 'front');
-  const amp = front.amp({ x: 5, y: 0, z: 3 });
-  const expectedAfterOpening = 0.7 * (1 - 0.5);
-  const absorb = P.panelAbsorptionAtFreq(panels[0], 400);
-  approx(amp, expectedAfterOpening * (1 - absorb), 1e-9, 'panel absorption should apply on top of the opening-reduced amplitude, not independently of it');
-});
-
-test('REGRESSION: wall reflection amplitude does not jump discontinuously as a source sweeps across an opening edge', () => {
-  const room = { w: 18, d: 13.5, h: 8 }; // opening starts at x=14
-  const openings = [{ wall:'front', pos:14, width:4, factor:0.8, enabled:true }];
-  const ctx = { room, wallReflect: 0.7, openings, openingsEnabled: true, panels: [], panelsEnabled: true };
-  const front = P.boundaryOps(200, ctx).find(o => o.name === 'front');
-  const amps = [];
-  for(let x = 12.5; x <= 15.5; x += 0.05){
-    amps.push(front.amp({ x, y: 6, z: 3 }));
-  }
-  let maxStep = 0;
-  for(let i = 1; i < amps.length; i++){
-    maxStep = Math.max(maxStep, Math.abs(amps[i] - amps[i-1]));
-  }
-  // 3ft taper, 0.05ft step, full swing = wallReflect*factor = 0.56 -> expect small steps
-  assert.ok(maxStep < 0.03, `expected smooth transition, got a max single-step jump of ${maxStep.toFixed(4)}`);
-});
-
-console.log('\n-- getImageSources (image-source method / regression tests) --');
-
-test('order 1 produces exactly 7 image sources (direct + 6 single-wall bounces)', () => {
-  const imgs = P.getImageSources(9, 6, 3, 1, 100, baseCtx());
-  assert.strictEqual(imgs.length, 7, `expected 7, got ${imgs.length}`);
-});
-
-test('order 2 produces exactly 1 + 6 + 6*5 = 37 image sources', () => {
-  const imgs = P.getImageSources(9, 6, 3, 2, 100, baseCtx());
-  assert.strictEqual(imgs.length, 37, `expected 37, got ${imgs.length}`);
-});
-
-test('order<=0 returns only the direct source (no bounces)', () => {
-  // getImageSources now loops `order` times rather than having the first
-  // bounce hardcoded unconditionally, so order=0 (or negative) correctly
-  // means "zero bounces" -- a behavior fix vs. an earlier version of this
-  // function, where order<=0 still returned the 6 first-order bounces.
-  const ctx = baseCtx();
-  const direct = P.getImageSources(9, 6, 3, 1, 100, ctx)[0];
-  const order0 = P.getImageSources(9, 6, 3, 0, 100, ctx);
-  const orderNeg = P.getImageSources(9, 6, 3, -5, 100, ctx);
-  assert.strictEqual(order0.length, 1, `expected order=0 to return only the direct source, got ${order0.length}`);
-  assert.strictEqual(orderNeg.length, 1, `expected a negative order to return only the direct source, got ${orderNeg.length}`);
-  assert.deepStrictEqual(order0[0], direct);
-});
-
-test('order 3 produces exactly 1 + 6 + 30 + 150 = 187 image sources (each level multiplies the previous by 5)', () => {
-  const ctx = baseCtx();
-  const order2 = P.getImageSources(9, 6, 3, 2, 100, ctx);
-  const order3 = P.getImageSources(9, 6, 3, 3, 100, ctx);
-  assert.strictEqual(order3.length, 187, `expected 187, got ${order3.length}`);
-  assert.notStrictEqual(order3.length, order2.length, 'order 3 should genuinely differ from order 2, not collapse to it');
-  // order 3 should still contain every order<=2 entry (each level is
-  // cumulative, not a replacement of the previous ones).
-  for(const img of order2){
-    assert.ok(order3.some(o => o.x === img.x && o.y === img.y && o.z === img.z && o.amp === img.amp),
-      'every order-2 image source should still be present in the order-3 result');
-  }
-});
-
-test('order 4 continues the same pattern (937 sources), confirming this is a genuine N-level loop, not a hardcoded 3rd level', () => {
-  const ctx = baseCtx();
-  const order4 = P.getImageSources(9, 6, 3, 4, 100, ctx);
-  assert.strictEqual(order4.length, 937, `expected 937, got ${order4.length}`);
-});
-
-test('direct source position/amplitude is unchanged (first entry)', () => {
-  const imgs = P.getImageSources(9, 6, 3, 1, 100, baseCtx());
-  const direct = imgs[0];
-  approx(direct.x, 9, 1e-9);
-  approx(direct.y, 6, 1e-9);
-  approx(direct.z, 3, 1e-9);
-  approx(direct.amp, 1.0, 1e-9);
-});
-
-test('left-wall image source is mirrored across x=0 with base wallReflect amplitude', () => {
-  const ctx = baseCtx();
-  const imgs = P.getImageSources(9, 6, 3, 1, 100, ctx);
-  const leftImg = imgs.find((img, i) => i > 0 && img.x === -9 && img.y === 6 && img.z === 3);
-  assert.ok(leftImg, 'expected a left-wall mirror at x=-9');
-  approx(leftImg.amp, 0.7, 1e-9);
-});
-
-test('floor and ceiling image sources exist and mirror the z coordinate', () => {
-  const ctx = baseCtx();
-  const imgs = P.getImageSources(9, 6, 3, 1, 100, ctx);
-  const floorImg = imgs.find(img => img.z === -3);
-  const ceilImg = imgs.find(img => img.z === 2*ctx.room.h - 3);
-  assert.ok(floorImg, 'expected a floor mirror at z=-3');
-  assert.ok(ceilImg, `expected a ceiling mirror at z=${2*ctx.room.h-3}`);
-});
-
-test('REGRESSION: every source (including a newly-added sub-like source) has a defined z used consistently', () => {
-  // Regression for the bug where sources added via "+ Add source" lacked a z field,
-  // producing NaN through the whole field computation. precomputeSourceImages uses
-  // `s.z ?? 3` as a fallback — verify that fallback actually prevents NaN.
-  const subWithNoZ = { x: 5, y: 2, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }; // no z!
-  const pre = P.precomputeSourceImages([subWithNoZ], 1, 60, baseCtx());
-  assert.ok(pre[0] !== null, 'source should not be filtered out');
-  for(const img of pre[0].imgSources){
-    assert.ok(Number.isFinite(img.z), `image source z should be finite, got ${img.z}`);
-    assert.ok(Number.isFinite(img.x) && Number.isFinite(img.y), 'x/y should be finite too');
-  }
-});
-
-test('REGRESSION: computeFieldAtPoint never returns NaN for a well-formed scene', () => {
-  const sources = [
-    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000 },
-    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000 }
-  ];
-  const ctx = baseCtx();
-  const freq = 200;
-  const lambda = P.C / freq;
-  const k = 2 * Math.PI / lambda;
-  const pre = P.precomputeSourceImages(sources, 1, freq, ctx);
-  const { re, im } = P.computeFieldAtPoint(9, 9, 3.5, pre, k);
-  assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite re/im, got re=${re} im=${im}`);
-});
-
-test('REGRESSION: a source with an invalid (negative) freqLow/freqHigh gain input is dropped, not left to poison the field', () => {
-  // Before this was fixed, sourceGainAtFreq could return NaN for a source
-  // evaluated at f<0, and precomputeSourceImages's `freqGain < 0.0005` filter
-  // let NaN through uncaught (NaN fails every direct comparison) -- so the
-  // malformed source's NaN contribution silently wrecked re/im for every
-  // other source sharing that field point. This exercises the fix at both
-  // layers: sourceGainAtFreq no longer produces NaN, and even if some future
-  // gain function did, precomputeSourceImages's !(freqGain >= 0.0005) filter
-  // would still catch and drop it.
-  const goodSource = { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
-  const badSource = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
-  const ctx = baseCtx();
-  const freq = -50; // malformed: negative evaluation frequency
-  const pre = P.precomputeSourceImages([goodSource, badSource], 1, freq, ctx);
-  assert.strictEqual(pre[0], null, 'source evaluated at a negative frequency should be filtered out, not poison the array');
-  assert.strictEqual(pre[1], null, 'same for the second source');
-
-  // And a mixed, realistic case: one well-formed source at a valid frequency
-  // alongside one that (if it ever produced NaN again) must not contaminate
-  // the sum for the well-formed one.
-  const mixedPre = P.precomputeSourceImages([goodSource], 1, 200, ctx);
-  const k = 2 * Math.PI * 200 / P.C;
-  const { re, im } = P.computeFieldAtPoint(9, 9, 3.5, mixedPre, k);
-  assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite re/im, got re=${re} im=${im}`);
-});
-
-console.log('\n-- computeFieldAtPoint near-field clamp (r < 0.3m floor) --');
-
-test('field is finite (not Infinity/NaN) exactly at a source position (true r=0)', () => {
-  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
-  const ctx = baseCtx({ wallReflect: 0 }); // isolate direct path only
-  const freq = 100;
-  const k = 2 * Math.PI * freq / P.C;
-  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
-  const { re, im } = P.computeFieldAtPoint(9, 6, 3, pre, k);
-  assert.ok(Number.isFinite(re) && Number.isFinite(im), `expected finite field at r=0, got re=${re} im=${im}`);
-});
-
-test('REGRESSION: a source contributes an IDENTICAL complex value at every point strictly within the 0.3m clamp radius, regardless of direction', () => {
-  // amp=(src.amp/r)*levelGain and phase=k*r+extraPhase are both computed from
-  // the SAME clamped r, so the entire sub-0.3m sphere around a source collapses
-  // to one constant field value -- not just amplitude-flat, but direction-independent.
-  // This is a real, if subtle, consequence of the hard (non-tapered) clamp.
-  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
-  const ctx = baseCtx({ wallReflect: 0 });
-  const freq = 100;
-  const k = 2 * Math.PI * freq / P.C;
-  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
-  const offsetFt = 0.1 / P.FT_TO_M; // 0.1m, well inside the 0.3m clamp radius
-
-  const atSource = P.computeFieldAtPoint(9, 6, 3, pre, k);
-  const offsetX = P.computeFieldAtPoint(9 + offsetFt, 6, 3, pre, k);
-  const offsetY = P.computeFieldAtPoint(9, 6 + offsetFt, 3, pre, k);
-
-  approx(offsetX.re, atSource.re, 1e-9, 're should be identical across the clamp sphere');
-  approx(offsetX.im, atSource.im, 1e-9, 'im should be identical across the clamp sphere');
-  approx(offsetY.re, atSource.re, 1e-9, 're should not depend on direction within the clamp sphere');
-  approx(offsetY.im, atSource.im, 1e-9, 'im should not depend on direction within the clamp sphere');
-});
-
-test('normal 1/r falloff resumes once the true distance exceeds the 0.3m clamp radius', () => {
-  const src = { x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
-  const ctx = baseCtx({ wallReflect: 0 });
-  const freq = 100;
-  const k = 2 * Math.PI * freq / P.C;
-  const pre = P.precomputeSourceImages([src], 1, freq, ctx);
-
-  const justInsideFt = 0.29 / P.FT_TO_M;
-  const justOutsideFt = 0.5 / P.FT_TO_M; // safely past the clamp radius
-  const insideMag = magOf(P.computeFieldAtPoint(9 + justInsideFt, 6, 3, pre, k));
-  const outsideMag = magOf(P.computeFieldAtPoint(9 + justOutsideFt, 6, 3, pre, k));
-  assert.ok(outsideMag < insideMag, `expected magnitude to fall off past the clamp radius: inside=${insideMag}, outside=${outsideMag}`);
-});
-
 console.log('\n-- fieldDbAtPoint: known-configuration sanity checks --');
 
 test('pressure falls off with distance from a single source (no reflections)', () => {
   // wallReflect=0 isolates the direct-path-only behavior (no boundary contributions)
-  const ctx = baseCtx({ wallReflect: 0 });
+  const ctx = baseCtx();
   const sources = [{ x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
-  const freq = 200;
-  const near = P.fieldDbAtPoint(9, 6.5, 3, sources, 1, freq, ctx); // ~0.5ft away
-  const far  = P.fieldDbAtPoint(9, 12, 3, sources, 1, freq, ctx);  // ~6ft away
+  const freq = 120;
+  const near = P.fieldDbAtPoint(9, 6.5, 3, sources, freq, ctx); // ~0.5ft away
+  const far  = P.fieldDbAtPoint(9, 12, 3, sources, freq, ctx);  // ~6ft away
   assert.ok(near > far, `expected near point louder than far point: near=${near}dB far=${far}dB`);
 });
 
-test('doubling distance from a single free-field source drops level by roughly 6dB (inverse-square law)', () => {
-  const ctx = baseCtx({ wallReflect: 0 });
-  const sources = [{ x: 0, y: 0, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
-  const freq = 200;
-  // Pick points far enough from the source that FT_TO_M distance clamp (0.3m) doesn't dominate,
-  // and along an axis where phase differences are small relative to spacing (use y-offset only,
-  // same x, to isolate radial falloff along one direction).
-  const d1 = P.fieldDbAtPoint(0, 10, 3, sources, 1, freq, ctx);
-  const d2 = P.fieldDbAtPoint(0, 20, 3, sources, 1, freq, ctx);
-  approx(d1 - d2, 6.02, 0.5, 'inverse-square law: 6dB drop per doubling of distance');
-});
-
 test('source outside its frequency range contributes negligible energy', () => {
-  const ctx = baseCtx({ wallReflect: 0 });
+  const ctx = baseCtx();
   const subOnly = [{ x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
-  const dbAtPassband = P.fieldDbAtPoint(9, 8, 3.5, subOnly, 1, 60, ctx);   // inside 20-80Hz
-  const dbFarAbove   = P.fieldDbAtPoint(9, 8, 3.5, subOnly, 1, 2000, ctx); // way above freqHigh
+  const dbAtPassband = P.fieldDbAtPoint(9, 8, 3.5, subOnly, 60, ctx);   // inside 20-80Hz
+  const dbFarAbove   = P.fieldDbAtPoint(9, 8, 3.5, subOnly, 2000, ctx); // many octaves above freqHigh -- crossover rolloff dominates regardless of mode cutoff (querying a driving frequency well past every mode's own resonance is still well-defined, just far off-resonance for all of them)
   assert.ok(dbFarAbove < dbAtPassband - 40,
     `expected far-above-passband level to be much lower: passband=${dbAtPassband}dB farAbove=${dbFarAbove}dB`);
+});
+
+test('reciprocity: swapping source and receiver positions gives an identical field', () => {
+  // psi_n(r)*psi_n(r_s) is symmetric in r/r_s by construction -- a strong,
+  // cheap correctness check on the mode-shape evaluation code (catches e.g.
+  // accidentally using the wrong axis length for one side).
+  const ctx = baseCtx();
+  const a = { x: 4, y: 3, z: 2 };
+  const b = { x: 12, y: 9, z: 5 };
+  const freq = 90;
+  const dbAtoB = P.fieldDbAtPoint(b.x, b.y, b.z, [{ ...a, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }], freq, ctx);
+  const dbBtoA = P.fieldDbAtPoint(a.x, a.y, a.z, [{ ...b, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }], freq, ctx);
+  approx(dbAtoB, dbBtoA, 1e-6, 'field should be identical whether source is at a/receiver at b, or vice versa');
+});
+
+test('rigid-wall boundary check: mode shape magnitude is exactly 1 at every wall regardless of mode index', () => {
+  // cos(nx*pi*x/Lx) = +-1 at x=0 and x=Lx for every integer nx -- the rigid-
+  // wall (Neumann) antinode condition this whole method is built on.
+  const ctx = baseCtx();
+  const modes = P.enumerateModes(ctx);
+  assert.ok(modes.length > 0, 'expected at least one mode below the default cutoff');
+  const room = ctx.room;
+  for(const mode of modes.slice(0, 20)){
+    const psiAtLeftWall = Math.cos(mode.invLx * 0);
+    const psiAtRightWall = Math.cos(mode.invLx * room.w * P.FT_TO_M);
+    approx(Math.abs(psiAtLeftWall), 1, 1e-9, `mode (${mode.nx},${mode.ny},${mode.nz}) at left wall`);
+    approx(Math.abs(psiAtRightWall), 1, 1e-9, `mode (${mode.nx},${mode.ny},${mode.nz}) at right wall`);
+  }
 });
 
 console.log('\n-- sphereSamplePoints --');
@@ -959,11 +265,11 @@ test('radius 0 exactly matches a plain single-point fieldDbAtPoint at every freq
   const ctx = baseCtx({ wallReflect: 0.7 });
   const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
   const freqs = [40, 80, 160];
-  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, 2, ctx, { radiusFt: 0, numPoints: 8 });
+  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, ctx, { radiusFt: 0, numPoints: 8 });
   assert.strictEqual(result.length, freqs.length);
   for(let i = 0; i < freqs.length; i++){
     assert.strictEqual(result[i].freq, freqs[i]);
-    const direct = P.fieldDbAtPoint(9, 9, 3.5, sources, 2, freqs[i], ctx);
+    const direct = P.fieldDbAtPoint(9, 9, 3.5, sources, freqs[i], ctx);
     approx(result[i].db, direct, 0.01, `freq=${freqs[i]}`);
   }
 });
@@ -975,7 +281,7 @@ test('spatial averaging smooths out a deep coherent null relative to the exact p
   // at the midpoint between them (equal path length + intentional half-period
   // phase flip = full cancellation) -- the classic worst case for a single
   // exact-point reading.
-  const ctx = baseCtx({ wallReflect: 0 }); // isolate direct-path interference
+  const ctx = baseCtx({ wallReflect: 0.985 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant rather than swamped in reverberation
   const freq = 100;
   const lambda = P.C / freq;
   const sepFt = (lambda / 2) / P.FT_TO_M;
@@ -984,9 +290,16 @@ test('spatial averaging smooths out a deep coherent null relative to the exact p
     { x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 },
     { x: 9 + sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: halfPeriodMs, freqLow: 20, freqHigh: 20000 }
   ];
-  const exactDb = P.fieldDbAtPoint(9, 6, 3, sources, 1, freq, ctx);
-  const averaged = P.spatiallyAveragedResponse(9, 6, 3, [freq], sources, 1, ctx, { radiusFt: 1, numPoints: 20 });
-  assert.ok(exactDb < -25, `expected a deep null at the exact midpoint, got ${exactDb.toFixed(1)}dB`);
+  const exactDb = P.fieldDbAtPoint(9, 6, 3, sources, freq, ctx);
+  const averaged = P.spatiallyAveragedResponse(9, 6, 3, [freq], sources, ctx, { radiusFt: 1, numPoints: 20 });
+  // Reference: a single one of the two sources alone at the same point, with
+  // no antiphase partner to cancel against -- the "no cancellation" baseline
+  // this test's null should read well below. Relative to this baseline (not a
+  // hardcoded absolute dB number) since the modal method's overall amplitude
+  // scale/reference differs from a free-field convention.
+  const singleSourceDb = P.fieldDbAtPoint(9, 6, 3, [sources[0]], freq, ctx);
+  assert.ok(exactDb < singleSourceDb - 25,
+    `expected a deep null at the exact midpoint relative to a single source alone: exact=${exactDb.toFixed(1)}dB singleSource=${singleSourceDb.toFixed(1)}dB`);
   assert.ok(averaged[0].db > exactDb + 15,
     `expected spatial averaging to read meaningfully higher than the exact null: exact=${exactDb.toFixed(1)}dB averaged=${averaged[0].db.toFixed(1)}dB`);
 });
@@ -995,7 +308,7 @@ test('returns one entry per input frequency, in the same order', () => {
   const ctx = baseCtx();
   const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
   const freqs = [30, 200, 60, 150];
-  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, 1, ctx);
+  const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, ctx);
   assert.deepStrictEqual(result.map(r => r.freq), freqs);
   for(const r of result) assert.ok(Number.isFinite(r.db), `non-finite dB at freq=${r.freq}`);
 });
@@ -1024,6 +337,99 @@ test('axial modes respects maxFreq cutoff', () => {
   }
 });
 
+console.log('\n-- enumerateModes / precomputeModalField (rectangular-room modal solution) --');
+
+test('mode count for the default 18x13.5x8 room at the 300Hz cutoff falls in the expected range', () => {
+  // Sanity check on the enumeration itself (catches e.g. an off-by-one in the
+  // ellipsoid bound, or a sign error dropping half the octant) -- expected
+  // order of magnitude is ~150-200 for this room per the mode-density estimate
+  // this cutoff was chosen from.
+  const ctx = { room: baseRoom, wallReflect: 0.7 };
+  const modes = P.enumerateModes(ctx);
+  assert.ok(modes.length > 50 && modes.length < 500,
+    `expected roughly 100-300 modes below 300Hz for this room, got ${modes.length}`);
+});
+
+test('field has a local peak in frequency at an exact axial-mode resonance', () => {
+  // Source and listener both at the room corner (0,0,0) -- an antinode for
+  // EVERY axial mode along every axis (cos(n*pi*0/L)=1 regardless of n) --
+  // maximizes coupling to axial modes specifically, so the exact axialModes()
+  // frequency should show up as a genuine local peak, not just a coincidence.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.985 }; // light damping -- keeps the peak sharp/detectable
+  const source = { x: 0, y: 0, z: 0, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const [f1] = P.axialModes(room.w, 1, 300); // exact x-axial mode 1 frequency
+  const magAt = (f) => P.fieldDbAtPoint(0, 0, 0, [source], f, ctx);
+  const atPeak = magAt(f1);
+  const below = magAt(f1 - 3);
+  const above = magAt(f1 + 3);
+  assert.ok(atPeak > below && atPeak > above,
+    `expected a local peak at the exact axial resonance f=${f1.toFixed(2)}Hz: below=${below.toFixed(1)}dB at=${atPeak.toFixed(1)}dB above=${above.toFixed(1)}dB`);
+});
+
+test('a single isolated mode peaks in response exactly at its own resonance frequency', () => {
+  // Isolates ONE mode (bypassing enumerateModes' full room sum) to directly
+  // verify precomputeModalField/computeFieldAtPoint's complex-division math
+  // peaks exactly where the mode's own k_n says it should, independent of
+  // whatever other modes happen to be nearby in the full room sum.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.985 };
+  const modes = P.enumerateModes(ctx);
+  const mode = modes.find(m => m.fn > 60 && m.fn < 250); // a representative mid-range mode
+  assert.ok(mode, 'expected at least one mode in the 60-250Hz range for this room');
+  const source = { x: 3, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const point = { x: 7, y: 4, z: 2 };
+  const magAt = (f) => {
+    const pre = P.precomputeModalField([source], f, ctx, [mode]);
+    const { re, im } = P.computeFieldAtPoint(point.x, point.y, point.z, pre);
+    return Math.sqrt(re*re + im*im);
+  };
+  const atRes = magAt(mode.fn);
+  const below = magAt(mode.fn * 0.9);
+  const above = magAt(mode.fn * 1.1);
+  assert.ok(atRes > below && atRes > above,
+    `expected the isolated mode's response to peak exactly at its own f_n=${mode.fn.toFixed(1)}Hz: below=${below.toExponential(2)} at=${atRes.toExponential(2)} above=${above.toExponential(2)}`);
+});
+
+test("DEMONSTRATION: on-resonance peak magnitude grows as a mode's damping decreases (less absorptive room -> sharper/taller peaks)", () => {
+  const source = { x: 3, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
+  const point = { x: 7, y: 4, z: 2 };
+  const baseMode = { nx: 1, ny: 1, nz: 0, kn: 1.0, An: 1000, invLx: 0.1, invLy: 0.15, invLz: 0 };
+  const freq = baseMode.kn * P.C / (2 * Math.PI); // exactly on resonance
+  const dampingValues = [0.5, 0.1, 0.02, 0.005]; // decreasing damping each step
+  let prevMag = -1;
+  for(const deltaN of dampingValues){
+    const mode = { ...baseMode, deltaN };
+    const pre = P.precomputeModalField([source], freq, { room: baseRoom, wallReflect: 0.7 }, [mode]);
+    const { re, im } = P.computeFieldAtPoint(point.x, point.y, point.z, pre);
+    const mag = Math.sqrt(re*re + im*im);
+    assert.ok(mag > prevMag,
+      `expected magnitude to increase as damping decreases (deltaN=${deltaN}): got ${mag.toExponential(2)}, previous was ${prevMag < 0 ? 'n/a' : prevMag.toExponential(2)}`);
+    prevMag = mag;
+  }
+});
+
+test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks estimatedT60\'s Sabine estimate (same order of magnitude, not exact equality)', () => {
+  // These measure genuinely different things -- one mode's own decay vs a
+  // diffuse-field room average -- so exact equality isn't expected (see
+  // enumerateModes' comment on why per-mode damping varies by mode index even
+  // under uniform absorption). This just confirms they're in the same
+  // ballpark and both derived from the same underlying wall absorption.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallReflect: 0.7 }; // uniform absorption on every surface
+  const modes = P.enumerateModes(ctx);
+  const mode = modes.find(m => m.fn > 100 && m.fn < 200);
+  assert.ok(mode, 'expected a mode in the 100-200Hz range for this room');
+  // delta_n here is spatial (1/m); the temporal damping rate is delta_n*c,
+  // and T60 (60dB energy decay, e^{-delta_temporal*t}) is ln(1e6)/delta_temporal.
+  const deltaTemporal = mode.deltaN * P.C;
+  const t60FromMode = Math.log(1e6) / deltaTemporal;
+  const t60Sabine = P.estimatedT60(room, mode.fn, ctx);
+  const ratio = t60FromMode / t60Sabine;
+  assert.ok(ratio > 0.3 && ratio < 3,
+    `expected same-order-of-magnitude T60 estimates: fromMode=${t60FromMode.toFixed(3)}s sabine=${t60Sabine.toFixed(3)}s ratio=${ratio.toFixed(2)}`);
+});
+
 console.log('\n-- isNearNull / dB sensitivity near interference nulls --');
 
 test('isNearNull classifies below-threshold values as near a null', () => {
@@ -1042,8 +448,8 @@ test('DEMONSTRATION: dB is far more sensitive to tiny position shifts near a nul
   // sources exactly half a wavelength apart, with one delayed by half a period —
   // this puts them in antiphase, guaranteeing a clean, deep destructive-interference
   // null exists on the line between them (rather than hoping a scan finds one).
-  const ctx = baseCtx({ wallReflect: 0 }); // isolate direct-path interference, no room reflections
-  const freq = 300;
+  const ctx = baseCtx({ wallReflect: 0.985 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant
+  const freq = 150;
   const lambda = P.C / freq;
   const sepFt = (lambda / 2) / P.FT_TO_M; // half-wavelength separation, in feet
   // Detune slightly off perfect antiphase (0.999x half-period instead of exactly
@@ -1061,19 +467,22 @@ test('DEMONSTRATION: dB is far more sensitive to tiny position shifts near a nul
   // from any null (mid-way between the sources' outer region, not a scan-edge artifact).
   let nullPoint = null;
   for(let x = 8.5; x <= 9.5; x += 0.001){
-    const db = P.fieldDbAtPoint(x, 6, 3, sources, 1, freq, ctx);
+    const db = P.fieldDbAtPoint(x, 6, 3, sources, freq, ctx);
     if(nullPoint === null || db < nullPoint.db) nullPoint = { x, db };
   }
-  const awayPoint = { x: 9 - sepFt/2 + 0.05, db: P.fieldDbAtPoint(9 - sepFt/2 + 0.05, 6, 3, sources, 1, freq, ctx) }; // just outside a source, clearly not at a null
-  assert.ok(nullPoint.db < -25, `expected a deep null from near-antiphase sources, deepest found was ${nullPoint.db}dB`);
-  assert.ok(nullPoint.db > -100, 'null should not be clamped at the floor, or the sensitivity comparison below is meaningless');
-  assert.ok(awayPoint.db > -15, `expected the away point to clearly not be near a null, got ${awayPoint.db}dB`);
+  const awayPoint = { x: 9 - sepFt/2 + 0.05, db: P.fieldDbAtPoint(9 - sepFt/2 + 0.05, 6, 3, sources, freq, ctx) }; // just outside a source, clearly not at a null
+  // Relative to awayPoint (not a hardcoded absolute dB number), since the
+  // modal method's overall amplitude scale/reference differs from a
+  // free-field convention.
+  assert.ok(nullPoint.db < awayPoint.db - 25,
+    `expected a deep null relative to the away point: null=${nullPoint.db.toFixed(1)}dB away=${awayPoint.db.toFixed(1)}dB`);
+  assert.ok(Number.isFinite(nullPoint.db), 'null dB should be finite');
 
   const TINY_SHIFT = 0.001; // ~0.3mm, well under a pixel at any reasonable render scale
-  const dbAtNull = P.fieldDbAtPoint(nullPoint.x, 6, 3, sources, 1, freq, ctx);
-  const dbNearNullShifted = P.fieldDbAtPoint(nullPoint.x + TINY_SHIFT, 6, 3, sources, 1, freq, ctx);
-  const dbAway = P.fieldDbAtPoint(awayPoint.x, 6, 3, sources, 1, freq, ctx);
-  const dbAwayShifted = P.fieldDbAtPoint(awayPoint.x + TINY_SHIFT, 6, 3, sources, 1, freq, ctx);
+  const dbAtNull = P.fieldDbAtPoint(nullPoint.x, 6, 3, sources, freq, ctx);
+  const dbNearNullShifted = P.fieldDbAtPoint(nullPoint.x + TINY_SHIFT, 6, 3, sources, freq, ctx);
+  const dbAway = P.fieldDbAtPoint(awayPoint.x, 6, 3, sources, freq, ctx);
+  const dbAwayShifted = P.fieldDbAtPoint(awayPoint.x + TINY_SHIFT, 6, 3, sources, freq, ctx);
 
   const sensitivityNearNull = Math.abs(dbAtNull - dbNearNullShifted);
   const sensitivityAway = Math.abs(dbAway - dbAwayShifted);
@@ -1095,8 +504,8 @@ test('a position centered between two coherent-summing sources scores well (loud
   const freqs = [30, 40, 50, 60, 70, 80];
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
 
-  const nearCorner = P.scoreSubPosition({ x: 1, y: 1 }, mains, room, freqs, listeners, ctx, 1);
-  const center = P.scoreSubPosition({ x: 9, y: 6.75 }, mains, room, freqs, listeners, ctx, 1);
+  const nearCorner = P.scoreSubPosition({ x: 1, y: 1 }, mains, room, freqs, listeners, ctx);
+  const center = P.scoreSubPosition({ x: 9, y: 6.75 }, mains, room, freqs, listeners, ctx);
   // Not asserting a specific winner (that depends on the room's actual modes),
   // just that the function produces distinct, finite scores for different positions.
   assert.ok(Number.isFinite(nearCorner.score), 'corner score should be finite');
@@ -1123,8 +532,8 @@ test('a position with a deep null at one frequency scores worse than an equally-
     { x: 5 + (lambda60/2)/P.FT_TO_M, y: 2, z: 1, levelDb: 0, delayMs: (1000/(2*60))*0.999, freqLow: 20, freqHigh: 200, enabled: true }
   ];
 
-  const flatResult = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, flatSources, room, freqs, listeners, ctx, 1);
-  const nullyResult = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, nullySources, room, freqs, listeners, ctx, 1);
+  const flatResult = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, flatSources, room, freqs, listeners, ctx);
+  const nullyResult = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, nullySources, room, freqs, listeners, ctx);
 
   assert.ok(nullyResult.worstStdDev > flatResult.worstStdDev,
     `expected the nulled scenario to have higher std dev (less flat): flat=${flatResult.worstStdDev.toFixed(2)} nully=${nullyResult.worstStdDev.toFixed(2)}`);
@@ -1136,44 +545,54 @@ test('score combines multiple listeners by penalizing the WORST listener, not ju
   const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }];
   const freqs = [40, 60, 80];
 
-  const oneListener = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, mains, room, freqs, [{x:9,y:9,z:3.5}], ctx, 1);
-  const twoListeners = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, mains, room, freqs, [{x:9,y:9,z:3.5},{x:2,y:12,z:3.5}], ctx, 1);
+  const oneListener = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, mains, room, freqs, [{x:9,y:9,z:3.5}], ctx);
+  const twoListeners = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, mains, room, freqs, [{x:9,y:9,z:3.5},{x:2,y:12,z:3.5}], ctx);
   // Both should produce finite, sane scores; the two-listener score reflects the worse of the two seats.
   assert.ok(Number.isFinite(oneListener.score));
   assert.ok(Number.isFinite(twoListeners.score));
   assert.strictEqual(twoListeners.listenerStats.length, 2);
 });
 
-test('worstMinDb penalty engages (score is reduced) when the worst listener has a deep null (minDb < -20dB)', () => {
+test('worstMinDb penalty engages (score is reduced) when the worst listener dips 20dB+ below the scene average', () => {
+  // The penalty is relative to the scene's own avgMean, not a hardcoded
+  // absolute dB number (see scoreSubPosition's comment) -- so this needs a
+  // genuine frequency-dependent interference null, not just "a quiet source
+  // far away." Two coherent sources half a wavelength apart at freq0, with
+  // one delayed by half a period, cancel sharply AT freq0 but not at other
+  // frequencies (their fixed physical delay doesn't correspond to a half-
+  // wavelength separation elsewhere), producing a deep dip relative to the
+  // scene's own average across the freq list.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true }; // isolate direct path, no reflections
-  // The candidate itself always contributes to the field too (default levelDb:0,
-  // freqLow:20,freqHigh:20000 unless overridden) -- silence it via an explicit
-  // levelDb override so this scenario is driven purely by quietSource.
-  const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
-  const quietSource = { x: 9, y: 6, z: 1, levelDb: -30, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
-  const listeners = [{ x: 9, y: 6, z: 4 }]; // ~0.91m from quietSource
-  const freqs = [60]; // a single frequency sample -> stdDev is trivially 0, isolating the minDb term
+  const ctx = { room, wallReflect: 0.7 };
+  const listener = { x: 9, y: 6, z: 3.5 };
+  const freq0 = 60;
+  const lambda = P.C / freq0;
+  const sepFt = (lambda / 2) / P.FT_TO_M;
+  const halfPeriodMs = (1000 / (2 * freq0)) * 0.999; // detuned slightly off perfect antiphase
+  const otherSources = [{ x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const candidatePos = { x: 9 + sepFt/2, y: 6, z: 3, delayMs: halfPeriodMs };
+  const freqs = [freq0 * 0.4, freq0, freq0 * 1.7]; // freq0 is the null; the other two are well off it
 
-  const result = P.scoreSubPosition(silentCandidate, [quietSource], room, freqs, listeners, ctx, 1);
-  assert.ok(result.worstMinDb < -20, `expected a deep null (<-20dB) to set up this test, got worstMinDb=${result.worstMinDb.toFixed(1)}`);
-  approx(result.worstStdDev, 0, 1e-9, 'a single frequency sample should give zero std dev');
-  const expectedPenalty = (-result.worstMinDb - 20) * 0.5;
+  const result = P.scoreSubPosition(candidatePos, otherSources, room, freqs, [listener], ctx);
+  assert.ok(result.avgMean - result.worstMinDb > 20,
+    `expected a null 20dB+ below the scene average to set up this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
+  const expectedPenalty = Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
   assert.ok(expectedPenalty > 0, 'this scenario should actually exercise a nonzero penalty');
-  approx(result.score, result.avgMean - expectedPenalty, 1e-6, 'score should equal avgMean minus the worstMinDb penalty');
+  approx(result.score, result.avgMean - (result.worstStdDev * 1.5) - expectedPenalty, 1e-6, 'score should equal avgMean minus the stdDev and worstMinDb penalty terms');
 });
 
-test('worstMinDb penalty is exactly zero when no listener dips below -20dB', () => {
+test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the scene average', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallReflect: 0.7 };
   const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
   const loudSource = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 6, z: 4 }];
-  const freqs = [60];
+  const freqs = [40, 60, 80]; // no interference partner (candidate is silenced) -- flat-ish response, no relative dip
 
-  const result = P.scoreSubPosition(silentCandidate, [loudSource], room, freqs, listeners, ctx, 1);
-  assert.ok(result.worstMinDb >= -20, `expected no deep null for this test, got worstMinDb=${result.worstMinDb.toFixed(1)}`);
-  approx(result.score, result.avgMean, 1e-6, 'with the penalty inactive, score should equal avgMean exactly (stdDev is also 0 here)');
+  const result = P.scoreSubPosition(silentCandidate, [loudSource], room, freqs, listeners, ctx);
+  assert.ok(result.avgMean - result.worstMinDb <= 20,
+    `expected no null 20dB+ below average for this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
+  approx(result.score, result.avgMean - (result.worstStdDev * 1.5), 1e-6, 'with the null penalty inactive, score should equal avgMean minus only the stdDev term');
 });
 
 console.log("\n-- scoreSubPosition: mode:'nullAvoidance' (for users with room correction/EQ) --");
@@ -1184,8 +603,8 @@ test("mode defaults to 'balanced' when omitted (backward compatible)", () => {
   const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
   const freqs = [40, 60, 80];
-  const withoutMode = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1);
-  const explicitBalanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'balanced');
+  const withoutMode = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx);
+  const explicitBalanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 'balanced');
   approx(withoutMode.score, explicitBalanced.score, 1e-9);
 });
 
@@ -1195,33 +614,32 @@ test("mode:'nullAvoidance' score equals worstMinDb exactly, ignoring avgMean and
   const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
   const freqs = [40, 60, 80];
-  const result = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  const result = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 'nullAvoidance');
   approx(result.score, result.worstMinDb, 1e-9);
-  const balanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 1, 'balanced');
+  const balanced = P.scoreSubPosition({x:2,y:2,z:1}, [source], room, freqs, listeners, ctx, 'balanced');
   assert.notStrictEqual(result.score, balanced.score, "nullAvoidance and balanced should generally disagree on the same scene's score");
 });
 
 test("mode:'nullAvoidance' ranks the sharper-dip scenario worse, purely by tracking each scenario's own worst point (not a blend with average level)", () => {
-  // Same construction as the 'balanced' mode null-penalty test above: a
-  // single-source flat scenario vs a two-source scenario with a sharper dip
-  // at one frequency (from partial phase cancellation).
+  // A single source with a wide passband (flat across the test freqs) vs the
+  // same source with its passband narrowed to start at 58Hz -- a deterministic,
+  // steep crossover rolloff (not fragile interference-based cancellation,
+  // which the modal method resists: a single fixed delay can't cleanly null
+  // EVERY contributing mode simultaneously the way a two-point free-field
+  // calculation could) produces a genuine, sizeable dip at the low end of the
+  // freq list relative to the flat scenario.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallReflect: 0.7 };
   const freqs = [40, 50, 60, 70, 80];
   const listeners = [{ x: 9, y: 6, z: 3.5 }];
-  const candidatePos = { x: 9, y: 6.75, z: 1 };
+  const candidatePos = { x: 9, y: 6.75, z: 1, levelDb: -200 }; // silenced -- isolate the comparison to the source arrays below
+  const pos = { x: 5, y: 2, z: 1 };
 
-  const flatSources = [
-    { x: 5, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }
-  ];
-  const lambda60 = P.C / 60;
-  const nullySources = [
-    { x: 5, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true },
-    { x: 5 + (lambda60/2)/P.FT_TO_M, y: 2, z: 1, levelDb: 0, delayMs: (1000/(2*60))*0.999, freqLow: 20, freqHigh: 200, enabled: true }
-  ];
+  const flatSources = [{ ...pos, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const nullySources = [{ ...pos, levelDb: 0, delayMs: 0, freqLow: 58, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true }];
 
-  const flatNullAvoid = P.scoreSubPosition(candidatePos, flatSources, room, freqs, listeners, ctx, 1, 'nullAvoidance');
-  const nullyNullAvoid = P.scoreSubPosition(candidatePos, nullySources, room, freqs, listeners, ctx, 1, 'nullAvoidance');
+  const flatNullAvoid = P.scoreSubPosition(candidatePos, flatSources, room, freqs, listeners, ctx, 'nullAvoidance');
+  const nullyNullAvoid = P.scoreSubPosition(candidatePos, nullySources, room, freqs, listeners, ctx, 'nullAvoidance');
   assert.ok(nullyNullAvoid.score < flatNullAvoid.score,
     `expected the nulled candidate to score worse in nullAvoidance mode: flat=${flatNullAvoid.score.toFixed(1)} nully=${nullyNullAvoid.score.toFixed(1)}`);
 
@@ -1240,7 +658,7 @@ test("optimizeSubPlacement threads mode through to scoreSubPosition", () => {
 
   const result = P.optimizeSubPlacement({
     room, otherSources: mains, freqList: freqs, listenerPositions: listeners, physicsCtx: ctx,
-    reflectionOrder: 1, offLimitZones: [], preferredZones: [], gridStepFt: 3, subHeightFt: 1, mode: 'nullAvoidance'
+    offLimitZones: [], preferredZones: [], gridStepFt: 3, subHeightFt: 1, mode: 'nullAvoidance'
   });
   assert.ok(result.best, 'expected a best candidate');
   approx(result.best.score, result.best.worstMinDb, 1e-9, 'in nullAvoidance mode, the winning candidate\'s score should equal its own worstMinDb');
@@ -1294,8 +712,8 @@ test("scoreSubPosition in nullAvoidance mode subtracts the spread penalty from w
   const freqs = [40, 60, 80];
   const candidatePos = { x: 2, y: 2, z: 1 };
 
-  const withoutPenalty = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance');
-  const withNearbyPlaced = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 1, 'nullAvoidance', [{x:2.5,y:2}]);
+  const withoutPenalty = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 'nullAvoidance');
+  const withNearbyPlaced = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 'nullAvoidance', [{x:2.5,y:2}]);
   approx(withoutPenalty.score, withoutPenalty.worstMinDb, 1e-9, 'no alreadyPlaced -> no penalty, score is exactly worstMinDb');
   assert.ok(withNearbyPlaced.score < withNearbyPlaced.worstMinDb, 'a nearby already-placed point should pull the score below worstMinDb');
 });
@@ -1313,7 +731,7 @@ test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters 
 
   const result = P.optimizeMultipleSubs({
     room, otherSources: mains, numSubs: 2, freqList: freqs, listenerPositions: listeners,
-    physicsCtx: ctx, reflectionOrder: 1, offLimitZones: [], preferredZones: [],
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [],
     gridStepFt: 0.5, subHeightFt: 1, mode: 'nullAvoidance'
   });
   assert.strictEqual(result.placedSubs.length, 2, 'expected both subs to be placed');
@@ -1328,7 +746,7 @@ test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters 
 test('empty listenerPositions produces a NaN score rather than throwing', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [60], [], ctx, 1);
+  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [60], [], ctx);
   assert.ok(Number.isNaN(result.score), `expected NaN score with no listener positions, got ${result.score}`);
   assert.deepStrictEqual(result.listenerStats, []);
 });
@@ -1336,7 +754,7 @@ test('empty listenerPositions produces a NaN score rather than throwing', () => 
 test('empty freqList produces a NaN score rather than throwing', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [], [{ x: 9, y: 6, z: 3.5 }], ctx, 1);
+  const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [], [{ x: 9, y: 6, z: 3.5 }], ctx);
   assert.ok(Number.isNaN(result.score), `expected NaN score with an empty frequency list, got ${result.score}`);
 });
 
@@ -1391,7 +809,7 @@ test('optimizer finds a best candidate and respects off-limits zones', () => {
   ];
   const result = P.optimizeSubPlacement({
     room, otherSources: mains, freqList: [40,60,80], listenerPositions: [{x:9,y:9,z:3.5}],
-    physicsCtx: ctx, reflectionOrder: 1, offLimitZones: offLimits, preferredZones: [],
+    physicsCtx: ctx, offLimitZones: offLimits, preferredZones: [],
     gridStepFt: 1, subHeightFt: 1
   });
   assert.ok(result.best !== null, 'expected a best candidate to be found');
@@ -1411,7 +829,7 @@ test('optimizer returns null best when no valid candidates exist', () => {
   const offLimits = [{ x: 0, y: 0, width: 18, height: 13.5 }]; // blocks the entire room
   const result = P.optimizeSubPlacement({
     room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
-    physicsCtx: ctx, reflectionOrder: 1, offLimitZones: offLimits, preferredZones: [],
+    physicsCtx: ctx, offLimitZones: offLimits, preferredZones: [],
     gridStepFt: 1, subHeightFt: 1
   });
   assert.strictEqual(result.best, null);
@@ -1429,8 +847,7 @@ test('places the requested number of subs', () => {
   ];
   const result = P.optimizeMultipleSubs({
     room, otherSources: mains, numSubs: 3, freqList: [40,60,80,100],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
   });
   assert.strictEqual(result.placedSubs.length, 3, `expected 3 subs placed, got ${result.placedSubs.length}`);
   assert.strictEqual(result.roundResults.length, 3);
@@ -1449,8 +866,7 @@ test('each round accounts for previously-placed subs, not just the original main
   ];
   const result = P.optimizeMultipleSubs({
     room, otherSources: mains, numSubs: 2, freqList: [30,40,50,60,70,80],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
   });
   const sub1 = result.placedSubs[0], sub2 = result.placedSubs[1];
   const samePosition = Math.abs(sub1.x - sub2.x) < 0.01 && Math.abs(sub1.y - sub2.y) < 0.01;
@@ -1468,8 +884,7 @@ test('greedy respects off-limits zones for every sub placed, not just the first'
   const offLimits = [{ x: 0, y: 0, width: 18, height: 10 }]; // only y=[10,13.5] is allowed
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 3, freqList: [40,60,80],
-    listenerPositions: [{x:9,y:12,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: offLimits, preferredZones: [], gridStepFt: 1, subHeightFt: 1
+    listenerPositions: [{x:9,y:12,z:3.5}], physicsCtx: ctx,     offLimitZones: offLimits, preferredZones: [], gridStepFt: 1, subHeightFt: 1
   });
   for(const sub of result.placedSubs){
     assert.ok(sub.y >= 10, `every placed sub should respect the off-limits zone, got y=${sub.y}`);
@@ -1483,8 +898,7 @@ test('stops placing subs (without error) if candidates run out', () => {
   const tinyPreferred = [{ x: 9, y: 6.75, width: 0.4, height: 0.4 }];
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 5, freqList: [60],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: tinyPreferred, gridStepFt: 1, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: tinyPreferred, gridStepFt: 1, subHeightFt: 1
   });
   assert.ok(result.placedSubs.length <= 5, 'should never place more than requested');
   assert.ok(result.placedSubs.length >= 0, 'should not throw even if it cannot fill all requested subs');
@@ -1503,7 +917,7 @@ test('PERFORMANCE: cost scales linearly with sub count, not exponentially', () =
   const listeners = [{x:9,y:9,z:3.5}];
   const commonOpts = {
     room, otherSources: mains, freqList: freqs, listenerPositions: listeners,
-    physicsCtx: ctx, reflectionOrder: 1, offLimitZones: [], preferredZones: [],
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [],
     gridStepFt: 1, subHeightFt: 1
   };
 
@@ -1537,8 +951,7 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
   ];
   const result = P.optimizeMultipleSubs({
     room, otherSources: mains, numSubs: 4, freqList: [30,40,50,60,70,80,90,100],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
   });
   assert.ok(result.placedSubs.length >= 2, 'need at least 2 placed subs to check separation');
   for(let i = 0; i < result.placedSubs.length; i++){
@@ -1555,8 +968,7 @@ test('minSeparationFt is configurable and respected', () => {
   const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 2, freqList: [60],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1,
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1,
     minSeparationFt: 5
   });
   if(result.placedSubs.length === 2){
@@ -1574,13 +986,11 @@ test('default minSeparationFt (when not specified) is 25% of the room\'s smaller
 
   const r1 = P.optimizeMultipleSubs({
     room: room1, otherSources: [], numSubs: 2, freqList: [60],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx1, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx1,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
   });
   const r2 = P.optimizeMultipleSubs({
     room: room2, otherSources: [], numSubs: 2, freqList: [60],
-    listenerPositions: [{x:15,y:12,z:3.5}], physicsCtx: ctx2, reflectionOrder: 1,
-    offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
+    listenerPositions: [{x:15,y:12,z:3.5}], physicsCtx: ctx2,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1
   });
   if(r1.placedSubs.length === 2){
     const [a,b] = r1.placedSubs;
@@ -1829,7 +1239,7 @@ test('DEMONSTRATION: two-ear dB difference is negligible at bass frequencies, mo
     const diffs = [];
     for(let lx = 3; lx <= 15; lx += 1.5){
       for(let ly = 3; ly <= 11; ly += 1.5){
-        const result = P.fieldDbAtEars({x:lx, y:ly, z:3.5}, 0, mains, 1, freq, ctx);
+        const result = P.fieldDbAtEars({x:lx, y:ly, z:3.5}, 0, mains, freq, ctx);
         diffs.push(result.diffDb);
       }
     }

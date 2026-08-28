@@ -29,7 +29,7 @@
     // which the branches below already resolve to a gain of 0 via -Infinity dB)
     // it drives the log2 ratio negative, producing NaN — treat it as inaudible
     // rather than letting NaN escape and silently poison every field sum it
-    // touches (see precomputeSourceImages, which also guards against this).
+    // touches (see precomputeModalField, which also guards against this).
     if(!(f > 0)) return 0;
     let db = 0;
     if(f < source.freqLow && source.freqLow > 0){
@@ -42,130 +42,8 @@
     return Math.pow(10, db / 20);
   }
 
-  // Shared "span with a smooth taper at each end" coverage helper: 1.0 inside
-  // [start,end], tapering linearly to 0 over `taperFt` outside it. Used by both
-  // panelCoverage (thin absorbers, taper is small) and openingOverlap (wall
-  // openings, taper is room-scale) so a source/point sweeping across an edge
-  // never sees a discontinuous jump in reflection amplitude (which otherwise
-  // flips constructive/destructive interference for a fraction-of-an-inch move).
-  function taperedCoverage(start, end, axisCoord, taperFt){
-    if(axisCoord >= start && axisCoord <= end) return 1;
-    if(axisCoord < start) return Math.max(0, 1 - (start - axisCoord) / taperFt);
-    return Math.max(0, 1 - (axisCoord - end) / taperFt);
-  }
-
-  // ---- Wall opening (doorway/entryway): how much a wall's reflection at a
-  // given along-wall coordinate is reduced. opening: { pos, width }. Position
-  // is free -- an opening can sit anywhere along its wall, not just a fixed
-  // corner. Returns 0 (no effect) .. 1 (fully inside the opening span).
-  function openingOverlap(opening, axisCoord){
-    const TAPER_FT = 3; // wider taper than panels -- an opening's edge is a room-scale acoustic transition, not a thin absorber's edge
-    return taperedCoverage(opening.pos, opening.pos + opening.width, axisCoord, TAPER_FT);
-  }
-
-  // ---- Absorption panel: 0 (no extra absorption) .. 1 (fully absorptive), ----
-  // depends on thickness vs. quarter-wavelength at frequency f.
-  function panelAbsorptionAtFreq(panel, f){
-    const lambda = C / f;
-    const quarterWave = lambda / 4;
-    const t = panel.thickness * FT_TO_M;
-    const ratio = t / quarterWave;
-    // Logistic ramp centered at ratio=0.5 (panel thickness = half a quarter-wavelength).
-    // Slope of 14 keeps absorption negligible (<2%) well below the quarter-wave point —
-    // e.g. a 1ft panel stays under ~2% through the 20-60Hz room-mode range, and only
-    // becomes strongly absorptive (>50%) once thickness approaches the quarter-wavelength,
-    // consistent with how porous absorbers actually behave.
-    const x = (ratio - 0.5) * 14;
-    return 1 / (1 + Math.exp(-x));
-  }
-
-  // Does the reflection point p (already on the wall's plane) fall within this
-  // panel's along-wall span? Returns 0..1 with a smooth taper over TAPER_FT at
-  // each end (see taperedCoverage).
-  function panelCoverage(panel, axisCoord){
-    const TAPER_FT = 0.5;
-    return taperedCoverage(panel.pos, panel.pos + panel.length, axisCoord, TAPER_FT);
-  }
-
-  // wallName: 'left'|'right'|'front'|'back'. basePoint: {x,y,z}. panels: array.
-  // panelsEnabled: bool. Returns the reflection amplitude for that wall at basePoint.
-  function wallWithPanels(wallName, basePoint, baseAmp, freqForAbsorption, panels, panelsEnabled){
-    if(!panelsEnabled) return baseAmp;
-    const relevant = panels.filter(p => p.wall === wallName && p.enabled !== false);
-    if(relevant.length === 0) return baseAmp;
-    const axisCoord = (wallName === 'left' || wallName === 'right') ? basePoint.y : basePoint.x;
-    let amp = baseAmp;
-    for(const pnl of relevant){
-      const coverage = panelCoverage(pnl, axisCoord);
-      if(coverage > 0){
-        const absorb = panelAbsorptionAtFreq(pnl, freqForAbsorption) * coverage;
-        amp *= (1 - absorb);
-      }
-    }
-    return amp;
-  }
-
-  // wallName: 'left'|'right'|'front'|'back'. basePoint: {x,y,z}. openings: array
-  // of { wall, pos, width, factor, enabled }. openingsEnabled: bool (master
-  // toggle). Returns the reflection amplitude for that wall at basePoint after
-  // every relevant, enabled opening has reduced it -- multiple openings on the
-  // same wall compound multiplicatively, same as overlapping panels do.
-  function wallWithOpenings(wallName, basePoint, baseAmp, openings, openingsEnabled){
-    if(!openingsEnabled) return baseAmp;
-    const relevant = (openings || []).filter(o => o.wall === wallName && o.enabled !== false);
-    if(relevant.length === 0) return baseAmp;
-    const axisCoord = (wallName === 'left' || wallName === 'right') ? basePoint.y : basePoint.x;
-    let amp = baseAmp;
-    for(const o of relevant){
-      const overlap = openingOverlap(o, axisCoord);
-      if(overlap > 0){
-        amp *= (1 - o.factor * overlap);
-      }
-    }
-    return amp;
-  }
-
-  // ---- 2D tapered coverage for a rectangular floor/ceiling panel (rug, ----
-  // ceiling tile array) ---- rect: { x, y, width, height }. Unlike wall panels
-  // (a 1D span, since a wall panel implicitly covers the wall's full height),
-  // a floor/ceiling treatment is a genuine 2D area that can sit anywhere on
-  // the surface without touching its edges. Returns 0..1, tapering
-  // independently over TAPER_FT along each axis near the rectangle's edges
-  // (reuses taperedCoverage per axis, multiplied -- corners fade smoothly in
-  // both directions at once, same "no discontinuous jump" reasoning as the
-  // 1D case).
-  function rectCoverage(rect, px, py){
-    const TAPER_FT = 0.5;
-    const covX = taperedCoverage(rect.x, rect.x + rect.width, px, TAPER_FT);
-    const covY = taperedCoverage(rect.y, rect.y + rect.height, py, TAPER_FT);
-    return covX * covY;
-  }
-
-  // surfaceName: 'floor'|'ceil'. basePoint: {x,y,z}. surfacePanels: array of
-  // { surface, x, y, width, height, thickness, enabled }. surfacePanelsEnabled:
-  // bool (master toggle, separate from the wall panels' toggle). Returns the
-  // reflection amplitude for that surface at basePoint after every relevant,
-  // enabled surface panel has absorbed some of it -- same compounding rule,
-  // and the same thickness-vs-quarter-wavelength absorption model
-  // (panelAbsorptionAtFreq), as wall panels use.
-  function wallWithSurfacePanels(surfaceName, basePoint, baseAmp, freqForAbsorption, surfacePanels, surfacePanelsEnabled){
-    if(!surfacePanelsEnabled) return baseAmp;
-    const relevant = (surfacePanels || []).filter(p => p.surface === surfaceName && p.enabled !== false);
-    if(relevant.length === 0) return baseAmp;
-    let amp = baseAmp;
-    for(const pnl of relevant){
-      const coverage = rectCoverage(pnl, basePoint.x, basePoint.y);
-      if(coverage > 0){
-        const absorb = panelAbsorptionAtFreq(pnl, freqForAbsorption) * coverage;
-        amp *= (1 - absorb);
-      }
-    }
-    return amp;
-  }
-
   // ---- Wall/ceiling material: frequency-dependent reflectivity for a BARE ----
-  // surface (as opposed to panelAbsorptionAtFreq, which models an added
-  // treatment). Two distinct real mechanisms, selected by material.shape:
+  // surface. Two distinct real mechanisms, selected by material.shape:
   //
   // shape: 'resonant' (default when omitted) -- ordinary drywall-on-studs/
   // joists construction behaves as a mass-spring-mass "membrane absorber":
@@ -178,8 +56,7 @@
   //   peakDepth: 0..1, fraction of baseReflect additionally absorbed AT peakFreq.
   //
   // shape: 'porousRamp' -- broadband porous absorption (e.g. suspended
-  // acoustic ceiling tile) -- the same underlying mechanism panelAbsorptionAtFreq
-  // models for an added treatment, but here as a SURFACE's own base behavior.
+  // acoustic ceiling tile), as a SURFACE's own base behavior.
   // Absorption ramps UP with frequency (a logistic curve centered at midFreq)
   // -- the opposite trend from 'resonant'. Within this app's sub-300Hz range,
   // typical acoustic tile shows only modest absorption; it's much more
@@ -192,9 +69,8 @@
   //
   // These are illustrative/typical values (see WALL_MATERIALS below), not
   // measured data -- real wall/ceiling behavior depends on construction
-  // details no small preset set can capture exactly. Treat this the same way
-  // as panelAbsorptionAtFreq's tuned curve: a reasonable approximation, not a
-  // substitute for measurement.
+  // details no small preset set can capture exactly. A reasonable
+  // approximation, not a substitute for measurement.
   function wallMaterialReflectAtFreq(material, f){
     if(!material) return null;
     if(material.shape === 'porousRamp'){
@@ -214,132 +90,212 @@
   // letting it ring/re-radiate (hollowCavity's narrower, shallower dip);
   // masonry has no membrane at all; suspendedTile is ceiling-only in the UI
   // (walls essentially never use it) and uses the porousRamp shape instead.
+  //
+  // baseReflect/peakDepth calibrated against published low-frequency
+  // absorption-coefficient (alpha) tables, converted to this module's
+  // pressure-reflection convention via reflect = sqrt(1 - alpha):
+  //   drywallHollow: 1/2" gypsum board nailed to 2x4 studs, 16" O.C. --
+  //     alpha 0.29 @125Hz, 0.10 @250Hz, ~0.05-0.09 @500Hz-4kHz (flat baseline).
+  //     drywallInsulated has no matching published curve; its deeper/wider
+  //     dip is a physically-motivated scale-up of the hollow curve (damped
+  //     cavity fill -> more energy converted to heat at resonance) rather
+  //     than a directly sourced number.
+  //   masonry: painted/bare concrete block or poured foundation --
+  //     alpha ~0.01 (smooth painted concrete) to ~0.05 (porous block) @125Hz;
+  //     0.03 taken as a representative mid-range value.
+  // Previous defaults (reflect 0.75-0.90, i.e. alpha 0.19-0.44 baseline) were
+  // roughly 2-4x too absorptive at bass frequencies for a BARE surface --
+  // real hard/rigid low-frequency boundaries are close to rigid away from
+  // their resonance, which these updated values now reflect.
   const WALL_MATERIALS = {
-    drywallInsulated: { baseReflect: 0.75, peakFreq: 80, peakDepth: 0.35, bandwidth: 60 },
-    drywallHollow:    { baseReflect: 0.80, peakFreq: 90, peakDepth: 0.15, bandwidth: 30 },
-    masonry:          { baseReflect: 0.90, peakFreq: 0,  peakDepth: 0,    bandwidth: 1 },
+    drywallInsulated: { baseReflect: 0.97, peakFreq: 80, peakDepth: 0.20, bandwidth: 150 },
+    drywallHollow:    { baseReflect: 0.97, peakFreq: 90, peakDepth: 0.14, bandwidth: 115 },
+    masonry:          { baseReflect: 0.985, peakFreq: 0,  peakDepth: 0,    bandwidth: 1 },
     suspendedTile:    { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 }
   };
 
   // ---- Six boundary reflection operators for a room { w, d, h } ----
-  // ctx: { room, wallReflect, floorReflect, ceilingMaterial, openings,
-  //        openingsEnabled, panels, panelsEnabled, surfacePanels,
-  //        surfacePanelsEnabled, wallMaterials }
-  // wallMaterials (optional): { left, right, front, back } -> material objects
-  // (see wallMaterialReflectAtFreq). Any wall missing from this map (or if the
-  // map itself is omitted) falls back to the flat wallReflect scalar, same as
-  // before per-wall materials existed. ceilingMaterial (optional): a single
-  // material object for the ceiling, same fallback-to-wallReflect behavior.
-  // Openings reduce a wall's base reflectivity first (sound passes through into
-  // another space); panel absorption is then applied on top of whatever
-  // reflectivity remains. floorReflect/ceilingMaterial default to wallReflect
-  // when not given, so a room with no floor/ceiling material specified
-  // behaves as it always did (floor/ceiling = same reflectivity as the walls)
-  // unless one is actually chosen. Openings are wall-mounted only (a "floor
-  // opening" isn't a modeled concept here) -- floor/ceiling only ever go
-  // through surface panels, never wall openings.
-  function boundaryOps(freqForAbsorption, ctx){
-    const { room, wallReflect, openings, openingsEnabled, panels, panelsEnabled, surfacePanels, surfacePanelsEnabled, wallMaterials } = ctx;
-    const floorReflect = ctx.floorReflect ?? wallReflect;
-    const ceilingFromMaterial = ctx.ceilingMaterial ? wallMaterialReflectAtFreq(ctx.ceilingMaterial, freqForAbsorption) : null;
-    const ceilingReflect = ceilingFromMaterial ?? wallReflect;
-    const w = room.w, d = room.d, h = room.h;
-    function baseReflectFor(wallName){
-      const material = wallMaterials && wallMaterials[wallName];
-      const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
-      return fromMaterial ?? wallReflect;
+  // ---- Rectangular-room modal (eigenfunction) solution ----
+  // Replaces the old truncated image-source method entirely. For a rigid-wall
+  // rectangular room, the exact steady-state pressure field is a sum over the
+  // room's normal modes (nx,ny,nz):
+  //
+  //   p(r, r_s, f) = sum_n  A_n * psi_n(r) * psi_n(r_s) / (k_n^2 - k^2 - j*k*delta_n)
+  //
+  // where psi_n(r) = cos(nx*pi*x/Lx)*cos(ny*pi*y/Ly)*cos(nz*pi*z/Lz) is the
+  // rigid-wall eigenfunction, k_n = pi*sqrt((nx/Lx)^2+(ny/Ly)^2+(nz/Lz)^2) is
+  // the modal wavenumber, k = 2*pi*f/c is the driving wavenumber, A_n is a
+  // normalization constant, and delta_n is per-mode damping derived from wall
+  // absorption (see enumerateModes below). This is the same class of method
+  // REW's own room simulator uses ("rigid boundary solution to the wave
+  // equation, modified for lossy boundaries").
+  //
+  // Unlike the old image-source method, this has no "order" to truncate --
+  // every mode below the cutoff is included exactly, so there's no tradeoff
+  // between accuracy and how many terms you compute (more modes just extends
+  // the cutoff higher, it doesn't refine modes already included).
+  const MODE_CUTOFF_HZ = 300; // 1.5x this app's ~200Hz scope -- a mode's tail contributes below its own resonance, so the cutoff needs headroom above the range actually displayed
+
+  function epsFactor(n){ return n === 0 ? 1 : 2; } // integral of cos^2(n*pi*x/L) over [0,L] is L if n=0, else L/2 -- this is the 1/that normalization factor
+
+  // Same fallback-to-flat-scalar convention as estimatedT60's wallReflectFor:
+  // a per-wall/ceiling material (frequency-dependent) if assigned, otherwise
+  // the flat wallReflect/floorReflect scalar. Floor has no material concept
+  // in this codebase (see estimatedT60), only a flat reflect value.
+  function surfaceReflectAtFreq(surfaceName, freqForAbsorption, ctx){
+    if(surfaceName === 'floor') return ctx.floorReflect ?? ctx.wallReflect;
+    if(surfaceName === 'ceil'){
+      const fromMaterial = ctx.ceilingMaterial ? wallMaterialReflectAtFreq(ctx.ceilingMaterial, freqForAbsorption) : null;
+      return fromMaterial ?? ctx.wallReflect;
     }
-    function wallAmp(wallName){
-      return (p) => {
-        const afterOpenings = wallWithOpenings(wallName, p, baseReflectFor(wallName), openings, openingsEnabled);
-        return wallWithPanels(wallName, p, afterOpenings, freqForAbsorption, panels, panelsEnabled);
-      };
-    }
-    return [
-      { name:'left',  apply:(p)=>({x:-p.x, y:p.y, z:p.z}), amp: wallAmp('left') },
-      { name:'right', apply:(p)=>({x:2*w-p.x, y:p.y, z:p.z}), amp: wallAmp('right') },
-      { name:'front', apply:(p)=>({x:p.x, y:-p.y, z:p.z}), amp: wallAmp('front') },
-      { name:'back',  apply:(p)=>({x:p.x, y:2*d-p.y, z:p.z}), amp: wallAmp('back') },
-      { name:'floor', apply:(p)=>({x:p.x, y:p.y, z:-p.z}),
-        amp:(p)=>wallWithSurfacePanels('floor', p, floorReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) },
-      { name:'ceil',  apply:(p)=>({x:p.x, y:p.y, z:2*h-p.z}),
-        amp:(p)=>wallWithSurfacePanels('ceil', p, ceilingReflect, freqForAbsorption, surfacePanels, surfacePanelsEnabled) }
-    ];
+    const material = ctx.wallMaterials && ctx.wallMaterials[surfaceName];
+    const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
+    return fromMaterial ?? ctx.wallReflect;
   }
 
-  // Generates image sources up to `order` bounces. Each level reflects every
-  // source from the PREVIOUS level off every boundary except the one it just
-  // came from (no immediate same-wall-twice-in-a-row bounce) -- order 1 is
-  // direct + 6 single-wall bounces (7 total); order 2 additionally includes
-  // every pair of DIFFERENT boundaries bounced off in sequence (37 total);
-  // each further order multiplies the PREVIOUS level's count by 5 (six walls
-  // minus the one just used), so the source count grows steeply: order 3 is
-  // 187, order 4 is 937. ctx: see boundaryOps above.
+  // ---- Enumerates every room mode with resonance frequency <= cutoffFreq ----
+  // ctx: { room, wallReflect, floorReflect, ceilingMaterial, wallMaterials }.
+  // Depends only on room geometry + wall materials, not on source/listener
+  // position or the frequency being evaluated -- callers doing a frequency
+  // sweep (spatiallyAveragedResponse) or many candidate evaluations
+  // (scoreSubPosition) should compute this ONCE and reuse it, rather than
+  // re-enumerating per frequency/candidate.
   //
-  // order <= 0 returns just the direct source (no bounces) -- note this is a
-  // real behavior fix versus an earlier version of this function, which (due
-  // to the first-bounce step running unconditionally) returned the 6
-  // first-order bounces even for order <= 0.
-  function getImageSources(sx, sy, sz, order, freqForAbsorption, ctx){
-    const ops = boundaryOps(freqForAbsorption, ctx);
-    const direct = { x: sx, y: sy, z: sz, amp: 1.0 };
-    let result = [direct];
-    let currentLevel = [direct]; // sources produced by the PREVIOUS level; direct has no lastOp, so its first bounce can be off any wall
+  // Each mode's own damping (delta_n) is derived via the standard perturbative
+  // (Kuttruff) coupled-mode result for lightly-damped walls -- valid here
+  // since WALL_MATERIALS' reflect values are all >=0.97 (light damping is
+  // exactly the regime this approximation assumes): a surface-area-weighted,
+  // mode-shape-weighted average of each of the 6 surfaces' absorption
+  // (alpha = 1 - reflect^2, evaluated at that mode's OWN resonance frequency
+  // f_n -- the same alpha convention estimatedT60 already uses):
+  //
+  //   delta_n = (c / 4V) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s)
+  //
+  // Because psi_n factors into cos(nx..)*cos(ny..)*cos(nz..), each surface's
+  // integral collapses to a simple product of per-axis L/eps(n) terms -- e.g.
+  // the left/right walls (area Ly*Lz) only depend on ny,nz (cos^2 of the
+  // WALL-NORMAL index is always 1 exactly AT the wall, regardless of that
+  // index -- only the two axes running ALONG the wall matter):
+  //   S_x = (Ly/eps(ny)) * (Lz/eps(nz))   -- shared by left+right
+  //   S_y = (Lx/eps(nx)) * (Lz/eps(nz))   -- shared by front+back
+  //   S_z = (Lx/eps(nx)) * (Ly/eps(ny))   -- shared by floor+ceiling
+  // This genuinely varies per mode under UNIFORM absorption too (a pure axial
+  // mode's along-wall eps(0)=1 vs an oblique mode's eps>1 on multiple axes) --
+  // that's real physics (different mode families couple to the boundaries
+  // differently), not a bug. What SHOULD hold in the uniform-absorption case
+  // is a looser, statistical one: delta_n averaged across many modes should
+  // track alpha*S_total/(4V) (the Sabine-equivalent quantity) -- see the
+  // cross-check test tying this to estimatedT60's existing Sabine output.
+  //
+  // Units: this formula is naturally a TEMPORAL damping rate (1/s, Kuttruff's
+  // own convention). The complex denominator in precomputeModalField is
+  // written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which needs
+  // delta_n in units of 1/m (spatial) instead -- i.e. this temporal rate
+  // divided by c. The code below folds that division in directly (1/(4V)
+  // rather than c/(4V), since the c's cancel) rather than computing a
+  // temporal rate and converting it separately.
+  function enumerateModes(ctx, cutoffFreq){
+    cutoffFreq = cutoffFreq ?? MODE_CUTOFF_HZ;
+    const { room } = ctx;
+    const Lx = room.w * FT_TO_M, Ly = room.d * FT_TO_M, Lz = room.h * FT_TO_M;
+    if(!(Lx > 0) || !(Ly > 0) || !(Lz > 0)) return []; // degenerate room -- no modes, not NaN/Infinity
 
-    for(let level = 1; level <= order; level++){
-      const nextLevel = [];
-      for(const img of currentLevel){
-        for(const op of ops){
-          if(op.name === img.lastOp) continue; // skip re-reflecting off the same boundary consecutively
-          const pos = op.apply(img);
-          const amp = img.amp * op.amp(img);
-          nextLevel.push({ ...pos, amp, lastOp: op.name });
+    const V = Lx * Ly * Lz;
+    const piOverLx = Math.PI / Lx, piOverLy = Math.PI / Ly, piOverLz = Math.PI / Lz;
+    const maxNx = Math.floor(2 * Lx * cutoffFreq / C);
+    const maxNy = Math.floor(2 * Ly * cutoffFreq / C);
+    const maxNz = Math.floor(2 * Lz * cutoffFreq / C);
+
+    const modes = [];
+    for(let nx = 0; nx <= maxNx; nx++){
+      for(let ny = 0; ny <= maxNy; ny++){
+        for(let nz = 0; nz <= maxNz; nz++){
+          if(nx === 0 && ny === 0 && nz === 0) continue; // not a propagating mode (DC/uniform pressure)
+          const kn = Math.PI * Math.sqrt((nx/Lx)**2 + (ny/Ly)**2 + (nz/Lz)**2);
+          const fn = C * kn / (2 * Math.PI);
+          if(fn > cutoffFreq) continue;
+
+          const epsX = epsFactor(nx), epsY = epsFactor(ny), epsZ = epsFactor(nz);
+          const An = C * C * epsX * epsY * epsZ / V;
+
+          const Sx = (Ly / epsY) * (Lz / epsZ);
+          const Sy = (Lx / epsX) * (Lz / epsZ);
+          const Sz = (Lx / epsX) * (Ly / epsY);
+          const alphaOf = (surfaceName) => {
+            const r = surfaceReflectAtFreq(surfaceName, fn, ctx);
+            return 1 - r * r;
+          };
+          // Kuttruff's coupled-mode damping is naturally a TEMPORAL rate (1/s):
+          // delta_n_temporal = (c/4V) * sum(...). The complex denominator below
+          // is written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which
+          // needs delta_n in units of 1/m (spatial), i.e. delta_n_temporal/c --
+          // the c cancels the leading (c/4V), leaving just 1/(4V) here.
+          const deltaN = (1 / (4 * V)) * (
+            alphaOf('left') * Sx + alphaOf('right') * Sx +
+            alphaOf('front') * Sy + alphaOf('back') * Sy +
+            alphaOf('floor') * Sz + alphaOf('ceil') * Sz
+          );
+
+          modes.push({ nx, ny, nz, kn, fn, deltaN, An, invLx: nx * piOverLx, invLy: ny * piOverLy, invLz: nz * piOverLz });
         }
       }
-      result = result.concat(nextLevel);
-      currentLevel = nextLevel;
     }
-    return result;
+    return modes;
   }
 
-  // Precomputes each source's image-source list once per source (position/amp
-  // only depend on source+room+panels+frequency, never on the grid point).
-  // ctx: see boundaryOps above.
-  function precomputeSourceImages(sources, order, freq, ctx){
-    return sources.map(s => {
+  // ---- Precomputes each mode's complex coefficient for one source set + ----
+  // frequency. The complex division 1/(k_n^2-k^2-j*k*delta_n) and the
+  // per-source coupling sum both happen ONCE per mode here, not once per
+  // (mode x query point) -- computeFieldAtPoint then only needs a cheap
+  // real-valued psi_n(point) evaluation and a complex multiply per mode.
+  // modes: enumerateModes(ctx) output (caller-supplied so it can be reused
+  // across a frequency sweep).
+  function precomputeModalField(sources, freq, ctx, modes){
+    const k = 2 * Math.PI * freq / C;
+    const active = [];
+    for(const s of sources){
       const freqGain = sourceGainAtFreq(s, freq);
-      // Written as !(freqGain >= 0.0005) rather than freqGain < 0.0005 so a
-      // non-finite gain (NaN) is also dropped here — NaN fails every direct
-      // comparison, so freqGain < 0.0005 would let it silently through instead
-      // of being filtered like a genuinely-quiet source.
-      if(!(freqGain >= 0.0005)) return null;
-      const imgSources = getImageSources(s.x, s.y, s.z ?? 3, order, freq, ctx);
-      const delaySec = s.delayMs / 1000;
+      // Same NaN-safe guard as the old precomputeSourceImages: written as
+      // !(freqGain >= 0.0005) so a non-finite gain is dropped here too.
+      if(!(freqGain >= 0.0005)) continue;
       const levelGain = Math.pow(10, s.levelDb / 20) * freqGain;
-      const extraPhase = 2 * Math.PI * freq * delaySec;
-      return { imgSources, levelGain, extraPhase };
+      const extraPhase = 2 * Math.PI * freq * (s.delayMs / 1000);
+      active.push({
+        x: s.x * FT_TO_M, y: s.y * FT_TO_M, z: (s.z ?? 3) * FT_TO_M,
+        levelGain, cosPhase: Math.cos(extraPhase), sinPhase: Math.sin(extraPhase)
+      });
+    }
+
+    return modes.map(mode => {
+      const Dr = mode.kn * mode.kn - k * k;
+      const Di = -k * mode.deltaN;
+      const denom = Dr * Dr + Di * Di;
+      const invDr = denom > 0 ? Dr / denom : 0;
+      const invDi = denom > 0 ? -Di / denom : 0; // 1/(Dr+jDi) = (Dr-jDi)/(Dr^2+Di^2)
+
+      let sourceRe = 0, sourceIm = 0;
+      for(const src of active){
+        const psi = Math.cos(mode.invLx * src.x) * Math.cos(mode.invLy * src.y) * Math.cos(mode.invLz * src.z);
+        const amp = src.levelGain * psi;
+        sourceRe += amp * src.cosPhase;
+        sourceIm += amp * src.sinPhase;
+      }
+
+      // coef = An * (sourceRe + j*sourceIm) * (invDr + j*invDi)
+      const coefRe = mode.An * (sourceRe * invDr - sourceIm * invDi);
+      const coefIm = mode.An * (sourceRe * invDi + sourceIm * invDr);
+      return { invLx: mode.invLx, invLy: mode.invLy, invLz: mode.invLz, coefRe, coefIm };
     });
   }
 
-  // Sums complex pressure at (px,py,pz) from a precomputed source list.
-  function computeFieldAtPoint(px, py, pz, precomputed, k){
+  // Sums complex pressure at (px,py,pz) from a precomputeModalField result.
+  function computeFieldAtPoint(px, py, pz, precomputed){
+    const pxM = px * FT_TO_M, pyM = py * FT_TO_M, pzM = pz * FT_TO_M;
     let re = 0, im = 0;
-    for(const pre of precomputed){
-      if(!pre) continue;
-      const imgSources = pre.imgSources;
-      const levelGain = pre.levelGain;
-      const extraPhase = pre.extraPhase;
-      for(const src of imgSources){
-        const dx = (px - src.x) * FT_TO_M;
-        const dy = (py - src.y) * FT_TO_M;
-        const dz = (pz - src.z) * FT_TO_M;
-        let r = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if(r < 0.3) r = 0.3;
-        const amp = (src.amp / r) * levelGain;
-        const phase = k*r + extraPhase;
-        re += amp * Math.cos(phase);
-        im += amp * Math.sin(phase);
-      }
+    for(const mode of precomputed){
+      const psi = Math.cos(mode.invLx * pxM) * Math.cos(mode.invLy * pyM) * Math.cos(mode.invLz * pzM);
+      re += mode.coefRe * psi;
+      im += mode.coefIm * psi;
     }
     return { re, im };
   }
@@ -347,12 +303,11 @@
   // Convenience: full pressure-to-dB at one point, given app state. Mirrors what
   // draw() does per grid point, but callable standalone (e.g. for two-ear sampling,
   // or tests) without running the full grid.
-  function fieldDbAtPoint(px, py, pz, sources, order, freq, ctx, refAmp){
+  function fieldDbAtPoint(px, py, pz, sources, freq, ctx, refAmp){
     refAmp = refAmp ?? 1.0;
-    const lambda = C / freq;
-    const k = 2 * Math.PI / lambda;
-    const precomputed = precomputeSourceImages(sources, order, freq, ctx);
-    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed, k);
+    const modes = enumerateModes(ctx);
+    const precomputed = precomputeModalField(sources, freq, ctx, modes);
+    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6) / refAmp);
   }
@@ -394,18 +349,20 @@
   // domain to average in: it mirrors what a physically moving mic captures
   // (energy over the swept volume) rather than a coherent sum across
   // positions, which could itself introduce cancellation artifacts.
-  // sources/order/ctx: same shape precomputeSourceImages/boundaryOps expect.
+  // sources/ctx: same shape precomputeModalField/enumerateModes expect.
   // Returns [{freq, db}, ...], one entry per input frequency, in order.
-  function spatiallyAveragedResponse(cx, cy, cz, freqs, sources, order, ctx, opts){
+  // Enumerates modes ONCE for the whole sweep (they don't depend on freq),
+  // reused across every frequency below.
+  function spatiallyAveragedResponse(cx, cy, cz, freqs, sources, ctx, opts){
     const radiusFt = opts?.radiusFt ?? 2;
     const numPoints = opts?.numPoints ?? 20;
     const samplePoints = sphereSamplePoints(cx, cy, cz, radiusFt, numPoints);
+    const modes = enumerateModes(ctx);
     return freqs.map(freq => {
-      const k = 2 * Math.PI * freq / C;
-      const precomputed = precomputeSourceImages(sources, order, freq, ctx);
+      const precomputed = precomputeModalField(sources, freq, ctx, modes);
       let sumPower = 0;
       for(const p of samplePoints){
-        const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed, k);
+        const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed);
         sumPower += re*re + im*im;
       }
       const avgPower = sumPower / samplePoints.length;
@@ -464,10 +421,10 @@
   // Returns per-ear dB plus the difference between them (a direct, quantified
   // measure of how much the two ears disagree at this frequency/position —
   // near-zero at bass, potentially large near 200-500Hz interference detail).
-  function fieldDbAtEars(listener, facingDegrees, sources, order, freq, ctx, refAmp){
+  function fieldDbAtEars(listener, facingDegrees, sources, freq, ctx, refAmp){
     const ears = earPositions(listener, facingDegrees);
-    const leftDb = fieldDbAtPoint(ears.left.x, ears.left.y, ears.left.z, sources, order, freq, ctx, refAmp);
-    const rightDb = fieldDbAtPoint(ears.right.x, ears.right.y, ears.right.z, sources, order, freq, ctx, refAmp);
+    const leftDb = fieldDbAtPoint(ears.left.x, ears.left.y, ears.left.z, sources, freq, ctx, refAmp);
+    const rightDb = fieldDbAtPoint(ears.right.x, ears.right.y, ears.right.z, sources, freq, ctx, refAmp);
     return { leftDb, rightDb, diffDb: Math.abs(leftDb - rightDb), earPositions: ears };
   }
 
@@ -487,19 +444,17 @@
   // the room's total absorption: area x absorption-coefficient, summed over
   // all 6 surfaces. Each surface's absorption coefficient is 1 - R^2, where R
   // is the amplitude/pressure reflection coefficient this module already uses
-  // everywhere else (boundaryOps etc.) -- squaring it converts to power/energy
-  // absorption, which is what Sabine's formula is defined in terms of.
-  // Frequency-dependent, since wall/ceiling materials are (see
+  // everywhere else (enumerateModes' damping calc etc.) -- squaring it converts
+  // to power/energy absorption, which is what Sabine's formula is defined in
+  // terms of. Frequency-dependent, since wall/ceiling materials are (see
   // wallMaterialReflectAtFreq) -- callers pick whichever frequency matters to
   // them (e.g. the frequency currently on screen).
-  // Deliberately room-construction-level only: doesn't factor in absorption
-  // panels, rugs, or openings, which are localized area patches rather than
-  // whole-surface properties. That's a real accuracy gap versus a true T60
-  // measurement (as is the whole Sabine model, which itself assumes diffuse,
-  // evenly-distributed absorption) -- treat this as a real improvement over a
-  // fixed guess, not a substitute for measurement.
-  // ctx: { wallReflect, floorReflect, wallMaterials, ceilingMaterial } -- same
-  // shape as boundaryOps' ctx (a subset of it is fine; only these fields are read).
+  // This is the whole-room diffuse-field average (Sabine assumes evenly-
+  // distributed absorption); enumerateModes' per-mode damping is a different,
+  // more detailed quantity that should track it in the uniform-absorption
+  // case -- see the cross-check test tying the two together.
+  // ctx: { wallReflect, floorReflect, wallMaterials, ceilingMaterial } -- a
+  // subset of enumerateModes' ctx shape is fine; only these fields are read.
   function estimatedT60(room, freqForAbsorption, ctx){
     const { wallReflect, wallMaterials, ceilingMaterial } = ctx;
     const floorReflect = ctx.floorReflect ?? wallReflect;
@@ -618,20 +573,20 @@
   //
   // Returns a single scalar score where HIGHER IS BETTER, plus the raw per-listener
   // per-frequency dB values for diagnostics/visualization.
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder, mode, alreadyPlaced){
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
       candidatePos
     );
     const allSources = otherSources.concat([candidateSource]);
+    const modes = enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
 
     const perListenerDb = []; // [listenerIdx][freqIdx] = dB
     for(const lp of listenerPositions){
       const dbRow = [];
       for(const f of freqList){
-        const precomputed = precomputeSourceImages(allSources, reflectionOrder, f, physicsCtx);
-        const k = 2 * Math.PI * f / C;
-        const { re, im } = computeFieldAtPoint(lp.x, lp.y, lp.z, precomputed, k);
+        const precomputed = precomputeModalField(allSources, f, physicsCtx, modes);
+        const { re, im } = computeFieldAtPoint(lp.x, lp.y, lp.z, precomputed);
         const mag = Math.sqrt(re*re + im*im);
         dbRow.push(20 * Math.log10(Math.max(mag, 1e-6)));
       }
@@ -661,9 +616,16 @@
     // 'nullAvoidance' mode, only the worst null anywhere matters (minus a soft
     // penalty for clustering near already-placed subs) -- see the function
     // comment above for why average level and peaks are excluded otherwise.
+    //
+    // The null penalty engages once the worst listener's minimum dips 20dB+
+    // BELOW THE SCENE'S OWN AVERAGE LEVEL (avgMean), not below a hardcoded
+    // absolute dB number -- absolute dB has no fixed "0dB is normal" reference
+    // across room sizes/field methods (e.g. the modal method's overall
+    // amplitude scale differs from a free-field convention), so anchoring the
+    // penalty to the scene's own average keeps this scale-invariant.
     const score = mode === 'nullAvoidance'
       ? worstMinDb - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
-      : avgMean - (worstStdDev * 1.5) - Math.max(0, -worstMinDb - 20) * 0.5;
+      : avgMean - (worstStdDev * 1.5) - Math.max(0, avgMean - worstMinDb - 20) * 0.5;
 
     return {
       score,
@@ -714,7 +676,7 @@
   // for visualizing "how good is every position", not just the winner).
   function optimizeSubPlacement(options){
     const {
-      room, otherSources, freqList, listenerPositions, physicsCtx, reflectionOrder,
+      room, otherSources, freqList, listenerPositions, physicsCtx,
       offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode
     } = options;
     const step = gridStepFt || 0.5;
@@ -726,7 +688,7 @@
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
         if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)) continue;
-        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, reflectionOrder, mode, excludePoints);
+        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints);
         const entry = { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
@@ -752,7 +714,7 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      reflectionOrder, offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
+      offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number that's
@@ -770,7 +732,7 @@
     for(let i = 0; i < numSubs; i++){
       const roundResult = optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, reflectionOrder, offLimitZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode
       });
       roundResults.push(roundResult);
@@ -795,18 +757,11 @@
   return {
     FT_TO_M, C,
     sourceGainAtFreq,
-    openingOverlap,
-    wallWithOpenings,
-    panelAbsorptionAtFreq,
-    panelCoverage,
-    wallWithPanels,
-    rectCoverage,
-    wallWithSurfacePanels,
     wallMaterialReflectAtFreq,
     WALL_MATERIALS,
-    boundaryOps,
-    getImageSources,
-    precomputeSourceImages,
+    MODE_CUTOFF_HZ,
+    enumerateModes,
+    precomputeModalField,
     computeFieldAtPoint,
     fieldDbAtPoint,
     sphereSamplePoints,

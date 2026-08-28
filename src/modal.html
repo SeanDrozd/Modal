@@ -174,7 +174,7 @@
 
 <div id="sidebar">
   <h1>Room wave interference</h1>
-  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height. Includes wall, floor, and ceiling reflections (up to 3rd order), with optional wall openings and absorption panels. Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
+  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height, via an exact rectangular-room modal solution below 300Hz (bass-focused; wall, floor, and ceiling reflections come from each surface's material, not individual bounces). Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
 
   <div class="row" style="margin-bottom:14px;">
     <label>Units</label>
@@ -273,11 +273,12 @@
       <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
       <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
       <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
-        <input type="number" id="dbMin" step="1" value="-24" style="width:52px;">
+        <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
         <span style="color:var(--text-dim);font-size:12.5px;">to</span>
-        <input type="number" id="dbMax" step="1" value="12" style="width:52px;">
+        <input type="number" id="dbMax" step="1" value="90" style="width:52px;">
+        <button id="autofitDbRangeBtn" class="small" title="Set the range to fit the current heatmap and chart data, with 5dB of headroom">Autofit</button>
       </div>
-      <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color. Also sets this chart's own dB axis.</div>
+      <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color. Also sets this chart's own dB axis. If the heatmap looks solid one color, or the chart looks like a flat line, click Autofit.</div>
       <div class="row" style="margin-top:8px;"><label>Heatmap colors</label>
         <select id="colormapSelect" style="width:auto; flex:1;"></select>
       </div>
@@ -328,38 +329,6 @@
     </div>
   </div>
 
-  <div class="section collapsed" id="panelsSection">
-    <div class="section-title">
-      <span class="section-title-label"><span class="chevron">&#9662;</span>Absorption panels</span>
-      <div style="display:flex; gap:6px; align-items:center;">
-        <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
-          <input type="checkbox" id="panelsMasterToggle" checked style="margin:0;"> All
-        </label>
-        <button id="addPanelBtn" class="small">+ Add panel</button>
-      </div>
-    </div>
-    <div class="section-body">
-      <div id="panelList"></div>
-      <div class="hint">Panels stick to a wall and run parallel to it. Thicker panels absorb lower frequencies more effectively (quarter-wavelength rule) &mdash; the inward band on the map shows how effective each panel is at the current frequency.</div>
-    </div>
-  </div>
-
-  <div class="section collapsed" id="openingsSection">
-    <div class="section-title">
-      <span class="section-title-label"><span class="chevron">&#9662;</span>Openings</span>
-      <div style="display:flex; gap:6px; align-items:center;">
-        <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
-          <input type="checkbox" id="openingsMasterToggle" checked style="margin:0;"> All
-        </label>
-        <button id="addOpeningBtn" class="small">+ Add opening</button>
-      </div>
-    </div>
-    <div class="section-body">
-      <div id="openingList"></div>
-      <div class="hint">An opening sits on a wall (any wall, any position) and reduces that wall's reflection near it &mdash; e.g. a doorway or open floorplan. Add any number, move them, or remove them entirely.</div>
-    </div>
-  </div>
-
   <div class="section collapsed" id="wallsSection">
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Walls</span></div>
     <div class="section-body">
@@ -399,43 +368,17 @@
       </div>
       <div class="hint" id="ceilingReadout"></div>
       <div class="hint">Suspended acoustic tile absorbs broadband (more at higher frequencies) rather than resonating like drywall &mdash; it does relatively little within this tool's bass-focused range.</div>
-      <div class="section-title" style="margin-top:12px;">
-        Floor &amp; ceiling panels
-        <div style="display:flex; gap:6px; align-items:center;">
-          <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
-            <input type="checkbox" id="surfacePanelsMasterToggle" checked style="margin:0;"> All
-          </label>
-        </div>
-      </div>
-      <div class="row"><label>Draw on map</label>
-        <div style="display:flex; gap:6px;">
-          <button id="drawFloorPanelBtn" class="small">+ Rug</button>
-          <button id="drawCeilingPanelBtn" class="small">+ Ceiling panel</button>
-        </div>
-      </div>
-      <div class="hint" id="surfacePanelDrawHint">Click a button, then click-drag on the map to draw a rectangular rug or ceiling panel. Drag its edge/corner to resize, drag its middle to move.</div>
-      <div id="surfacePanelList"></div>
-      <div class="hint">Like wall panels, thicker rugs/panels absorb lower frequencies more effectively (quarter-wavelength rule).</div>
     </div>
   </div>
 
   <div class="section collapsed" id="reflectionsSection">
-    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Reflections</span></div>
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Rendering</span></div>
     <div class="section-body">
       <div class="row-stacked">
-        <div class="row-stacked-head"><label>Reflection order</label></div>
-        <select id="reflectionOrder">
-          <option value="1">1st order (faster)</option>
-          <option value="2" selected>2nd order (more accurate, slower)</option>
-          <option value="3">3rd order (most accurate, slowest)</option>
-        </select>
-      </div>
-      <div class="hint">2nd order adds corner reflections (bounces off two boundaries before reaching the listener) &mdash; more accurate near actual room corners, at the cost of redraw speed. 3rd order adds a further bounce (~5x more image sources per source than 2nd order) &mdash; noticeably slower, and with many sources active at once (subs, panels) GPU rendering may start truncating/warning.</div>
-      <div class="row-stacked" style="margin-top:8px;">
         <div class="row-stacked-head"><label>Grid resolution</label><span class="val" id="resolutionScaleVal">1.0x</span></div>
         <input type="range" id="resolutionScale" min="0.5" max="3" step="0.25" value="1">
       </div>
-      <div class="hint">Higher resolution reduces blockiness/aliasing in the field but slows down redraws &mdash; lower it if dragging feels sluggish, especially at 2nd order.</div>
+      <div class="hint">Higher resolution reduces blockiness/aliasing in the field but slows down redraws &mdash; lower it if dragging feels sluggish.</div>
       <div class="row" style="margin-top:8px;"><label>Rendering</label>
         <select id="renderModeSelect" style="width:auto; flex:1;">
           <option value="cpu">CPU (canvas)</option>
@@ -465,7 +408,7 @@
   <div id="bottomPanel">
     <div class="freq-row">
       <label>Freq (Hz)</label>
-      <input type="range" id="freq" min="20" max="300" step="1" value="60">
+      <input type="range" id="freq" min="20" max="250" step="1" value="60">
       <span class="val" id="freqVal">60 Hz</span>
       <button id="freqSweepPlayBtn" class="small" title="Sweep through the frequency range">&#9654; Sweep</button>
       <button id="freqSweepSlowerBtn" class="small" title="Slower" style="padding:4px 9px;">&minus;</button>
@@ -500,23 +443,16 @@
   // Rough, relative starting points for the "Floor material" dropdown -- not
   // measured absorption-coefficient data, just sensible orderings (hard/bare
   // surfaces reflect more than carpet, thicker carpet reflects less than thin).
-  // Frequency-dependent behavior (e.g. carpet absorbing highs more than lows)
-  // is layered on top via actual rug panels, same as wall panels do for walls.
+  // Flat scalars, unlike the frequency-dependent wall/ceiling materials.
   const FLOOR_MATERIALS = { hardwood: 0.8, thinCarpet: 0.4, thickCarpet: 0.15 };
 
   let room = { w: 18, d: 13.5, h: 8 };
   let sources = [];
   let sourcesEnabled = true;
-  let panels = [];
-  let panelsEnabled = true;
-  let openings = [];
-  let openingsEnabled = true;
-  let surfacePanels = []; // floor rugs / ceiling panels: { id, name, surface:'floor'|'ceil', x, y, width, height, thickness, enabled }
-  let surfacePanelsEnabled = true;
   let offLimitZones = [];
   let preferredZones = [];
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
-  let zoneDrawMode = null; // null | 'offlimit' | 'preferred' | 'floorpanel' | 'ceilingpanel' -- which kind of rect the next drag creates
+  let zoneDrawMode = null; // null | 'offlimit' | 'preferred' -- which kind of rect the next drag creates
   let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
   let listener = { x: 9, y: 9, z: 3.5, facing: 0 };
   let freq = 60;
@@ -526,7 +462,6 @@
   let ceilingMaterialKey = 'drywallInsulated';
   let ceilingCustomReflect = 0.7; // used only when ceilingMaterialKey is 'custom'
   let floorReflect = 0.8; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
-  let reflectionOrder = 2;
   let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
   let nextId = 1;
   let presets = {}; // name -> config
@@ -668,9 +603,6 @@
     renderRoomDimFields();
     renderOptimizerLengthFields();
     renderSrcList();
-    renderPanelList();
-    renderOpeningsList();
-    renderSurfacePanelList();
     draw();
   }
 
@@ -679,22 +611,6 @@
       { id: nextId++, name: 'FL', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 },
       { id: nextId++, name: 'FR', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 }
     ];
-  }
-
-  // The original app's single hardcoded entryway: front wall, top-right
-  // corner (width axis), 4ft wide. Kept as the fresh-install default so a
-  // first-time load still demonstrates the feature, but now it's just one
-  // opening in a list -- movable, removable, and not the only one possible.
-  function defaultOpenings(r){
-    return [{
-      id: nextId++,
-      name: 'Entryway',
-      wall: 'front',
-      pos: Math.max(0, r.w - 4),
-      width: 4,
-      factor: 0.6,
-      enabled: true
-    }];
   }
 
   // A sensible starting off-limits zone for sub optimization: excludes the
@@ -720,19 +636,13 @@
       room: JSON.parse(JSON.stringify(room)),
       sources: JSON.parse(JSON.stringify(sources)),
       sourcesEnabled,
-      panels: JSON.parse(JSON.stringify(panels)),
-      panelsEnabled,
-      openings: JSON.parse(JSON.stringify(openings)),
-      openingsEnabled,
-      surfacePanels: JSON.parse(JSON.stringify(surfacePanels)),
-      surfacePanelsEnabled,
       offLimitZones: JSON.parse(JSON.stringify(offLimitZones)),
       preferredZones: JSON.parse(JSON.stringify(preferredZones)),
       listener: JSON.parse(JSON.stringify(listener)),
       wallMaterialKeys: JSON.parse(JSON.stringify(wallMaterialKeys)),
       wallCustomReflect: JSON.parse(JSON.stringify(wallCustomReflect)),
       ceilingMaterialKey, ceilingCustomReflect,
-      freq, wallReflect, floorReflect, reflectionOrder
+      freq, wallReflect, floorReflect
     };
   }
 
@@ -755,19 +665,10 @@
       sources.forEach((s, i) => { s.isMain = i < 2; });
     }
     sourcesEnabled = cfg.sourcesEnabled !== false;
-    panels = JSON.parse(JSON.stringify(cfg.panels || []));
-    panelsEnabled = cfg.panelsEnabled !== false;
-    openings = JSON.parse(JSON.stringify(cfg.openings || []));
-    openingsEnabled = cfg.openingsEnabled !== false;
-    surfacePanels = JSON.parse(JSON.stringify(cfg.surfacePanels || []));
-    surfacePanelsEnabled = cfg.surfacePanelsEnabled !== false;
     offLimitZones = JSON.parse(JSON.stringify(cfg.offLimitZones || []));
     preferredZones = JSON.parse(JSON.stringify(cfg.preferredZones || []));
     optimizerResult = null; // stale relative to whatever just loaded; clear rather than show outdated results
     for(const s of sources){ if(s.id >= nextId) nextId = s.id + 1; }
-    for(const p of panels){ if(p.id >= nextId) nextId = p.id + 1; }
-    for(const o of openings){ if(o.id >= nextId) nextId = o.id + 1; }
-    for(const p of surfacePanels){ if(p.id >= nextId) nextId = p.id + 1; }
     for(const z of offLimitZones){ if(z.id >= nextId) nextId = z.id + 1; }
     for(const z of preferredZones){ if(z.id >= nextId) nextId = z.id + 1; }
     listener = JSON.parse(JSON.stringify(cfg.listener));
@@ -779,19 +680,14 @@
     ceilingCustomReflect = cfg.ceilingCustomReflect ?? 0.7;
     freq = cfg.freq; wallReflect = cfg.wallReflect;
     floorReflect = cfg.floorReflect ?? cfg.wallReflect;
-    reflectionOrder = cfg.reflectionOrder ?? 2;
     renderRoomDimFields();
     document.getElementById('floorReflect').value = floorReflect;
     document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
     syncFloorMaterialDropdown();
-    document.getElementById('reflectionOrder').value = String(reflectionOrder);
     document.getElementById('freq').value = freq;
     document.getElementById('freqVal').textContent = freq + ' Hz';
     document.getElementById('listenerFacing').value = listener.facing ?? 0;
     document.getElementById('listenerFacingVal').textContent = (listener.facing ?? 0) + '\u00b0';
-    document.getElementById('panelsMasterToggle').checked = panelsEnabled;
-    document.getElementById('openingsMasterToggle').checked = openingsEnabled;
-    document.getElementById('surfacePanelsMasterToggle').checked = surfacePanelsEnabled;
     document.getElementById('sourcesMasterToggle').checked = sourcesEnabled;
     // resolutionScale and the dB color range are intentionally NOT part of the
     // saved config (see makeConfig) -- they're view/device preferences, not
@@ -803,9 +699,6 @@
     document.getElementById('dbMax').value = dbMax;
     syncLegendDbRange();
     renderSrcList();
-    renderPanelList();
-    renderOpeningsList();
-    renderSurfacePanelList();
     renderWallList();
     syncCeilingUI();
     renderZoneList();
@@ -886,12 +779,6 @@
     room = { w: 18, d: 13.5, h: 8 };
     sources = defaultSources();
     sourcesEnabled = true;
-    panels = [];
-    panelsEnabled = true;
-    openings = []; // "symmetric" means no asymmetric doorway either
-    openingsEnabled = true;
-    surfacePanels = [];
-    surfacePanelsEnabled = true;
     offLimitZones = defaultOffLimitZones(room);
     preferredZones = [];
     optimizerResult = null;
@@ -903,7 +790,6 @@
     ceilingMaterialKey = 'drywallInsulated';
     ceilingCustomReflect = 0.7;
     floorReflect = FLOOR_MATERIALS.hardwood;
-    reflectionOrder = 2;
     loadConfig(makeConfig());
   }
 
@@ -1231,324 +1117,8 @@
     `;
   }
 
-  // Length of the wall a panel/opening runs along -- shared by both, since
-  // both are "a span positioned along one of the room's 4 walls" shapes.
-  function wallSpan(wallName){
-    return (wallName === 'left' || wallName === 'right') ? room.d : room.w;
-  }
-
-  // ---- Panel list UI ----
-  const PANEL_COLOR = '#e8b84f';
-  function renderPanelList(){
-    const list = document.getElementById('panelList');
-    list.innerHTML = '';
-    panels.forEach((pnl, idx) => {
-      const block = document.createElement('div');
-      block.className = 'src-block';
-      block.innerHTML = `
-        <div class="src-label">
-          <div class="name-wrap">
-            <input type="checkbox" data-field="enabled" ${pnl.enabled !== false ? 'checked' : ''} style="margin-right:6px; flex-shrink:0;">
-            <span class="dot" style="background:${PANEL_COLOR}"></span>
-            <input type="text" data-field="name" value="${escapeHtml(pnl.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:13.5px;width:100%;">
-          </div>
-          ${reorderButtonsHtml(idx, panels.length)}
-        </div>
-        <div class="range-row">
-          <label>Wall</label>
-          <select data-field="wall" style="flex:1;">
-            <option value="left">Left</option>
-            <option value="right">Right</option>
-            <option value="front">Front</option>
-            <option value="back">Back</option>
-          </select>
-        </div>
-        <div class="row"><label>Position along wall</label>
-          ${lengthFieldHtml('pos', pnl.pos)}
-        </div>
-        <div class="row"><label>Length</label>
-          ${lengthFieldHtml('length', pnl.length)}
-        </div>
-        <div class="row"><label>Thickness</label>
-          ${lengthFieldHtml('thickness', pnl.thickness)}
-        </div>
-      `;
-      list.appendChild(block);
-      block.querySelector('[data-field="wall"]').value = pnl.wall;
-      if(pnl.enabled === false) block.style.opacity = '0.5';
-
-      block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
-        pnl.enabled = this.checked;
-        block.style.opacity = this.checked ? '1' : '0.5';
-        draw();
-      });
-      block.querySelector('[data-field="name"]').addEventListener('input', function(){
-        pnl.name = this.value || ('Panel '+pnl.id);
-      });
-      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        panels = panels.filter(x => x.id !== pnl.id);
-        renderPanelList();
-        draw();
-      });
-      block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(panels, idx, -1)){ renderPanelList(); draw(); }
-      });
-      block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(panels, idx, 1)){ renderPanelList(); draw(); }
-      });
-      block.querySelector('[data-field="wall"]').addEventListener('change', function(){
-        pnl.wall = this.value;
-        pnl.pos = Math.min(pnl.pos, Math.max(0, wallSpan(pnl.wall) - pnl.length));
-        draw();
-      });
-      wireLengthField(block, 'pos', (ft, fieldEl) => {
-        const maxSpan = wallSpan(pnl.wall);
-        pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, ft || 0));
-        writeLengthFieldValue(fieldEl, pnl.pos);
-        draw();
-      });
-      wireLengthField(block, 'length', (ft) => {
-        const maxSpan = wallSpan(pnl.wall);
-        pnl.length = Math.max(0.5, Math.min(maxSpan, ft || 0.5));
-        pnl.pos = Math.min(pnl.pos, maxSpan - pnl.length);
-        draw();
-      });
-      wireLengthField(block, 'thickness', (ft) => {
-        pnl.thickness = Math.max(0.1, Math.min(3, ft || 0.1));
-        draw();
-      });
-    });
-  }
-
-  document.getElementById('panelsMasterToggle').addEventListener('change', function(){
-    panelsEnabled = this.checked;
-    draw();
-  });
-  document.getElementById('surfacePanelsMasterToggle').addEventListener('change', function(){
-    surfacePanelsEnabled = this.checked;
-    draw();
-  });
-  document.getElementById('sourcesMasterToggle').addEventListener('change', function(){
-    sourcesEnabled = this.checked;
-    draw();
-  });
-
-  document.getElementById('addPanelBtn').addEventListener('click', () => {
-    const wall = 'left';
-    const newPanel = {
-      id: nextId++,
-      name: 'Panel ' + (panels.length + 1),
-      wall,
-      pos: Math.max(0, room.d/2 - 1.5),
-      length: 3,
-      thickness: 0.5,
-      enabled: true
-    };
-    panels.push(newPanel);
-    renderPanelList();
-    draw();
-  });
-
-  // ---- Opening list UI ----
-  // An opening sits on a wall and runs parallel to it, exactly like a panel
-  // geometrically (pos/width along the wall's axis) but reduces reflection
-  // instead of absorbing it, and has no frequency dependence.
-  const OPENING_COLOR = '#e8824f'; // matches drawOpenings' rgba(232,130,79,...) on the canvas
-  function renderOpeningsList(){
-    const list = document.getElementById('openingList');
-    list.innerHTML = '';
-    openings.forEach((op) => {
-      const block = document.createElement('div');
-      block.className = 'src-block';
-      block.innerHTML = `
-        <div class="src-label">
-          <div class="name-wrap">
-            <input type="checkbox" data-field="enabled" ${op.enabled !== false ? 'checked' : ''} style="margin-right:6px; flex-shrink:0;">
-            <span class="dot" style="background:${OPENING_COLOR}"></span>
-            <input type="text" data-field="name" value="${escapeHtml(op.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:13.5px;width:100%;">
-          </div>
-          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
-        </div>
-        <div class="range-row">
-          <label>Wall</label>
-          <select data-field="wall" style="flex:1;">
-            <option value="left">Left</option>
-            <option value="right">Right</option>
-            <option value="front">Front</option>
-            <option value="back">Back</option>
-          </select>
-        </div>
-        <div class="row"><label>Position along wall</label>
-          ${lengthFieldHtml('pos', op.pos)}
-        </div>
-        <div class="row"><label>Width</label>
-          ${lengthFieldHtml('width', op.width)}
-        </div>
-        <div class="row-stacked">
-          <div class="row-stacked-head"><label>Opening amount</label><span class="val" data-out="factor">${op.factor.toFixed(2)}</span></div>
-          <input type="range" data-field="factor" min="0" max="1" step="0.05" value="${op.factor}">
-        </div>
-      `;
-      list.appendChild(block);
-      block.querySelector('[data-field="wall"]').value = op.wall;
-      if(op.enabled === false) block.style.opacity = '0.5';
-
-      block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
-        op.enabled = this.checked;
-        block.style.opacity = this.checked ? '1' : '0.5';
-        draw();
-      });
-      block.querySelector('[data-field="name"]').addEventListener('input', function(){
-        op.name = this.value || ('Opening '+op.id);
-      });
-      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        openings = openings.filter(x => x.id !== op.id);
-        renderOpeningsList();
-        draw();
-      });
-      block.querySelector('[data-field="wall"]').addEventListener('change', function(){
-        op.wall = this.value;
-        op.pos = Math.min(op.pos, Math.max(0, wallSpan(op.wall) - op.width));
-        draw();
-      });
-      wireLengthField(block, 'pos', (ft, fieldEl) => {
-        const maxSpan = wallSpan(op.wall);
-        op.pos = Math.max(0, Math.min(maxSpan - op.width, ft || 0));
-        writeLengthFieldValue(fieldEl, op.pos);
-        draw();
-      });
-      wireLengthField(block, 'width', (ft) => {
-        const maxSpan = wallSpan(op.wall);
-        op.width = Math.max(0.5, Math.min(maxSpan, ft || 0.5));
-        op.pos = Math.min(op.pos, maxSpan - op.width);
-        draw();
-      });
-      const factorInput = block.querySelector('[data-field="factor"]');
-      factorInput.addEventListener('input', function(){
-        op.factor = parseFloat(this.value);
-        block.querySelector('[data-out="factor"]').textContent = op.factor.toFixed(2);
-        scheduleDraw();
-      });
-    });
-  }
-
-  document.getElementById('openingsMasterToggle').addEventListener('change', function(){
-    openingsEnabled = this.checked;
-    draw();
-  });
-
-  document.getElementById('addOpeningBtn').addEventListener('click', () => {
-    const wall = 'front';
-    const newOpening = {
-      id: nextId++,
-      name: 'Opening ' + (openings.length + 1),
-      wall,
-      pos: Math.max(0, room.w/2 - 2),
-      width: 4,
-      factor: 0.6,
-      enabled: true
-    };
-    openings.push(newOpening);
-    renderOpeningsList();
-    draw();
-  });
-
-  // ---- Floor/ceiling surface panel list UI ----
-  // Created primarily via click-drag on the map (see zoneMouseDown/Move/Up,
-  // generalized to also handle 'floorpanel'/'ceilingpanel'), but every field
-  // here is also editable numerically, same as wall panels/openings.
-  const FLOOR_PANEL_COLOR = '#c17a4a';
-  const CEILING_PANEL_COLOR = '#8fa8c2';
-  function surfacePanelColor(p){ return p.surface === 'floor' ? FLOOR_PANEL_COLOR : CEILING_PANEL_COLOR; }
-
-  function renderSurfacePanelList(){
-    const list = document.getElementById('surfacePanelList');
-    list.innerHTML = '';
-    surfacePanels.forEach((p) => {
-      const block = document.createElement('div');
-      block.className = 'src-block';
-      block.innerHTML = `
-        <div class="src-label">
-          <div class="name-wrap">
-            <input type="checkbox" data-field="enabled" ${p.enabled !== false ? 'checked' : ''} style="margin-right:6px; flex-shrink:0;">
-            <span class="dot" style="background:${surfacePanelColor(p)}"></span>
-            <input type="text" data-field="name" value="${escapeHtml(p.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:13.5px;width:100%;">
-          </div>
-          <button class="icon-btn" data-action="remove" title="Remove">&times;</button>
-        </div>
-        <div class="range-row">
-          <label>Surface</label>
-          <select data-field="surface" style="flex:1;">
-            <option value="floor">Floor</option>
-            <option value="ceil">Ceiling</option>
-          </select>
-        </div>
-        <div class="row"><label>Position X</label>
-          ${lengthFieldHtml('x', p.x)}
-        </div>
-        <div class="row"><label>Position Y</label>
-          ${lengthFieldHtml('y', p.y)}
-        </div>
-        <div class="row"><label>Width</label>
-          ${lengthFieldHtml('width', p.width)}
-        </div>
-        <div class="row"><label>Depth</label>
-          ${lengthFieldHtml('height', p.height)}
-        </div>
-        <div class="row"><label>Thickness</label>
-          ${lengthFieldHtml('thickness', p.thickness)}
-        </div>
-      `;
-      list.appendChild(block);
-      block.querySelector('[data-field="surface"]').value = p.surface;
-      if(p.enabled === false) block.style.opacity = '0.5';
-
-      block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
-        p.enabled = this.checked;
-        block.style.opacity = this.checked ? '1' : '0.5';
-        draw();
-      });
-      block.querySelector('[data-field="name"]').addEventListener('input', function(){
-        p.name = this.value || ('Panel '+p.id);
-      });
-      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        surfacePanels = surfacePanels.filter(x => x.id !== p.id);
-        renderSurfacePanelList();
-        draw();
-      });
-      block.querySelector('[data-field="surface"]').addEventListener('change', function(){
-        p.surface = this.value;
-        draw();
-      });
-      wireLengthField(block, 'x', (ft, fieldEl) => {
-        p.x = Math.max(0, Math.min(room.w - p.width, ft || 0));
-        writeLengthFieldValue(fieldEl, p.x);
-        draw();
-      });
-      wireLengthField(block, 'y', (ft, fieldEl) => {
-        p.y = Math.max(0, Math.min(room.d - p.height, ft || 0));
-        writeLengthFieldValue(fieldEl, p.y);
-        draw();
-      });
-      wireLengthField(block, 'width', (ft) => {
-        p.width = Math.max(0.5, Math.min(room.w, ft || 0.5));
-        p.x = Math.min(p.x, room.w - p.width);
-        draw();
-      });
-      wireLengthField(block, 'height', (ft) => {
-        p.height = Math.max(0.5, Math.min(room.d, ft || 0.5));
-        p.y = Math.min(p.y, room.d - p.height);
-        draw();
-      });
-      wireLengthField(block, 'thickness', (ft) => {
-        p.thickness = Math.max(0.1, Math.min(3, ft || 0.1));
-        draw();
-      });
-    });
-  }
-
   // ---- Wall material list UI ----
-  // Unlike panels/openings/surface panels, walls are a fixed set of exactly
+  // Walls are a fixed set of exactly
   // 4 -- no add/remove, no name editing, no enabled toggle (a wall can't be
   // "disabled"). Each card just picks a material and, for 'custom', exposes
   // the old flat-scalar slider. The small readout line shows each wall's
@@ -1683,15 +1253,13 @@
     }
   }
 
-  // Every "click-drag a rectangle on the map" entity (optimizer zones, and
-  // floor/ceiling panels) shares one zoneDrawMode/zoneEditTarget state
-  // machine -- only one rectangle-drawing tool can be active at a time,
-  // across all 4 kinds, so selecting one always clears the others' button state.
+  // Every "click-drag a rectangle on the map" entity (optimizer zones) shares
+  // one zoneDrawMode/zoneEditTarget state machine -- only one rectangle-
+  // drawing tool can be active at a time, so selecting one always clears the
+  // other's button state.
   const DRAW_MODE_BUTTONS = {
     offlimit: 'drawOffLimitBtn',
-    preferred: 'drawPreferredBtn',
-    floorpanel: 'drawFloorPanelBtn',
-    ceilingpanel: 'drawCeilingPanelBtn'
+    preferred: 'drawPreferredBtn'
   };
   function setZoneDrawMode(mode){
     zoneDrawMode = (zoneDrawMode === mode) ? null : mode;
@@ -1702,8 +1270,6 @@
   }
   document.getElementById('drawOffLimitBtn').addEventListener('click', () => setZoneDrawMode('offlimit'));
   document.getElementById('drawPreferredBtn').addEventListener('click', () => setZoneDrawMode('preferred'));
-  document.getElementById('drawFloorPanelBtn').addEventListener('click', () => setZoneDrawMode('floorpanel'));
-  document.getElementById('drawCeilingPanelBtn').addEventListener('click', () => setZoneDrawMode('ceilingpanel'));
 
   function updateZoneDrawHint(){
     const hint = document.getElementById('zoneDrawHint');
@@ -1713,14 +1279,6 @@
       hint.innerHTML = `<span style="color:${PREFERRED_COLOR}">Drawing preferred zone</span> &mdash; click-drag on the map. Click the button again to stop.`;
     } else {
       hint.textContent = "Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.";
-    }
-    const surfaceHint = document.getElementById('surfacePanelDrawHint');
-    if(zoneDrawMode === 'floorpanel'){
-      surfaceHint.innerHTML = `<span style="color:${FLOOR_PANEL_COLOR}">Drawing a rug</span> &mdash; click-drag on the map. Click the button again to stop.`;
-    } else if(zoneDrawMode === 'ceilingpanel'){
-      surfaceHint.innerHTML = `<span style="color:${CEILING_PANEL_COLOR}">Drawing a ceiling panel</span> &mdash; click-drag on the map. Click the button again to stop.`;
-    } else {
-      surfaceHint.textContent = 'Click a button, then click-drag on the map to draw a rectangular rug or ceiling panel. Drag its edge/corner to resize, drag its middle to move.';
     }
   }
 
@@ -1764,8 +1322,8 @@
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
   // These wrappers adapt RoomPhysics's explicit-parameter functions to this
-  // file's module-level mutable state (room, panels, wallReflect, etc.), so
-  // every existing call site below is unchanged. RoomPhysics is now the only
+  // file's module-level mutable state (room, wallReflect, etc.), so every
+  // existing call site below is unchanged. RoomPhysics is now the only
   // place the actual math lives — see src/room-physics.test.js for its coverage.
   // Resolves a wall's chosen material key into the actual material object
   // wallMaterialReflectAtFreq expects -- 'custom' synthesizes a flat-scalar
@@ -1782,8 +1340,7 @@
   }
   function physicsCtx(){
     return {
-      room, wallReflect, floorReflect, openings, openingsEnabled, panels, panelsEnabled,
-      surfacePanels, surfacePanelsEnabled,
+      room, wallReflect, floorReflect,
       wallMaterials: {
         left: resolveWallMaterial('left'),
         right: resolveWallMaterial('right'),
@@ -1794,46 +1351,30 @@
     };
   }
   const sourceGainAtFreq = RoomPhysics.sourceGainAtFreq;
-  const openingOverlap = RoomPhysics.openingOverlap;
-  function wallWithOpenings(wallName, basePoint, baseAmp){
-    return RoomPhysics.wallWithOpenings(wallName, basePoint, baseAmp, openings, openingsEnabled);
-  }
-  const panelAbsorptionAtFreq = RoomPhysics.panelAbsorptionAtFreq;
   const wallMaterialReflectAtFreq = RoomPhysics.wallMaterialReflectAtFreq;
-  const panelCoverage = RoomPhysics.panelCoverage;
-  function wallWithPanels(wallName, basePoint, baseAmp, freqForAbsorption){
-    return RoomPhysics.wallWithPanels(wallName, basePoint, baseAmp, freqForAbsorption, panels, panelsEnabled);
-  }
-  function boundaryOps(freqForAbsorption){
-    return RoomPhysics.boundaryOps(freqForAbsorption, physicsCtx());
-  }
-  function getImageSources(sx, sy, sz, order, freqForAbsorption){
-    return RoomPhysics.getImageSources(sx, sy, sz, order, freqForAbsorption, physicsCtx());
-  }
-
-  // Precomputes each source's image-source list once (position + amplitude only
-  // depend on source/room/panels/frequency, never on the grid point), so the
-  // inner grid loop can reuse it instead of rebuilding it per grid point.
-  function precomputeSourceImages(order){
-    if(!sourcesEnabled) return [];
-    const activeSources = sources.filter(s => s.enabled !== false);
-    return RoomPhysics.precomputeSourceImages(activeSources, order, freq, physicsCtx());
-  }
-
   const computeFieldAtPoint = RoomPhysics.computeFieldAtPoint;
 
-  // Same as precomputeSourceImages, but takes freq as a parameter instead of
-  // closing over the module-level slider value — needed because the optimizer
-  // evaluates candidates across MANY frequencies, not just the current one.
-  function precomputeSourceImagesAtFreq(sourceList, order, atFreq){
+  // Precomputes the room's modal coefficient list for one source set + one
+  // frequency (mode enumeration -- geometry/damping only, no source/frequency
+  // dependence -- plus each mode's complex coefficient for these sources at
+  // this frequency), so the inner grid loop can reuse it instead of
+  // rebuilding it per grid point. Mirrors the old precomputeSourceImages'
+  // role, just backed by RoomPhysics.enumerateModes/precomputeModalField
+  // instead of the old image-source method.
+  function precomputeFieldForSources(sourceList, atFreq){
     const activeSources = sourceList.filter(s => s.enabled !== false);
-    return RoomPhysics.precomputeSourceImages(activeSources, order, atFreq, physicsCtx());
+    const ctx = physicsCtx();
+    const modes = RoomPhysics.enumerateModes(ctx);
+    return RoomPhysics.precomputeModalField(activeSources, atFreq, ctx, modes);
+  }
+  function precomputeField(){
+    if(!sourcesEnabled) return [];
+    return precomputeFieldForSources(sources, freq);
   }
 
-  function dbAtFreq(px, py, pz, sourceList, order, atFreq){
-    const precomputed = precomputeSourceImagesAtFreq(sourceList, order, atFreq);
-    const k = 2*Math.PI*atFreq/C;
-    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed, k);
+  function dbAtFreq(px, py, pz, sourceList, atFreq){
+    const precomputed = precomputeFieldForSources(sourceList, atFreq);
+    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6));
   }
@@ -1847,9 +1388,9 @@
   // weighting/tested implementation the optimizer's standalone reference uses),
   // adapted to this file's (cx,cy,czHeight,...) call signature so existing
   // callers below are unchanged.
-  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, order, excludePoints){
+  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, excludePoints){
     const result = RoomPhysics.scoreSubPosition(
-      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), order, optimizerMode, excludePoints
+      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), optimizerMode, excludePoints
     );
     return { score: result.score, avgMean: result.avgMean, worstStdDev: result.worstStdDev, worstMinDb: result.worstMinDb };
   }
@@ -1868,7 +1409,7 @@
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
         if(!isCandidatePositionValid(x, y, excludePoints, minSeparationFt)) continue;
-        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, reflectionOrder, excludePoints);
+        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, excludePoints);
         const entry = { x, y, ...result };
         candidates.push(entry);
         if(best === null || entry.score > best.score) best = entry;
@@ -1959,13 +1500,20 @@
     if(aspect >= 1) return { sizeW: RENDER_LONG_EDGE, sizeH: Math.round(RENDER_LONG_EDGE / aspect) };
     return { sizeW: Math.round(RENDER_LONG_EDGE * aspect), sizeH: RENDER_LONG_EDGE };
   }
-  const RES_BASE_ORDER1 = 130;
-  const RES_BASE_ORDER2 = 90; // lower baseline at 2nd order (~5x more image sources per point)
+  // The modal method has no "order" tradeoff (see RoomPhysics.enumerateModes) --
+  // per-point cost is a fixed sum over the room's mode list regardless of grid
+  // resolution, so a single baseline suffices; resolutionScale (below) remains
+  // the right knob for trading redraw speed against grid smoothness.
+  const RES_BASE = 110;
   let resolutionScale = 1.0; // user-adjustable multiplier on the baseline grid resolution
   // Colormap dB range -- a display/view preference (like resolutionScale),
   // not a saved room property. Narrower ranges make small differences more
   // visible at the cost of clipping everything past the edges to one color.
-  let dbMin = -24, dbMax = 12;
+  // Default range reflects the modal method's overall amplitude scale, which
+  // sits well above the old image-source method's implicit "~0dB at 1m"
+  // convention (see room-physics.js's enumerateModes doc comment) -- typical
+  // field values for a modest room/source setup land roughly 45-80dB.
+  let dbMin = 30, dbMax = 90;
   let colormapId = 'thermal'; // also a display preference -- see FieldRenderer.COLORMAPS
   let renderMode = 'gpu'; // 'cpu' (canvas2d, always available) | 'gpu' (webgl, default; falls back to cpu if unavailable)
 
@@ -2000,6 +1548,7 @@
     canvasGL.style.display = (renderMode === 'gpu' && gpuAvailable) ? 'block' : 'none';
   }
   setCanvasStackVisibility();
+
 
   // ---- Field rendering (CPU canvas2d / GPU WebGL) ----
   // Delegated to FieldRenderer (src/field-render.js): it owns the GLSL shader
@@ -2046,10 +1595,8 @@
     initGPUProgram();
     if(fieldRenderer.gpuInitFailed || !fieldRenderer.gpuProgram){ return { ok: false, reason: 'GPU shader failed to initialize' }; }
 
-    const RES = Math.round((reflectionOrder >= 2 ? RES_BASE_ORDER2 : RES_BASE_ORDER1) * resolutionScale);
+    const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
-    const lambda = C / freq;
-    const k = 2*Math.PI/lambda;
     const { sizeW, sizeH } = canvasDimsForRoom(w, d);
     const margin = 40;
     const plotW = sizeW - margin*2;
@@ -2057,18 +1604,25 @@
     const scale = Math.min(plotW / w, plotH / d);
     const offX = margin + (plotW - w*scale)/2;
     const offY = margin + (plotH - d*scale)/2;
-    const precomputed = precomputeSourceImages(reflectionOrder);
+    const precomputed = precomputeField();
     const pz = listener.z;
 
     // Render once in debug mode so pixel readback reflects the raw dB encoding.
-    renderFieldGPU({ RES, w, d, k, precomputed, pz, offX, offY, scale, sizeW, sizeH }, true);
+    renderFieldGPU({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH }, true);
 
-    const DEBUG_DB_MIN = -100, DEBUG_DB_MAX = 40;
-    const NULL_PROXIMITY_DB = -40; // below this, dB is highly position-sensitive (near a destructive interference null)
+    // Must match FRAGMENT_SRC's DEBUG_DB_MIN/MAX in field-render.js exactly --
+    // that's the range the shader normalized into before encoding to RGBA.
+    const DEBUG_DB_MIN = -60, DEBUG_DB_MAX = 200;
+    // "Near a null" is relative to this pass's own loudest point (not a fixed
+    // absolute dB number) -- the modal method's overall amplitude scale/
+    // reference differs per room/config, so there's no universal "0dB" to
+    // anchor an absolute threshold to (see scoreSubPosition's null penalty
+    // for the same reasoning). 40dB below the loudest sampled point is deep
+    // enough that dB becomes highly position-sensitive there.
+    const NULL_PROXIMITY_MARGIN_DB = 40;
     const pixelBuf = new Uint8Array(4);
-    const results = [];
-    let maxDiff = 0, sumDiff = 0;
-    let maxDiffAwayFromNulls = 0, sumDiffAwayFromNulls = 0, countAwayFromNulls = 0;
+    const rawSamples = [];
+    let peakDb = -Infinity;
 
     for(let gy = 0; gy < sampleGridSize; gy++){
       for(let gx = 0; gx < sampleGridSize; gx++){
@@ -2090,27 +1644,37 @@
         const roomX = (localX / (w*scale)) * w;
         const roomY = (localY / (d*scale)) * d;
 
-        const cpuDb = fieldDbAtPoint(roomX, roomY, precomputed, k);
+        const cpuDb = fieldDbAtPoint(roomX, roomY, precomputed);
 
         gl.readPixels(px, pyGL, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuf);
         const norm = decodeFloatFromRGBA(pixelBuf[0], pixelBuf[1], pixelBuf[2], pixelBuf[3]);
         const gpuDb = norm * (DEBUG_DB_MAX - DEBUG_DB_MIN) + DEBUG_DB_MIN;
 
-        const diff = Math.abs(cpuDb - gpuDb);
-        // "near a null" if EITHER implementation found this point quiet — if either
-        // one is close to a zero-crossing, dB there is inherently unstable to tiny
-        // position differences, so a diff at that point isn't evidence of a shader bug.
-        const nearNull = RoomPhysics.isNearNull(cpuDb, NULL_PROXIMITY_DB) || RoomPhysics.isNearNull(gpuDb, NULL_PROXIMITY_DB);
-
-        maxDiff = Math.max(maxDiff, diff);
-        sumDiff += diff;
-        if(!nearNull){
-          maxDiffAwayFromNulls = Math.max(maxDiffAwayFromNulls, diff);
-          sumDiffAwayFromNulls += diff;
-          countAwayFromNulls++;
-        }
-        results.push({ roomX, roomY, cpuDb, gpuDb, diff, nearNull });
+        peakDb = Math.max(peakDb, cpuDb, gpuDb);
+        rawSamples.push({ roomX, roomY, cpuDb, gpuDb });
       }
+    }
+
+    const nullThresholdDb = peakDb - NULL_PROXIMITY_MARGIN_DB;
+    const results = [];
+    let maxDiff = 0, sumDiff = 0;
+    let maxDiffAwayFromNulls = 0, sumDiffAwayFromNulls = 0, countAwayFromNulls = 0;
+    for(const { roomX, roomY, cpuDb, gpuDb } of rawSamples){
+      const diff = Math.abs(cpuDb - gpuDb);
+      // "near a null" if EITHER implementation found this point quiet relative
+      // to the loudest sampled point -- if either one is close to a zero-
+      // crossing, dB there is inherently unstable to tiny position
+      // differences, so a diff at that point isn't evidence of a shader bug.
+      const nearNull = RoomPhysics.isNearNull(cpuDb, nullThresholdDb) || RoomPhysics.isNearNull(gpuDb, nullThresholdDb);
+
+      maxDiff = Math.max(maxDiff, diff);
+      sumDiff += diff;
+      if(!nearNull){
+        maxDiffAwayFromNulls = Math.max(maxDiffAwayFromNulls, diff);
+        sumDiffAwayFromNulls += diff;
+        countAwayFromNulls++;
+      }
+      results.push({ roomX, roomY, cpuDb, gpuDb, diff, nearNull });
     }
 
     // restore normal (non-debug) rendering for the next real draw
@@ -2133,20 +1697,72 @@
   // Standalone helper mirroring computeFieldAtPoint but taking room x/y directly
   // (computeFieldAtPoint takes px/py already, so this is a thin wrapper — kept
   // separate so verifyGPUAgainstCPU's intent reads clearly at the call site).
-  function fieldDbAtPoint(roomX, roomY, precomputed, k){
-    const { re, im } = computeFieldAtPoint(roomX, roomY, listener.z, precomputed, k);
+  function fieldDbAtPoint(roomX, roomY, precomputed){
+    const { re, im } = computeFieldAtPoint(roomX, roomY, listener.z, precomputed);
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6) / 1.0);
+  }
+
+  // ---- Autofit dB range (manual, button-triggered) ----
+  // The heatmap/frequency-response color range (dbMin/dbMax) is a saved
+  // session preference, not something recomputed per room -- so a range
+  // picked for one frequency/room/source setup can end up with NO overlap at
+  // all for a different one (e.g. switching to a much louder/quieter scene),
+  // which renders as a heatmap that's solid one color, or a frequency-
+  // response line pinned flat to one edge. Deliberately a button (not
+  // triggered automatically while the user is dragging dbMin/dbMax by hand)
+  // -- an automatic version would fight a user mid-edit; this only runs on
+  // an explicit click. Considers BOTH the current heatmap (whole floor plan,
+  // one frequency) and the frequency-response chart (one point, swept across
+  // frequencies) so the fitted range covers whichever is showing.
+  function autofitColorRange(){
+    const precomputed = precomputeField();
+    const heatmapRange = sampleFieldDbRange(precomputed, room.w, room.d, listener.z);
+    let min = heatmapRange.min, max = heatmapRange.max;
+    if(freqResponseData && freqResponseData.response){
+      for(const r of freqResponseData.response){
+        if(r.db < min) min = r.db;
+        if(r.db > max) max = r.db;
+      }
+    }
+    if(!Number.isFinite(min) || !Number.isFinite(max)) return;
+    dbMin = Math.round(min - 5);
+    dbMax = Math.round(max + 5);
+    document.getElementById('dbMin').value = dbMin;
+    document.getElementById('dbMax').value = dbMax;
+    syncLegendDbRange();
+    saveSessionSettings();
+    draw();
+  }
+
+  // Cheap CPU-only sample of the field's dB range across the room floor plan
+  // (independent of render mode/resolution) -- just enough points for
+  // autofitColorRange to get a representative min/max, not a substitute for
+  // the actual RES x RES render.
+  function sampleFieldDbRange(precomputed, w, d, pz){
+    const n = 10;
+    let min = Infinity, max = -Infinity;
+    for(let j = 0; j < n; j++){
+      const py = (j/(n-1)) * d;
+      for(let i = 0; i < n; i++){
+        const px = (i/(n-1)) * w;
+        const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
+        const mag = Math.sqrt(re*re + im*im);
+        const db = 20 * Math.log10(Math.max(mag, 1e-6));
+        if(db < min) min = db;
+        if(db > max) max = db;
+      }
+    }
+    return { min, max };
   }
 
   function draw(){
     const effectiveMode = (renderMode === 'gpu' && gpuAvailable) ? 'gpu' : 'cpu';
     setCanvasStackVisibility();
 
-    const RES = Math.round((reflectionOrder >= 2 ? RES_BASE_ORDER2 : RES_BASE_ORDER1) * resolutionScale);
+    const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
-    const lambda = C / freq;
-    const k = 2*Math.PI/lambda;
+    const lambda = C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
     const { sizeW, sizeH } = canvasDimsForRoom(w, d);
     if(canvas.width !== sizeW || canvas.height !== sizeH){
       canvas.width = sizeW;
@@ -2159,19 +1775,16 @@
     const offX = margin + (plotW - w*scale)/2;
     const offY = margin + (plotH - d*scale)/2;
 
-    const precomputed = precomputeSourceImages(reflectionOrder);
+    const precomputed = precomputeField();
     const pz = listener.z;
 
     const renderPath = renderPaths[effectiveMode];
-    renderPath({ RES, w, d, k, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
+    renderPath({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
 
     ctx.strokeStyle = '#4a5568';
     ctx.lineWidth = 2;
     ctx.strokeRect(offX, offY, w*scale, d*scale);
 
-    drawOpenings(offX, offY, scale);
-    drawPanels(offX, offY, scale);
-    drawSurfacePanels(offX, offY, scale);
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
     drawZones(offX, offY, scale);
@@ -2264,168 +1877,7 @@
     ctx.fillText(text, tx, ty);
   }
 
-  // Renders each opening as a dashed line along its wall span (any wall, any
-  // position/width), with a label offset INWARD (same direction panels use
-  // for their own label/effectiveness band) so there's always room-interior
-  // space to draw into regardless of which wall it's on -- an outward label
-  // works fine above the front wall (where the original single hardcoded
-  // opening always lived) but can run off the canvas edge for a left/right
-  // wall opening, where there's much less margin outside the room rect.
-  // Line/label opacity scales with the opening's factor.
-  function drawOpenings(offX, offY, scale){
-    for(const op of openings){
-      const isActive = openingsEnabled && op.enabled !== false;
-      const alpha = isActive ? (0.4 + op.factor*0.6) : 0.25;
-
-      let x1, y1, x2, y2, inDx, inDy;
-      if(op.wall === 'left'){
-        x1 = 0; y1 = op.pos; x2 = 0; y2 = op.pos + op.width; inDx = 1; inDy = 0;
-      } else if(op.wall === 'right'){
-        x1 = room.w; y1 = op.pos; x2 = room.w; y2 = op.pos + op.width; inDx = -1; inDy = 0;
-      } else if(op.wall === 'front'){
-        x1 = op.pos; y1 = 0; x2 = op.pos + op.width; y2 = 0; inDx = 0; inDy = 1;
-      } else {
-        x1 = op.pos; y1 = room.d; x2 = op.pos + op.width; y2 = room.d; inDx = 0; inDy = -1;
-      }
-      const px1 = offX + x1*scale, py1 = offY + y1*scale;
-      const px2 = offX + x2*scale, py2 = offY + y2*scale;
-
-      ctx.strokeStyle = `rgba(232,130,79,${alpha})`;
-      ctx.lineWidth = 4;
-      ctx.setLineDash([6,4]);
-      ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
-      ctx.setLineDash([]);
-
-      const labelOffset = 16;
-      const midx = (px1+px2)/2 + inDx*labelOffset;
-      const midy = (py1+py2)/2 + inDy*labelOffset;
-      ctx.font = 'bold 15.5px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const label = isActive ? op.name : `${op.name} (off)`;
-      const labelW = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(11,14,18,0.85)';
-      ctx.fillRect(midx-labelW/2-6, midy-11, labelW+12, 22);
-      ctx.fillStyle = `rgba(232,130,79,${Math.max(alpha,0.6)})`;
-      ctx.fillText(label, midx, midy);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
-    }
-  }
-
-  // Renders each panel as: (1) a static line on the wall, weight+color-saturation
-  // scaled by physical thickness, and (2) a dynamic inward band showing how
-  // absorptive it actually is AT THE CURRENT FREQUENCY (grows as freq rises
-  // past the panel's quarter-wavelength threshold for its thickness).
-  function drawPanels(offX, offY, scale){
-    for(const pnl of panels){
-      const isActive = panelsEnabled && pnl.enabled !== false;
-      const effectiveness = isActive ? panelAbsorptionAtFreq(pnl, freq) : 0;
-      const thicknessNorm = Math.max(0, Math.min(1, pnl.thickness / 2)); // 0..1 over 0-2ft for line styling
-      const lineWidth = 3 + thicknessNorm * 7; // 3px thin .. 10px thick
-      const baseAlpha = 0.35 + thicknessNorm * 0.65;
-      const alpha = isActive ? baseAlpha : baseAlpha * 0.3;
-      const panelColor = isActive ? '232,184,79' : '120,120,120';
-
-      let x1, y1, x2, y2, inwardDx, inwardDy;
-      if(pnl.wall === 'left'){
-        x1 = 0; y1 = pnl.pos; x2 = 0; y2 = pnl.pos + pnl.length; inwardDx = 1; inwardDy = 0;
-      } else if(pnl.wall === 'right'){
-        x1 = room.w; y1 = pnl.pos; x2 = room.w; y2 = pnl.pos + pnl.length; inwardDx = -1; inwardDy = 0;
-      } else if(pnl.wall === 'front'){
-        x1 = pnl.pos; y1 = 0; x2 = pnl.pos + pnl.length; y2 = 0; inwardDx = 0; inwardDy = 1;
-      } else {
-        x1 = pnl.pos; y1 = room.d; x2 = pnl.pos + pnl.length; y2 = room.d; inwardDx = 0; inwardDy = -1;
-      }
-
-      const px1 = offX + x1*scale, py1 = offY + y1*scale;
-      const px2 = offX + x2*scale, py2 = offY + y2*scale;
-
-      // dynamic effectiveness band (drawn first, underneath the build line)
-      if(effectiveness > 0.02){
-        const bandDepth = 8 + effectiveness * 26; // px, grows with effectiveness at current freq
-        const bx1 = px1, by1 = py1;
-        const bx2 = px2, by2 = py2;
-        const bx1i = bx1 + inwardDx*bandDepth, by1i = by1 + inwardDy*bandDepth;
-        const bx2i = bx2 + inwardDx*bandDepth, by2i = by2 + inwardDy*bandDepth;
-        ctx.fillStyle = `rgba(232,184,79,${0.08 + effectiveness*0.22})`;
-        ctx.beginPath();
-        ctx.moveTo(bx1, by1); ctx.lineTo(bx2, by2); ctx.lineTo(bx2i, by2i); ctx.lineTo(bx1i, by1i);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      // static build line: weight + saturation encode physical thickness
-      ctx.strokeStyle = `rgba(${panelColor},${alpha})`;
-      ctx.lineWidth = lineWidth;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(px1, py1); ctx.lineTo(px2, py2);
-      ctx.stroke();
-      ctx.lineCap = 'butt';
-
-      // label
-      const midx = (px1+px2)/2 + inwardDx*(18+lineWidth);
-      const midy = (py1+py2)/2 + inwardDy*(18+lineWidth);
-      ctx.font = 'bold 15.5px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const label = isActive ? formatLength(pnl.thickness) : `${formatLength(pnl.thickness)} (off)`;
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(11,14,18,0.85)';
-      ctx.fillRect(midx-tw/2-5, midy-11, tw+10, 22);
-      ctx.fillStyle = `rgb(${panelColor})`;
-      ctx.fillText(label, midx, midy);
-    }
-  }
-
   const ZONE_HANDLE_PX = 12; // corner/edge grab-handle visual size and hit radius
-
-  // Renders each floor/ceiling panel as a filled rectangle (visually similar
-  // to an off-limits/preferred zone, since they share the same click-drag
-  // create/move/resize interaction), with fill opacity scaled by absorption
-  // effectiveness AT THE CURRENT FREQUENCY -- same "effectiveness" concept
-  // drawPanels uses for its inward band, just applied to a 2D area fill.
-  function drawSurfacePanels(offX, offY, scale){
-    for(const p of surfacePanels){
-      const isActive = surfacePanelsEnabled && p.enabled !== false;
-      const effectiveness = isActive ? panelAbsorptionAtFreq(p, freq) : 0;
-      const color = surfacePanelColor(p);
-      const rgb = p.surface === 'floor' ? '193,122,74' : '143,168,194';
-      const isBeingDrawn = zoneEditTarget && zoneEditTarget.mode === 'creating' && zoneEditTarget.id === p.id;
-
-      const px = offX + p.x*scale, py = offY + p.y*scale;
-      const pw = p.width*scale, ph = p.height*scale;
-
-      const fillAlpha = isActive ? (0.12 + effectiveness*0.35) : 0.08;
-      ctx.fillStyle = `rgba(${rgb},${fillAlpha})`;
-      ctx.fillRect(px, py, pw, ph);
-      ctx.strokeStyle = isActive ? color : 'rgba(120,120,120,0.6)';
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash(p.surface === 'floor' ? [5,3] : [2,2]);
-      ctx.strokeRect(px, py, pw, ph);
-      ctx.setLineDash([]);
-
-      ctx.font = 'bold 15.5px sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      const label = (p.surface === 'floor' ? 'rug: ' : 'ceiling: ') + p.name + (isActive ? '' : ' (off)');
-      const labelW = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(11,14,18,0.85)';
-      ctx.fillRect(px+2, py+2, labelW+10, 22);
-      ctx.fillStyle = isActive ? color : 'rgba(160,160,160,0.9)';
-      ctx.fillText(label, px+7, py+6);
-
-      // resize handles at the 4 corners (not while actively creating a new one)
-      if(!isBeingDrawn){
-        const corners = [[px,py],[px+pw,py],[px,py+ph],[px+pw,py+ph]];
-        ctx.fillStyle = color;
-        for(const [cx,cy] of corners){
-          ctx.fillRect(cx-ZONE_HANDLE_PX/2, cy-ZONE_HANDLE_PX/2, ZONE_HANDLE_PX, ZONE_HANDLE_PX);
-        }
-      }
-    }
-  }
 
   function drawZones(offX, offY, scale){
     const allZones = [
@@ -2449,7 +1901,7 @@
       ctx.font = 'bold 15.5px sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      const zoneLabel = z.kind === 'offlimit' ? '\u2715 off-limits' : '\u2713 preferred';
+      const zoneLabel = z.kind === 'offlimit' ? '✕ off-limits' : '✓ preferred';
       const zoneLabelW = ctx.measureText(zoneLabel).width;
       ctx.fillStyle = 'rgba(11,14,18,0.85)';
       ctx.fillRect(px+2, py+2, zoneLabelW+10, 22);
@@ -2646,8 +2098,8 @@
       return;
     }
     const ears = earPositions(listener);
-    const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, reflectionOrder, freq);
-    const rightDb = dbAtFreq(ears.right.x, ears.right.y, ears.right.z, activeSources, reflectionOrder, freq);
+    const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, freq);
+    const rightDb = dbAtFreq(ears.right.x, ears.right.y, ears.right.z, activeSources, freq);
     const diff = Math.abs(leftDb - rightDb);
     const color = diff < 0.5 ? 'var(--text-dim)' : (diff < 3 ? 'var(--accent)' : 'var(--bad)');
     document.getElementById('earDiffInfo').innerHTML =
@@ -2666,13 +2118,12 @@
     el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
       `(estimated from room volume and your configured wall/floor/ceiling materials at ${Math.round(freq)} Hz, ` +
       `T60 &asymp; ${t60.toFixed(2)}s) &mdash; below this, distinct room modes dominate; above it, ` +
-      `the field gets too dense/diffuse for a single-frequency snapshot to mean much. Doesn't factor ` +
-      `in absorption panels, rugs, or openings.`;
+      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.`;
   }
 
   function updateModalInfo(){
     updateSchroederInfo();
-    const maxFreq = 300;
+    const maxFreq = syncFreqSliderRange();
     const wModes = axialModes(room.w, 4, maxFreq);
     const dModes = axialModes(room.d, 4, maxFreq);
     const hModes = axialModes(room.h, 4, maxFreq);
@@ -2709,7 +2160,6 @@
   // so the current-frequency marker tracks the slider live, without waiting
   // on a recompute of the curve itself.
   const FREQ_RESPONSE_MIN_HZ = 20;
-  const FREQ_RESPONSE_MAX_HEADROOM_HZ = 100; // how far above the Schroeder frequency the chart extends
   const FREQ_RESPONSE_NUM_POINTS = 80;
   function logSpacedFreqs(minHz, maxHz, n){
     const logMin = Math.log10(minHz), logMax = Math.log10(maxHz);
@@ -2753,6 +2203,51 @@
     return maxFs;
   }
 
+  // ---- Dynamic frequency ceiling (sweep slider + frequency-response chart) ----
+  // Both the main frequency slider/sweep range and the frequency-response
+  // chart's x-axis extend to the room's own (worst-case) Schroeder frequency
+  // plus headroom -- below Schroeder, distinct room modes are what this tool
+  // is actually useful for; above it, the field gets too dense/diffuse for a
+  // single-frequency snapshot to mean much (see updateSchroederInfo). A fixed
+  // 300Hz range (this app's old default) is often far past a typical room's
+  // Schroeder frequency, wasting most of the slider/chart on a range that
+  // isn't meaningfully different room-mode-wise from where it started.
+  // Clamped to:
+  //  - a floor, so a very dead/small/absorptive room (unusually low T60/
+  //    Schroeder) doesn't shrink the range to something impractically narrow
+  //    to explore or sweep through
+  //  - a ceiling comfortably under RoomPhysics.MODE_CUTOFF_HZ (the physics
+  //    engine's own mode-enumeration cutoff, currently 300Hz) -- accuracy
+  //    degrades as the query frequency approaches that cutoff, since modes
+  //    just above it are excluded from the sum, so the UI should never push
+  //    right up against that edge
+  // Both the slider and the chart call this SAME function (see
+  // syncFreqSliderRange and computeFreqResponseData), so they're always in
+  // sync by construction rather than by two independently-tuned constants.
+  const FREQ_RANGE_HEADROOM_HZ = 100;
+  const FREQ_RANGE_FLOOR_HZ = 120;
+  const FREQ_RANGE_CEILING_HZ = RoomPhysics.MODE_CUTOFF_HZ - 50; // stay comfortably under the physics engine's own mode-enumeration cutoff
+  function dynamicFreqCeilingHz(){
+    return Math.min(FREQ_RANGE_CEILING_HZ, Math.max(FREQ_RANGE_FLOOR_HZ, maxSchroederAcrossRange() + FREQ_RANGE_HEADROOM_HZ));
+  }
+
+  // Keeps the #freq slider's max attribute (and the live freq value, if it
+  // now exceeds the new max) in sync with dynamicFreqCeilingHz() -- called on
+  // every draw() (via updateModalInfo) so it tracks room/material changes.
+  function syncFreqSliderRange(){
+    const maxHz = Math.round(dynamicFreqCeilingHz());
+    const slider = document.getElementById('freq');
+    if(parseFloat(slider.max) !== maxHz){
+      slider.max = maxHz;
+      if(freq > maxHz){
+        freq = maxHz;
+        slider.value = freq;
+        document.getElementById('freqVal').textContent = Math.round(freq) + ' Hz';
+      }
+    }
+    return maxHz;
+  }
+
   let freqResponseTimer = null;
   function scheduleFreqResponseUpdate(){
     if(freqResponseTimer) clearTimeout(freqResponseTimer);
@@ -2775,17 +2270,13 @@
       freqResponseData = null;
       return;
     }
-    // Upper bound tracks the room's own (worst-case) Schroeder frequency +
-    // headroom instead of a fixed cap -- below Schroeder, distinct modes are
-    // what this chart is actually useful for; past that the field gets too
-    // dense to mean much anyway (same reasoning as the Schroeder readout
-    // itself), so a livelier/deader room naturally gets a narrower/wider
-    // chart instead of a fixed window that over- or under-fills depending on
-    // the room.
-    const maxHz = Math.max(FREQ_RESPONSE_MIN_HZ + 60, maxSchroederAcrossRange() + FREQ_RESPONSE_MAX_HEADROOM_HZ);
+    // Same dynamic ceiling the main frequency slider/sweep uses (see
+    // dynamicFreqCeilingHz) -- keeps the chart's x-axis and the sweep range
+    // always in sync, rather than two independently-tuned bounds.
+    const maxHz = dynamicFreqCeilingHz();
     const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
     const response = RoomPhysics.spatiallyAveragedResponse(
-      listener.x, listener.y, listener.z, freqs, activeSources, reflectionOrder, physicsCtx(),
+      listener.x, listener.y, listener.z, freqs, activeSources, physicsCtx(),
       { radiusFt: 2, numPoints: 20 }
     );
     freqResponseData = { response, maxHz };
@@ -2794,12 +2285,27 @@
   function redrawFreqResponseCanvas(){
     const canvas = document.getElementById('freqResponseCanvas');
     const c2 = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
+    // The canvas's backing-store resolution (canvas.width/height, the pixel
+    // buffer) must match its actual CSS-rendered size (clientWidth/Height) --
+    // otherwise the browser stretches the fixed-resolution buffer to fit,
+    // squishing/distorting everything drawn on it (this is what made the
+    // axis labels look horizontally squished: a 600px-wide buffer displayed
+    // at the sidebar's ~300px CSS width). Scaled by devicePixelRatio for
+    // crisp text on high-DPI screens; the context transform below then lets
+    // all the drawing math stay in CSS-pixel coordinates regardless.
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, canvas.clientWidth), h = Math.max(1, canvas.clientHeight);
+    const pixelW = Math.round(w * dpr), pixelH = Math.round(h * dpr);
+    if(canvas.width !== pixelW || canvas.height !== pixelH){
+      canvas.width = pixelW;
+      canvas.height = pixelH;
+    }
+    c2.setTransform(dpr, 0, 0, dpr, 0, 0);
     c2.fillStyle = '#0b0e12';
     c2.fillRect(0, 0, w, h);
 
     if(!freqResponseData){
-      c2.fillStyle = '#7a8494';
+      c2.fillStyle = '#c8cdd6';
       c2.font = '13.5px system-ui, sans-serif';
       const msg = sourcesEnabled && sources.some(s => s.enabled !== false) ? '' : 'No active sources';
       if(msg) c2.fillText(msg, 10, h/2);
@@ -2807,7 +2313,7 @@
     }
     const { response, maxHz } = freqResponseData;
 
-    const marginL = 32, marginR = 8, marginT = 8, marginB = 16;
+    const marginL = 38, marginR = 8, marginT = 8, marginB = 20;
     const plotW = w - marginL - marginR, plotH = h - marginT - marginB;
     const logMin = Math.log10(FREQ_RESPONSE_MIN_HZ), logMax = Math.log10(maxHz);
     function xForFreq(f){
@@ -2819,8 +2325,8 @@
     }
 
     c2.strokeStyle = 'rgba(255,255,255,0.08)';
-    c2.fillStyle = '#7a8494';
-    c2.font = '10px system-ui, sans-serif';
+    c2.fillStyle = '#c8cdd6';
+    c2.font = '13px system-ui, sans-serif';
     c2.lineWidth = 1;
     const freqTicks = niceFreqTicks(FREQ_RESPONSE_MIN_HZ, maxHz);
     for(const f of freqTicks){
@@ -2829,7 +2335,7 @@
       c2.moveTo(x, marginT);
       c2.lineTo(x, marginT + plotH);
       c2.stroke();
-      c2.fillText(String(f), x - 7, h - 4);
+      c2.fillText(String(f), x - 9, h - 5);
     }
     const dbTicks = [dbMin, (dbMin + dbMax) / 2, dbMax];
     for(const d of dbTicks){
@@ -2838,7 +2344,7 @@
       c2.moveTo(marginL, y);
       c2.lineTo(marginL + plotW, y);
       c2.stroke();
-      c2.fillText(d.toFixed(0), 2, y + 3);
+      c2.fillText(d.toFixed(0), 2, y + 4);
     }
 
     c2.strokeStyle = '#4fb0e8';
@@ -2983,10 +2489,6 @@
     updateCeilingReadout();
     scheduleDraw();
   });
-  document.getElementById('reflectionOrder').addEventListener('change', function(){
-    reflectionOrder = parseInt(this.value, 10);
-    draw();
-  });
   document.getElementById('unitsSelect').addEventListener('change', function(){
     lengthUnit = this.value;
     saveSessionSettings();
@@ -3028,10 +2530,10 @@
     document.getElementById('legendDbMax').textContent = (dbMax >= 0 ? '+' : '') + dbMax + ' dB';
   }
   document.getElementById('dbMin').addEventListener('change', function(){
-    // `|| -24` would treat a legitimate 0 input as falsy and silently fall
-    // back to -24 -- Number.isFinite avoids that pitfall.
+    // `|| 30` would treat a legitimate 0 input as falsy and silently fall
+    // back to 30 -- Number.isFinite avoids that pitfall.
     const parsed = parseFloat(this.value);
-    dbMin = Math.min(Number.isFinite(parsed) ? parsed : -24, dbMax - 1);
+    dbMin = Math.min(Number.isFinite(parsed) ? parsed : 30, dbMax - 1);
     this.value = dbMin;
     syncLegendDbRange();
     saveSessionSettings();
@@ -3039,12 +2541,13 @@
   });
   document.getElementById('dbMax').addEventListener('change', function(){
     const parsed = parseFloat(this.value);
-    dbMax = Math.max(Number.isFinite(parsed) ? parsed : 12, dbMin + 1);
+    dbMax = Math.max(Number.isFinite(parsed) ? parsed : 90, dbMin + 1);
     this.value = dbMax;
     syncLegendDbRange();
     saveSessionSettings();
     draw();
   });
+  document.getElementById('autofitDbRangeBtn').addEventListener('click', autofitColorRange);
   const COLORMAP_HINTS = {
     thermal: 'A hand-picked dark-blue-to-orange ramp. Monotonic-ish in brightness so it avoids the false banding a rainbow can introduce.',
     spectrum: 'A continuous violet-to-red hue sweep across the full visible spectrum. More distinguishable steps than thermal, at the cost of the perceptual artifacts full-spectrum colormaps are known for.',
@@ -3209,13 +2712,10 @@
   }
 
   // Backing array for each "rectangle on the map" kind, shared by the
-  // find/create/move/resize machinery below. Surface panels are one array
-  // (surfacePanels) covering both floorpanel/ceilingpanel kinds -- which one
-  // a given item is comes from its own .surface field, set at creation time.
+  // find/create/move/resize machinery below.
   function zoneArrayFor(kind){
     if(kind === 'offlimit') return offLimitZones;
     if(kind === 'preferred') return preferredZones;
-    if(kind === 'floorpanel' || kind === 'ceilingpanel') return surfacePanels;
     return null;
   }
 
@@ -3226,17 +2726,13 @@
     for(const z of offLimitZones){
       if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'offlimit', id: z.id, zone: z };
     }
-    for(const z of surfacePanels){
-      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind: z.surface === 'floor' ? 'floorpanel' : 'ceilingpanel', id: z.id, zone: z };
-    }
     return null;
   }
   function findZoneHandleAt(x, y, scale){
     const tolFt = ZONE_HANDLE_PX / scale;
     const all = [
       ...offLimitZones.map(z=>({...z,kind:'offlimit'})),
-      ...preferredZones.map(z=>({...z,kind:'preferred'})),
-      ...surfacePanels.map(z=>({...z,kind: z.surface === 'floor' ? 'floorpanel' : 'ceilingpanel'}))
+      ...preferredZones.map(z=>({...z,kind:'preferred'}))
     ];
     for(const z of all){
       const corners = [
@@ -3256,39 +2752,19 @@
       if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < 0.8) return s.id;
     }
     if(Math.sqrt((x-listener.x)**2+(y-listener.y)**2) < 0.8) return 'listener';
-    for(const pnl of panels){
-      const tol = 0.6;
-      if(pnl.wall === 'left' && Math.abs(x-0) < tol && y >= pnl.pos-0.3 && y <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
-      if(pnl.wall === 'right' && Math.abs(x-room.w) < tol && y >= pnl.pos-0.3 && y <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
-      if(pnl.wall === 'front' && Math.abs(y-0) < tol && x >= pnl.pos-0.3 && x <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
-      if(pnl.wall === 'back' && Math.abs(y-room.d) < tol && x >= pnl.pos-0.3 && x <= pnl.pos+pnl.length+0.3) return 'panel:'+pnl.id;
-    }
-    for(const op of openings){
-      const tol = 0.6;
-      if(op.wall === 'left' && Math.abs(x-0) < tol && y >= op.pos-0.3 && y <= op.pos+op.width+0.3) return 'opening:'+op.id;
-      if(op.wall === 'right' && Math.abs(x-room.w) < tol && y >= op.pos-0.3 && y <= op.pos+op.width+0.3) return 'opening:'+op.id;
-      if(op.wall === 'front' && Math.abs(y-0) < tol && x >= op.pos-0.3 && x <= op.pos+op.width+0.3) return 'opening:'+op.id;
-      if(op.wall === 'back' && Math.abs(y-room.d) < tol && x >= op.pos-0.3 && x <= op.pos+op.width+0.3) return 'opening:'+op.id;
-    }
     return null;
   }
 
   function zoneMouseDown(evt){
     const {x,y,scale} = getRoomCoords(evt);
 
-    // 1. drawing a brand-new zone / floor panel / ceiling panel
+    // 1. drawing a brand-new zone
     if(zoneDrawMode){
       const id = nextId++;
       if(zoneDrawMode === 'offlimit'){
         offLimitZones.push({ id, name: 'Off-limits ' + id, x, y, width: 0.01, height: 0.01 });
       } else if(zoneDrawMode === 'preferred'){
         preferredZones.push({ id, name: 'Preferred ' + id, x, y, width: 0.01, height: 0.01 });
-      } else if(zoneDrawMode === 'floorpanel' || zoneDrawMode === 'ceilingpanel'){
-        const surface = zoneDrawMode === 'floorpanel' ? 'floor' : 'ceil';
-        surfacePanels.push({
-          id, name: (surface==='floor'?'Rug ':'Ceiling panel ') + id, surface,
-          x, y, width: 0.01, height: 0.01, thickness: 0.5, enabled: true
-        });
       }
       zoneEditTarget = { kind: zoneDrawMode, id, mode: 'creating', startX: x, startY: y };
       return true;
@@ -3354,7 +2830,6 @@
   function zoneMouseUp(){
     if(!zoneEditTarget) return false;
     const wasCreating = zoneEditTarget.mode === 'creating';
-    const wasSurfacePanel = zoneEditTarget.kind === 'floorpanel' || zoneEditTarget.kind === 'ceilingpanel';
     zoneEditTarget = null;
     if(wasCreating){
       // Auto-exit draw mode after one rectangle is drawn, so the NEXT click
@@ -3366,41 +2841,12 @@
       updateZoneDrawHint();
     }
     renderZoneList();
-    if(wasSurfacePanel) renderSurfacePanelList();
     draw();
     return true;
   }
 
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
-    if(typeof dragTarget === 'string' && dragTarget.startsWith('panel:')){
-      const id = parseInt(dragTarget.slice(6), 10);
-      const pnl = panels.find(p => p.id === id);
-      if(pnl){
-        const maxSpan = wallSpan(pnl.wall);
-        if(pnl.wall === 'left' || pnl.wall === 'right'){
-          pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, y - pnl.length/2));
-        } else {
-          pnl.pos = Math.max(0, Math.min(maxSpan - pnl.length, x - pnl.length/2));
-        }
-      }
-      scheduleDraw();
-      return;
-    }
-    if(typeof dragTarget === 'string' && dragTarget.startsWith('opening:')){
-      const id = parseInt(dragTarget.slice(8), 10);
-      const op = openings.find(o => o.id === id);
-      if(op){
-        const maxSpan = wallSpan(op.wall);
-        if(op.wall === 'left' || op.wall === 'right'){
-          op.pos = Math.max(0, Math.min(maxSpan - op.width, y - op.width/2));
-        } else {
-          op.pos = Math.max(0, Math.min(maxSpan - op.width, x - op.width/2));
-        }
-      }
-      scheduleDraw();
-      return;
-    }
     const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
     if(dragTarget === 'listener'){ listener.x = cx; listener.y = cy; }
     else { const s = sources.find(s=>s.id===dragTarget); if(s){ s.x = cx; s.y = cy; } }
@@ -3410,7 +2856,7 @@
     // While actively drawing a new zone, that intent always wins regardless of
     // what's underneath the click.
     if(zoneDrawMode){ if(zoneMouseDown(e)){ canvas.classList.add('dragging'); } return; }
-    // Otherwise, points (sources/panels/listener) take priority over zones —
+    // Otherwise, points (sources/listener) take priority over zones —
     // a zone is a large background region, so clicking a point that happens to
     // sit inside one should grab the point, not the zone underneath it.
     const hit = hitTest(e);
@@ -3423,12 +2869,8 @@
   });
   window.addEventListener('mouseup', () => {
     if(zoneMouseUp()){ canvas.classList.remove('dragging'); return; }
-    const wasPanelDrag = typeof dragTarget === 'string' && dragTarget.startsWith('panel:');
-    const wasOpeningDrag = typeof dragTarget === 'string' && dragTarget.startsWith('opening:');
     dragTarget = null;
     canvas.classList.remove('dragging');
-    if(wasPanelDrag) renderPanelList(); // sync panel position fields once, after drag ends
-    if(wasOpeningDrag) renderOpeningsList();
   });
   canvas.addEventListener('touchstart', (e) => {
     const t=e.touches[0];
@@ -3443,11 +2885,7 @@
   }, {passive:false});
   canvas.addEventListener('touchend', () => {
     if(zoneMouseUp()) return;
-    const wasPanelDrag = typeof dragTarget === 'string' && dragTarget.startsWith('panel:');
-    const wasOpeningDrag = typeof dragTarget === 'string' && dragTarget.startsWith('opening:');
     dragTarget = null;
-    if(wasPanelDrag) renderPanelList();
-    if(wasOpeningDrag) renderOpeningsList();
   });
 
   // ---- Init ----
@@ -3481,16 +2919,11 @@
       room = { w: 18, d: 13.5, h: 8 };
       sources = defaultSources();
       sourcesEnabled = true;
-      panels = [];
-      panelsEnabled = true;
-      openings = defaultOpenings(room);
-      openingsEnabled = true;
       offLimitZones = defaultOffLimitZones(room);
       preferredZones = [];
       optimizerResult = null;
       listener = { x: 9, y: 9, z: 3.5, facing: 0 };
       freq = 60; wallReflect = 0.7;
-      reflectionOrder = 2;
       loadConfig(makeConfig());
     }
     draw();

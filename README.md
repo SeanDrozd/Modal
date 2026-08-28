@@ -1,16 +1,16 @@
 # Modal
 
-Interactive room acoustics simulator: visualize standing waves, find optimal subwoofer placement, and model absorption treatment in real time.
+Interactive room acoustics simulator: visualize standing waves, find optimal subwoofer placement, and model room construction in real time.
 
-A browser-based tool for reasoning about bass response in a real room. It renders a single-frequency sound-pressure field across the room floor plan (including wall/floor/ceiling reflections), lets you configure speakers, subs, absorption treatment, and room construction, and can automatically search for subwoofer positions that minimize peaks and nulls at your listening position.
+A browser-based tool for reasoning about bass response in a real room. It renders a single-frequency sound-pressure field across the room floor plan via an exact rectangular-room modal solution (wall/floor/ceiling material absorption, not individual reflections), lets you configure speakers, subs, and room construction, and can automatically search for subwoofer positions that minimize peaks and nulls at your listening position. Deliberately bass-focused — the modal solution and the UI's frequency range are both scoped to roughly 300Hz and below, where room modes dominate.
 
 No build step, no dependencies: open `src/modal.html` in a browser.
 
-![Frequency sweep across a room with two symmetrically-placed subs, showing a bad null forming at the listening position as frequency changes](docs/sweep-demo.gif)
+![Frequency sweep across a room with two symmetrically-placed subs, showing a bad null forming at the listening position as frequency changes](docs/sweep-demo.webp)
 
 Symmetric sub placement is a classic trap: it's visually tidy, but it excites the room's modes symmetrically too, often carving a null right at the centerline seat where the couch usually is. The sweep above shows exactly that.
 
-![The subwoofer optimizer relocating the same two subs off the symmetric null, with the heatmap and frequency response chart improving together](docs/optimizer-demo.gif)
+![The subwoofer optimizer relocating the same two subs off the symmetric null, with the heatmap and frequency response chart improving together](docs/optimizer-demo.webp)
 
 Same room, same two subs, same frequency, before/after running the sub-placement optimizer. It deliberately breaks the symmetry to get off the shared null, and both the heat map and the spatially-averaged frequency response chart show the improvement together.
 
@@ -33,12 +33,10 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
 - Listener position and facing angle, with a two-ear dB readout (small, frequency-dependent interaural differences)
 
-**Room & reflections**
-- 1st/2nd/3rd-order image-source reflections (see [How it works](#how-it-works) below)
+**Room & modal solution**
+- Exact rectangular-room modal (eigenfunction) solution, not a truncated approximation (see [How it works](#how-it-works) below)
 - Per-wall material picker (drywall on insulated vs. hollow cavity, masonry), each with its own frequency-dependent absorption
 - Ceiling material picker (same three, plus suspended acoustic tile), floor material presets (hardwood, thin/thick carpet, or custom)
-- Openings on any wall (doorways, open floor plans), movable, any number, each tapering reflectivity near its edges rather than cutting it off sharply
-- Wall-mounted absorption panels (thickness-dependent, quarter-wavelength rule, reorderable list) and floor/ceiling rugs & acoustic panels, drawn directly on the map by click-drag
 
 **Subwoofer optimizer**
 - Scores candidate positions across a configurable frequency range and set of listening positions
@@ -47,39 +45,38 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 
 **Rendering & UI**
 - GPU (WebGL) rendering, with a built-in on-demand check that samples points and compares against the CPU path's exact math; GPU falls back to CPU automatically if unavailable
-- Frequency sweep animation (play/pause, adjustable speed) with wrap-around
-- Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis tracking the room's own Schroeder frequency
+- Frequency sweep animation (play/pause, adjustable speed) with wrap-around, over a range that adapts to the room (see below)
+- Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis synced to the same room-adaptive range as the main frequency slider/sweep
+- The frequency slider's own range adapts to the room's own (worst-case) Schroeder frequency plus headroom, rather than a fixed cap — see [How it works](#how-it-works)
 - Feet & inches / meters unit toggle, applied consistently to every length field and on-canvas label in the app; internal storage stays in feet regardless
 - Multi-level undo/redo (Ctrl+Z / Ctrl+Y, or buttons) covering the same state a saved preset does; continuous edits like a drag or a held slider collapse into one undo step instead of one per intermediate frame
 - Frequency control (slider, sweep, wavelength/active-sources/Schroeder/ear-diff readouts) lives in a panel below the map, next to the visualization it controls; sidebar sections are collapsible (click the chevron) and organized into a workflow (Room → Sources → Frequency response → Optimizer, with less-frequently-touched treatment/rendering sections collapsed by default), and each section's collapsed state persists across reloads
-- Adjustable color range and grid resolution (a device/performance preference, kept separate from saved room presets)
+- Adjustable color range and grid resolution (device/performance preferences, kept separate from saved room presets); an "Autofit" button next to the color range resets it to fit whatever's currently on screen, for when a room/frequency change leaves the heatmap looking solid one color or the chart pinned flat to one edge
 - Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
 
 ## How it works
 
-The simulator treats sound as a single-frequency steady-state pressure field and sums contributions from every source (and every reflection of every source) at each point on the floor plan. It is **not** a full room-acoustics/FEM simulation. It's a fast, interactive approximation good enough to reason about where nulls and peaks form, not a substitute for measurements.
+The simulator treats sound as a single-frequency steady-state pressure field, computed via an exact rectangular-room modal (eigenfunction) solution — the same class of method REW's own room simulator uses. It is **not** a full room-acoustics/FEM simulation, and it's specifically scoped to bass frequencies (roughly 300Hz and below, where a room's mode structure is what actually shapes the response). It's a fast, interactive tool good enough to reason about where nulls and peaks form, not a substitute for measurements.
 
-### Reflections: the image-source method
+An earlier version of this tool used the image-source method (mirroring sources across walls, truncated at a configurable "reflection order"). That approach was replaced because truncating at a practical order can't resolve the room's higher-order (tangential/oblique) modes — real measurements consistently show a denser set of peaks/dips than a truncated image-source sum can produce, no matter how high the order. The modal solution below has no such truncation: every mode below its cutoff is included exactly.
 
-Instead of tracing rays, the room's six boundaries (four walls, floor, ceiling) are handled by mirroring each source across each boundary it reflects off of, producing "image sources" behind the walls whose direct-path contribution is physically equivalent to a real reflection. Each bounce reduces the source's amplitude by that wall's reflectivity.
+### The modal solution
 
-- **1st order**: the direct source + one bounce off each of the 6 boundaries (7 total image sources per real source)
-- **2nd order**: adds every pair of *different* boundaries bounced off in sequence (37 total)
-- **3rd order**: a further bounce on top of that (187 total), more accurate near corners, at a real cost: each order roughly 5x's the image-source count, so this is also the main performance knob
-
-The only sequence excluded is bouncing off the *same* boundary twice in a row (e.g. left then left again). Physically that's just a longer single bounce, not a distinct path, so it isn't worth a separate image source.
-
-### Field summation
-
-At each point, every image source contributes a spherical wave. With source position **s**, field point **p**, wavenumber `k = 2π/λ`, and per-source amplitude `A` (accumulated through every reflection/absorption/rolloff it passed through):
+A rectangular room's exact steady-state pressure field, for rigid(-ish) walls, is a sum over the room's normal modes — each an integer triple `(nx, ny, nz)` with its own resonance:
 
 ```
-re = Σ (A / r) · cos(k·r + φ)
-im = Σ (A / r) · sin(k·r + φ)
-dB = 20 · log10( √(re² + im²) )
+p(r, r_s, f) = Σ_n  A_n · ψ_n(r) · ψ_n(r_s) / (k_n² − k² − j·k·δ_n)
 ```
 
-where `r` is the distance from that image source to the point (floored at 0.3 m to avoid a singularity right at a source), and `φ` bundles per-source delay and any other phase offset. This is plain complex-exponential wave superposition. The interesting physics is entirely in what feeds into `A`, `r`, and `φ` for each image source, not in the summation itself.
+- `ψ_n(r) = cos(nx·π·x/Lx) · cos(ny·π·y/Ly) · cos(nz·π·z/Lz)` — the mode's rigid-wall shape function, evaluated at both the source position `r_s` and the field point `r`
+- `k_n = π·√((nx/Lx)² + (ny/Ly)² + (nz/Lz)²)` — that mode's own wavenumber (resonance frequency `f_n = c·k_n/2π`)
+- `k = 2π·f/c` — the driving wavenumber (the frequency you're evaluating)
+- `A_n` — a normalization constant from the room's volume and geometry
+- `δ_n` — that mode's own damping, derived from the room's wall/floor/ceiling absorption (see below) via a standard coupled-mode result (a surface-area-weighted, mode-shape-weighted average of each surface's absorption, evaluated at that mode's own resonance frequency)
+
+Every mode with resonance frequency up to 300Hz (1.5x the tool's ~200Hz nominal scope, since a mode's tail still contributes below its own resonance) is included — for a typical room this is on the order of 150-800 modes, not truncated or approximated further. Real part/imaginary part of the sum give `re`/`im`; `dB = 20·log10(√(re² + im²))` as usual.
+
+Because a mode's *own* damping only depends on room geometry and wall materials (not on source position or the frequency being evaluated), the mode list and each mode's complex source-coupling coefficient are precomputed once per frequency and reused across every point on the floor plan — the expensive part happens once per redraw, not once per pixel.
 
 ### Delay, time alignment, and a real-world caveat worth knowing
 
@@ -89,7 +86,7 @@ Applying that number in real life assumes you actually have a way to enter it: a
 
 ### Absorption: two material shapes
 
-Real wall assemblies (drywall on studs) behave like a lightly-damped mass-spring-mass system: they absorb unusually well in a narrow band around their own resonance (more insulation in the cavity means deeper, broader absorption) and are comparatively reflective elsewhere. That's modeled as a Gaussian dip in reflectivity around a `peakFreq`. Masonry has no membrane to resonate, so it's modeled as flat. Porous/broadband absorbers (rugs, acoustic panels, suspended ceiling tile) don't resonate; they absorb progressively more at higher frequencies, modeled as a logistic ramp instead. Wall/floor/ceiling absorption panels use a separate quarter-wavelength-rule curve: thicker panels absorb lower frequencies more effectively, tapered smoothly at panel edges so a fraction-of-an-inch move can't flip constructive/destructive interference outright.
+Real wall assemblies (drywall on studs) behave like a lightly-damped mass-spring-mass system: they absorb unusually well in a narrow band around their own resonance (more insulation in the cavity means deeper, broader absorption) and are comparatively reflective elsewhere. That's modeled as a Gaussian dip in reflectivity around a `peakFreq`. Masonry has no membrane to resonate, so it's modeled as flat. Porous/broadband absorbers (suspended ceiling tile) don't resonate; they absorb progressively more at higher frequencies, modeled as a logistic ramp instead. Each of the 6 room surfaces (4 walls, floor, ceiling) gets one material — this whole-surface-only model is what makes the exact modal solution above possible; localized treatments (a rug, a wall panel) would need a spatially-varying boundary condition the modal method can't represent, which is part of why this tool no longer models them (an earlier version did, via the image-source method it since moved away from).
 
 ### Reverberation time & the Schroeder frequency
 
@@ -99,11 +96,13 @@ Below the **Schroeder frequency**, the room's response is dominated by a handful
 T60 = 0.161 · V / A         where A = Σ (surface area × absorption coefficient)
 ```
 
-Each surface's absorption coefficient is `1 − R²`, converting the amplitude/pressure reflection coefficient used everywhere else in the model into a power/energy quantity, which is what Sabine's formula is defined in terms of. This is a real, live estimate from your room's construction, not a fixed guess, but it deliberately excludes absorption panels, rugs, and openings (localized area patches rather than whole-surface properties), and Sabine's formula itself assumes evenly-distributed, diffuse absorption, which gets less accurate the more a room is dominated by isolated absorptive/reflective patches (furniture, in particular, isn't modeled at all). See the in-app hint next to the Schroeder frequency readout for the live numbers.
+Each surface's absorption coefficient is `1 − R²`, converting the amplitude/pressure reflection coefficient used everywhere else in the model into a power/energy quantity, which is what Sabine's formula is defined in terms of. This is a real, live estimate from your room's construction, not a fixed guess, but Sabine's formula itself assumes evenly-distributed, diffuse absorption, which gets less accurate the more a room is dominated by isolated absorptive/reflective patches (furniture, in particular, isn't modeled at all). See the in-app hint next to the Schroeder frequency readout for the live numbers.
+
+This same Schroeder estimate also sets the **main frequency slider/sweep's range and the frequency-response chart's x-axis** — both extend to the room's own (worst-case) Schroeder frequency plus 100Hz headroom (clamped to a sane floor for a very dead/small room, and a ceiling comfortably under the modal solution's own 300Hz mode-enumeration cutoff), sampled across a fixed range so the bound doesn't shift as you drag the slider. A livelier/deader room naturally gets a narrower/wider range instead of a fixed window that's too narrow for a dead room or mostly empty for a live one — and the two stay in sync with each other by construction, since they call the same function.
 
 ### Frequency response: moving-mic-style spatial averaging
 
-The frequency response chart doesn't read dB at one exact point. A true destructive-interference null is a mathematical knife-edge: a fraction-of-an-inch shift can swing the reading by tens of dB even though a real listener's ears occupy a small volume, not a point. Instead, it deterministically samples 20 points through a small sphere (2ft radius) around the listening position, evaluates the field at each, averages their **power** (not dB, and not raw linear pressure), and converts the averaged power back to dB. That mirrors what a real moving-microphone measurement (REW's MMM technique) captures: energy over a swept volume, not a coherent sum across positions or a simple average of already-logarithmic readings. The chart's frequency axis extends to the room's own (worst-case) Schroeder frequency plus 100Hz headroom, sampled across a fixed range so the axis doesn't shift as you drag the frequency slider, rather than a fixed window that's too narrow for a dead room or mostly empty for a live one.
+The frequency response chart doesn't read dB at one exact point. A true destructive-interference null is a mathematical knife-edge: a fraction-of-an-inch shift can swing the reading by tens of dB even though a real listener's ears occupy a small volume, not a point. Instead, it deterministically samples 20 points through a small sphere (2ft radius) around the listening position, evaluates the field at each, averages their **power** (not dB, and not raw linear pressure), and converts the averaged power back to dB. That mirrors what a real moving-microphone measurement (REW's MMM technique) captures: energy over a swept volume, not a coherent sum across positions or a simple average of already-logarithmic readings.
 
 ![The 20 sample points rotating inside their 2ft sampling sphere, color-graded blue (near center) to yellow (near the outer shell)](docs/sphere-sampling-demo.gif)
 
@@ -113,18 +112,18 @@ The 20 points themselves aren't randomly scattered: directions come from a Fibon
 
 This is worth being explicit about, since it's easy to over-trust a clean-looking heat map:
 
-- **No furniture, HVAC, window coverings, or anything not explicitly configured.** Real rooms absorb more than their bare wall/floor/ceiling construction suggests.
+- **No furniture, HVAC, window coverings, doorways/openings, or localized absorption treatment (rugs, wall panels).** Only the 6 whole-room surfaces (4 walls, floor, ceiling) and their assigned materials are modeled — see [The modal solution](#the-modal-solution) for why localized treatment isn't representable in this method. Real rooms absorb more, and more unevenly, than bare wall/floor/ceiling construction suggests.
 - **Exact listener position, not a "typical seating area," for the heat map.** A real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement. The frequency response chart addresses this for its one view (see [How it works](#how-it-works)), but the heat map itself is still an exact-point snapshot.
-- **Single frequency at a time.** Real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view.
+- **Single frequency at a time, and bass-focused only.** Real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view. The modal solution itself only enumerates modes up to 300Hz, and the UI's own frequency range stays comfortably under that — this tool has nothing meaningful to say above the deep-bass/room-mode range.
 - **Material values are illustrative, not measured.** The wall/ceiling presets are typical-construction approximations, not data for your specific walls. Real behavior depends on details a preset can't capture (drywall thickness, stud spacing, how well-sealed the cavity is), so treat the absolute numbers as a starting point, not ground truth.
 
 ## Architecture
 
-- `src/room-physics.js`: the entire physics model (image sources, absorption, optimizer scoring, Schroeder/T60 estimate), as pure functions with no DOM/browser dependency. This is the single source of truth; nothing else reimplements this math.
+- `src/room-physics.js`: the entire physics model (the modal solution, absorption, optimizer scoring, Schroeder/T60 estimate), as pure functions with no DOM/browser dependency. This is the single source of truth; nothing else reimplements this math.
 - `src/room-physics.test.js`: a hand-rolled test suite (no framework, no dependencies) covering the physics module. Run with `node src/room-physics.test.js`.
-- `src/field-render.js`: turns a precomputed image-source list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU image-source data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget.
+- `src/field-render.js`: turns a precomputed per-mode coefficient list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU mode data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget.
 - `src/modal.html`: the UI. DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
-- `tools/`: dev-only scripts for regenerating the screenshots/GIFs in `docs/` (Playwright-driven UI capture, plus a from-scratch renderer for the sphere-sampling visualization). Not part of the app; has its own `package.json`. See `tools/capture-docs-media.js` and `tools/render-sphere-demo.js`.
+- `tools/`: dev-only scripts for regenerating the screenshots/animations in `docs/` (Playwright-driven UI capture, encoded to animated WebP via `sharp`; plus a from-scratch renderer for the sphere-sampling GIF). Not part of the app; has its own `package.json`. See `tools/capture-docs-media.js` and `tools/render-sphere-demo.js`.
 
 ## Running it
 
