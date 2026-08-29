@@ -42,7 +42,7 @@
     return Math.pow(10, db / 20);
   }
 
-  // ---- Wall/ceiling material: frequency-dependent reflectivity for a BARE ----
+  // ---- Wall/ceiling material: frequency-dependent absorption for a BARE ----
   // surface. Two distinct real mechanisms, selected by material.shape:
   //
   // shape: 'resonant' (default when omitted) -- ordinary drywall-on-studs/
@@ -50,10 +50,11 @@
   // the surface + the air cavity behind it resonate at a frequency set mostly
   // by mass and cavity depth, and the surface absorbs MORE right around that
   // resonance than elsewhere. Rigid materials (masonry/concrete) have no such
-  // mechanism (peakDepth: 0 collapses this to a flat baseReflect).
-  //   { baseReflect, peakFreq, peakDepth, bandwidth }
-  //   peakFreq/bandwidth: center and width (Hz) of the extra-absorptive dip.
-  //   peakDepth: 0..1, fraction of baseReflect additionally absorbed AT peakFreq.
+  // mechanism (peakBoost: 0 collapses this to a flat baseAbsorption).
+  //   { baseAbsorption, peakFreq, peakBoost, bandwidth }
+  //   peakFreq/bandwidth: center and width (Hz) of the extra-absorptive bump.
+  //   peakBoost: 0..1, absorption coefficient ADDED on top of baseAbsorption
+  //   AT peakFreq (so absorption at peak = baseAbsorption + peakBoost).
   //
   // shape: 'porousRamp' -- broadband porous absorption (e.g. suspended
   // acoustic ceiling tile), as a SURFACE's own base behavior.
@@ -62,59 +63,69 @@
   // typical acoustic tile shows only modest absorption; it's much more
   // effective well above what a room-mode tool models -- itself a real,
   // worth-knowing fact (acoustic tile is not a bass fix).
-  //   { shape:'porousRamp', baseReflect, midFreq, slope, maxAbsorb }
+  //   { shape:'porousRamp', baseAbsorption, midFreq, slope, maxAbsorbBoost }
   //
   // A null/undefined material means "no material assigned" -- callers should
-  // fall back to a plain flat scalar (e.g. the legacy wallReflect slider).
+  // fall back to a plain flat scalar (e.g. the legacy wallAbsorption slider).
   //
   // These are illustrative/typical values (see WALL_MATERIALS below), not
   // measured data -- real wall/ceiling behavior depends on construction
   // details no small preset set can capture exactly. A reasonable
   // approximation, not a substitute for measurement.
-  function wallMaterialReflectAtFreq(material, f){
+  function wallMaterialAbsorptionAtFreq(material, f){
     if(!material) return null;
     if(material.shape === 'porousRamp'){
       const x = (f - material.midFreq) * material.slope;
-      const absorb = material.maxAbsorb / (1 + Math.exp(-x));
-      return material.baseReflect * (1 - absorb);
+      const ramp = 1 / (1 + Math.exp(-x));
+      return material.baseAbsorption + material.maxAbsorbBoost * ramp;
     }
-    if(!(material.peakDepth > 0)) return material.baseReflect;
+    if(!(material.peakBoost > 0)) return material.baseAbsorption;
     const x = (f - material.peakFreq) / material.bandwidth;
-    const dip = material.peakDepth * Math.exp(-(x * x));
-    return material.baseReflect * (1 - dip);
+    const boost = material.peakBoost * Math.exp(-(x * x));
+    return material.baseAbsorption + boost;
   }
 
   // Named presets for the "Wall material" / "Ceiling material" UI pickers.
   // Roughly: insulation in the cavity damps the panel's resonant motion,
   // converting more of it to heat (deeper AND broader absorption) rather than
-  // letting it ring/re-radiate (hollowCavity's narrower, shallower dip);
+  // letting it ring/re-radiate (hollowCavity's narrower, shallower peak);
   // masonry has no membrane at all; suspendedTile is ceiling-only in the UI
   // (walls essentially never use it) and uses the porousRamp shape instead.
   //
-  // baseReflect/peakDepth calibrated against published low-frequency
-  // absorption-coefficient (alpha) tables, converted to this module's
-  // pressure-reflection convention via reflect = sqrt(1 - alpha):
+  // baseAbsorption/peakBoost calibrated against published low-frequency
+  // absorption-coefficient (alpha) tables:
   //   drywallHollow: 1/2" gypsum board nailed to 2x4 studs, 16" O.C. --
   //     alpha 0.29 @125Hz, 0.10 @250Hz, ~0.05-0.09 @500Hz-4kHz (flat baseline).
   //     drywallInsulated has no matching published curve; its deeper/wider
-  //     dip is a physically-motivated scale-up of the hollow curve (damped
+  //     peak is a physically-motivated scale-up of the hollow curve (damped
   //     cavity fill -> more energy converted to heat at resonance) rather
   //     than a directly sourced number.
   //   masonry: painted/bare concrete block or poured foundation --
   //     alpha ~0.01 (smooth painted concrete) to ~0.05 (porous block) @125Hz;
   //     0.03 taken as a representative mid-range value.
-  // Previous defaults (reflect 0.75-0.90, i.e. alpha 0.19-0.44 baseline) were
-  // roughly 2-4x too absorptive at bass frequencies for a BARE surface --
-  // real hard/rigid low-frequency boundaries are close to rigid away from
-  // their resonance, which these updated values now reflect.
+  // Previous defaults (alpha 0.06 baseline / 0.30-0.40 at peak, expressed
+  // then as reflect 0.75-0.90) were roughly 2-4x too absorptive at bass
+  // frequencies for a BARE surface -- real hard/rigid low-frequency
+  // boundaries are close to rigid away from their resonance, which these
+  // values reflect.
+  //
+  // bandwidth was also too wide: published membrane/panel-absorber curves
+  // fall off substantially within about an octave of the resonance peak
+  // (the peak is a fairly narrow feature, not a broad plateau), but the
+  // previous 115-150Hz Gaussian widths left absorption nearly full-strength
+  // even an octave-plus below peakFreq -- e.g. drywallInsulated at 32Hz
+  // (more than an octave below its 80Hz peak) showed alpha~0.37, barely
+  // under its actual 80Hz-peak alpha~0.40. Narrowed so absorption decays
+  // faster away from resonance, consistent with how panel absorbers
+  // actually behave; insulated stays wider than hollow (more cavity
+  // damping broadens the resonance as well as deepening it).
   const WALL_MATERIALS = {
-    drywallInsulated: { baseReflect: 0.97, peakFreq: 80, peakDepth: 0.20, bandwidth: 150 },
-    drywallHollow:    { baseReflect: 0.97, peakFreq: 90, peakDepth: 0.14, bandwidth: 115 },
-    masonry:          { baseReflect: 0.985, peakFreq: 0,  peakDepth: 0,    bandwidth: 1 },
-    suspendedTile:    { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 }
+    drywallInsulated: { baseAbsorption: 0.06, peakFreq: 80, peakBoost: 0.34, bandwidth: 55 },
+    drywallHollow:    { baseAbsorption: 0.06, peakFreq: 90, peakBoost: 0.25, bandwidth: 40 },
+    masonry:          { baseAbsorption: 0.03, peakFreq: 0,  peakBoost: 0,    bandwidth: 1 },
+    suspendedTile:    { shape: 'porousRamp', baseAbsorption: 0.44, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.47 }
   };
 
-  // ---- Six boundary reflection operators for a room { w, d, h } ----
   // ---- Rectangular-room modal (eigenfunction) solution ----
   // Replaces the old truncated image-source method entirely. For a rigid-wall
   // rectangular room, the exact steady-state pressure field is a sum over the
@@ -138,23 +149,23 @@
 
   function epsFactor(n){ return n === 0 ? 1 : 2; } // integral of cos^2(n*pi*x/L) over [0,L] is L if n=0, else L/2 -- this is the 1/that normalization factor
 
-  // Same fallback-to-flat-scalar convention as estimatedT60's wallReflectFor:
+  // Same fallback-to-flat-scalar convention as estimatedT60's wallAbsorptionFor:
   // a per-wall/ceiling material (frequency-dependent) if assigned, otherwise
-  // the flat wallReflect/floorReflect scalar. Floor has no material concept
-  // in this codebase (see estimatedT60), only a flat reflect value.
-  function surfaceReflectAtFreq(surfaceName, freqForAbsorption, ctx){
-    if(surfaceName === 'floor') return ctx.floorReflect ?? ctx.wallReflect;
+  // the flat wallAbsorption/floorAbsorption scalar. Floor has no material
+  // concept in this codebase (see estimatedT60), only a flat absorption value.
+  function surfaceAbsorptionAtFreq(surfaceName, freqForAbsorption, ctx){
+    if(surfaceName === 'floor') return ctx.floorAbsorption ?? ctx.wallAbsorption;
     if(surfaceName === 'ceil'){
-      const fromMaterial = ctx.ceilingMaterial ? wallMaterialReflectAtFreq(ctx.ceilingMaterial, freqForAbsorption) : null;
-      return fromMaterial ?? ctx.wallReflect;
+      const fromMaterial = ctx.ceilingMaterial ? wallMaterialAbsorptionAtFreq(ctx.ceilingMaterial, freqForAbsorption) : null;
+      return fromMaterial ?? ctx.wallAbsorption;
     }
     const material = ctx.wallMaterials && ctx.wallMaterials[surfaceName];
-    const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
-    return fromMaterial ?? ctx.wallReflect;
+    const fromMaterial = material ? wallMaterialAbsorptionAtFreq(material, freqForAbsorption) : null;
+    return fromMaterial ?? ctx.wallAbsorption;
   }
 
   // ---- Enumerates every room mode with resonance frequency <= cutoffFreq ----
-  // ctx: { room, wallReflect, floorReflect, ceilingMaterial, wallMaterials }.
+  // ctx: { room, wallAbsorption, floorAbsorption, ceilingMaterial, wallMaterials }.
   // Depends only on room geometry + wall materials, not on source/listener
   // position or the frequency being evaluated -- callers doing a frequency
   // sweep (spatiallyAveragedResponse) or many candidate evaluations
@@ -163,10 +174,10 @@
   //
   // Each mode's own damping (delta_n) is derived via the standard perturbative
   // (Kuttruff) coupled-mode result for lightly-damped walls -- valid here
-  // since WALL_MATERIALS' reflect values are all >=0.97 (light damping is
-  // exactly the regime this approximation assumes): a surface-area-weighted,
+  // since WALL_MATERIALS' baseAbsorption values are all <=0.06 (light damping
+  // is exactly the regime this approximation assumes): a surface-area-weighted,
   // mode-shape-weighted average of each of the 6 surfaces' absorption
-  // (alpha = 1 - reflect^2, evaluated at that mode's OWN resonance frequency
+  // coefficient (alpha, evaluated at that mode's OWN resonance frequency
   // f_n -- the same alpha convention estimatedT60 already uses):
   //
   //   delta_n = (c / 4V) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s)
@@ -184,8 +195,8 @@
   // that's real physics (different mode families couple to the boundaries
   // differently), not a bug. What SHOULD hold in the uniform-absorption case
   // is a looser, statistical one: delta_n averaged across many modes should
-  // track alpha*S_total/(4V) (the Sabine-equivalent quantity) -- see the
-  // cross-check test tying this to estimatedT60's existing Sabine output.
+  // track alpha*S_total/(4V) (the Eyring-equivalent quantity) -- see the
+  // cross-check test tying this to estimatedT60's existing Eyring output.
   //
   // Units: this formula is naturally a TEMPORAL damping rate (1/s, Kuttruff's
   // own convention). The complex denominator in precomputeModalField is
@@ -221,19 +232,16 @@
           const Sx = (Ly / epsY) * (Lz / epsZ);
           const Sy = (Lx / epsX) * (Lz / epsZ);
           const Sz = (Lx / epsX) * (Ly / epsY);
-          const alphaOf = (surfaceName) => {
-            const r = surfaceReflectAtFreq(surfaceName, fn, ctx);
-            return 1 - r * r;
-          };
+          const absorptionOf = (surfaceName) => surfaceAbsorptionAtFreq(surfaceName, fn, ctx);
           // Kuttruff's coupled-mode damping is naturally a TEMPORAL rate (1/s):
           // delta_n_temporal = (c/4V) * sum(...). The complex denominator below
           // is written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which
           // needs delta_n in units of 1/m (spatial), i.e. delta_n_temporal/c --
           // the c cancels the leading (c/4V), leaving just 1/(4V) here.
           const deltaN = (1 / (4 * V)) * (
-            alphaOf('left') * Sx + alphaOf('right') * Sx +
-            alphaOf('front') * Sy + alphaOf('back') * Sy +
-            alphaOf('floor') * Sz + alphaOf('ceil') * Sz
+            absorptionOf('left') * Sx + absorptionOf('right') * Sx +
+            absorptionOf('front') * Sy + absorptionOf('back') * Sy +
+            absorptionOf('floor') * Sz + absorptionOf('ceil') * Sz
           );
 
           modes.push({ nx, ny, nz, kn, fn, deltaN, An, invLx: nx * piOverLx, invLy: ny * piOverLy, invLz: nz * piOverLz });
@@ -439,50 +447,63 @@
     return modes;
   }
 
-  // ---- Reverberation time (T60) estimate, via Sabine's formula ----
-  // T60 = 0.161 * V / A (metric: V in m^3, A in metric sabins/m^2), where A is
-  // the room's total absorption: area x absorption-coefficient, summed over
-  // all 6 surfaces. Each surface's absorption coefficient is 1 - R^2, where R
-  // is the amplitude/pressure reflection coefficient this module already uses
-  // everywhere else (enumerateModes' damping calc etc.) -- squaring it converts
-  // to power/energy absorption, which is what Sabine's formula is defined in
-  // terms of. Frequency-dependent, since wall/ceiling materials are (see
-  // wallMaterialReflectAtFreq) -- callers pick whichever frequency matters to
-  // them (e.g. the frequency currently on screen).
-  // This is the whole-room diffuse-field average (Sabine assumes evenly-
-  // distributed absorption); enumerateModes' per-mode damping is a different,
-  // more detailed quantity that should track it in the uniform-absorption
-  // case -- see the cross-check test tying the two together.
-  // ctx: { wallReflect, floorReflect, wallMaterials, ceilingMaterial } -- a
-  // subset of enumerateModes' ctx shape is fine; only these fields are read.
+  // ---- Reverberation time (T60) estimate, via Eyring's formula ----
+  // T60 = 0.161 * V / (-S * ln(1 - avgAlpha)) (metric: V in m^3, S in m^2,
+  // avgAlpha = A/S the area-weighted average absorption coefficient across
+  // all 6 surfaces). Frequency-dependent, since wall/ceiling materials are
+  // (see wallMaterialAbsorptionAtFreq) -- callers pick whichever frequency
+  // matters to them (e.g. the frequency currently on screen).
+  //
+  // Eyring, not Sabine: Sabine's classic T60 = 0.161*V/A has a known flaw --
+  // as avgAlpha -> 1 (a fully absorptive/anechoic room), A -> S but T60
+  // asymptotes to a nonzero floor (0.161*V/S) instead of correctly going to
+  // 0. Eyring's -ln(1-avgAlpha) denominator DOES go to 0 correctly as
+  // avgAlpha -> 1. The two formulas nearly agree when avgAlpha is small
+  // (since -ln(1-a) ~= a for small a, matching typical lightly-treated rooms
+  // this app targets), but this app's own material presets can reach fairly
+  // high average absorption without much effort, where Sabine's breakdown
+  // would actually show up -- Eyring stays correct there at no real cost to
+  // the common case.
+  //
+  // This is the whole-room diffuse-field average (both Sabine and Eyring
+  // assume evenly-distributed absorption); enumerateModes' per-mode damping
+  // is a different, more detailed quantity that should track it in the
+  // uniform-absorption case -- see the cross-check test tying the two together.
+  // ctx: { wallAbsorption, floorAbsorption, wallMaterials, ceilingMaterial }
+  // -- a subset of enumerateModes' ctx shape is fine; only these fields are read.
   function estimatedT60(room, freqForAbsorption, ctx){
-    const { wallReflect, wallMaterials, ceilingMaterial } = ctx;
-    const floorReflect = ctx.floorReflect ?? wallReflect;
-    const ceilingFromMaterial = ceilingMaterial ? wallMaterialReflectAtFreq(ceilingMaterial, freqForAbsorption) : null;
-    const ceilingReflect = ceilingFromMaterial ?? wallReflect;
-    function wallReflectFor(wallName){
+    const { wallAbsorption, wallMaterials, ceilingMaterial } = ctx;
+    const floorAbsorption = ctx.floorAbsorption ?? wallAbsorption;
+    const ceilingFromMaterial = ceilingMaterial ? wallMaterialAbsorptionAtFreq(ceilingMaterial, freqForAbsorption) : null;
+    const ceilingAbsorption = ceilingFromMaterial ?? wallAbsorption;
+    function wallAbsorptionFor(wallName){
       const material = wallMaterials && wallMaterials[wallName];
-      const fromMaterial = material ? wallMaterialReflectAtFreq(material, freqForAbsorption) : null;
-      return fromMaterial ?? wallReflect;
+      const fromMaterial = material ? wallMaterialAbsorptionAtFreq(material, freqForAbsorption) : null;
+      return fromMaterial ?? wallAbsorption;
     }
     const w = room.w, d = room.d, h = room.h;
     const surfaces = [
-      { area: d*h, reflect: wallReflectFor('left') },
-      { area: d*h, reflect: wallReflectFor('right') },
-      { area: w*h, reflect: wallReflectFor('front') },
-      { area: w*h, reflect: wallReflectFor('back') },
-      { area: w*d, reflect: floorReflect },
-      { area: w*d, reflect: ceilingReflect }
+      { area: d*h, absorption: wallAbsorptionFor('left') },
+      { area: d*h, absorption: wallAbsorptionFor('right') },
+      { area: w*h, absorption: wallAbsorptionFor('front') },
+      { area: w*h, absorption: wallAbsorptionFor('back') },
+      { area: w*d, absorption: floorAbsorption },
+      { area: w*d, absorption: ceilingAbsorption }
     ];
     let totalAbsorptionFt2 = 0;
+    let totalAreaFt2 = 0;
     for(const s of surfaces){
-      const alpha = 1 - s.reflect * s.reflect;
-      totalAbsorptionFt2 += s.area * alpha;
+      totalAbsorptionFt2 += s.area * s.absorption;
+      totalAreaFt2 += s.area;
     }
+    const totalAreaM2 = totalAreaFt2 * (FT_TO_M ** 2);
     const totalAbsorptionM2 = totalAbsorptionFt2 * (FT_TO_M ** 2);
     const volumeM3 = (w * d * h) * (FT_TO_M ** 3);
-    if(totalAbsorptionM2 <= 0 || volumeM3 <= 0) return 0;
-    return 0.161 * volumeM3 / totalAbsorptionM2;
+    if(totalAreaM2 <= 0 || volumeM3 <= 0) return 0;
+    const avgAlpha = totalAbsorptionM2 / totalAreaM2;
+    const eyringDenominator = -totalAreaM2 * Math.log(1 - avgAlpha);
+    if(!(eyringDenominator > 0)) return 0; // avgAlpha<=0 (no absorption at all) -- degenerate, same defensive convention as other 0-volume/0-absorption guards in this file
+    return 0.161 * volumeM3 / eyringDenominator;
   }
 
   // ---- Schroeder frequency ----
@@ -757,7 +778,7 @@
   return {
     FT_TO_M, C,
     sourceGainAtFreq,
-    wallMaterialReflectAtFreq,
+    wallMaterialAbsorptionAtFreq,
     WALL_MATERIALS,
     MODE_CUTOFF_HZ,
     enumerateModes,

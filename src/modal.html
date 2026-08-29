@@ -349,10 +349,10 @@
         </select>
       </div>
       <div class="row-stacked">
-        <div class="row-stacked-head"><label>Floor reflectivity</label><span class="val" id="floorReflectVal">0.80</span></div>
-        <input type="range" id="floorReflect" min="0" max="0.95" step="0.05" value="0.8">
+        <div class="row-stacked-head"><label>Floor absorption</label><span class="val" id="floorAbsorptionVal">0.15</span></div>
+        <input type="range" id="floorAbsorption" min="0" max="0.99" step="0.01" value="0.15">
       </div>
-      <div class="hint">Base reflectivity of the bare floor.</div>
+      <div class="hint">Base absorption coefficient of the bare floor.</div>
       <div class="row" style="margin-top:8px;"><label>Ceiling material</label>
         <select id="ceilingMaterial" style="width:auto; flex:1;">
           <option value="drywallInsulated">Drywall (insulated attic above)</option>
@@ -362,9 +362,9 @@
           <option value="custom">Custom</option>
         </select>
       </div>
-      <div class="row" id="ceilingCustomRow" style="display:none;"><label>Reflectivity</label>
-        <input type="range" id="ceilingCustomReflect" min="0" max="0.95" step="0.05" value="0.7">
-        <span class="val" id="ceilingCustomReflectVal">0.70</span>
+      <div class="row" id="ceilingCustomRow" style="display:none;"><label>Absorption</label>
+        <input type="range" id="ceilingCustomAbsorption" min="0" max="0.99" step="0.01" value="0.06">
+        <span class="val" id="ceilingCustomAbsorptionVal">0.06</span>
       </div>
       <div class="hint" id="ceilingReadout"></div>
       <div class="hint">Suspended acoustic tile absorbs broadband (more at higher frequencies) rather than resonating like drywall &mdash; it does relatively little within this tool's bass-focused range.</div>
@@ -440,11 +440,27 @@
   const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
-  // Rough, relative starting points for the "Floor material" dropdown -- not
-  // measured absorption-coefficient data, just sensible orderings (hard/bare
-  // surfaces reflect more than carpet, thicker carpet reflects less than thin).
-  // Flat scalars, unlike the frequency-dependent wall/ceiling materials.
-  const FLOOR_MATERIALS = { hardwood: 0.8, thinCarpet: 0.4, thickCarpet: 0.15 };
+  // Calibrated against published low-frequency (125Hz) absorption-coefficient
+  // data (alpha, this app's absorption convention directly):
+  //   hardwood: wood floor on joists -- alpha ~0.15 @125Hz.
+  //   thinCarpet: thin carpet with a thin felt underlay -- alpha ~0.10-0.20
+  //     @125Hz depending on subfloor (concrete vs. wood); 0.17 used here,
+  //     toward the upper-middle of that range, so a hard tile/wood floor
+  //     reads as more reflective than any carpet on top of it -- matching
+  //     the intuitive expectation, and still within the published range.
+  //   thickCarpet: heavy carpet on a proper pad (40oz hairfelt/foam rubber)
+  //     -- alpha ~0.08-0.10 @125Hz. Counterintuitively LOWER than
+  //     thinCarpet -- at bass frequencies carpet's absorption is governed by
+  //     whether there's a compliant backing (a pad), not pile height, so
+  //     "thicker pile" alone doesn't mean "more bass absorption" the way it
+  //     does at higher frequencies.
+  // Previous defaults (alpha 0.36/0.84/0.98) were wildly too absorptive,
+  // especially for carpet -- carpet is fundamentally a high-frequency
+  // absorber and does very little in the bass range this app models. Flat
+  // scalars (not frequency-dependent), unlike the wall/ceiling materials --
+  // real low-frequency carpet/floor data is sparse below 125Hz, so a single
+  // representative value is what's practical here.
+  const FLOOR_MATERIALS = { hardwood: 0.15, thinCarpet: 0.17, thickCarpet: 0.10 };
 
   let room = { w: 18, d: 13.5, h: 8 };
   let sources = [];
@@ -456,12 +472,12 @@
   let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
   let listener = { x: 9, y: 9, z: 3.5, facing: 0 };
   let freq = 60;
-  let wallReflect = 0.7; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
+  let wallAbsorption = 0.06; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
   let wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
-  let wallCustomReflect = { left: 0.7, right: 0.7, front: 0.7, back: 0.7 }; // used per-wall only when that wall's material key is 'custom'
+  let wallCustomAbsorption = { left: 0.06, right: 0.06, front: 0.06, back: 0.06 }; // used per-wall only when that wall's material key is 'custom'
   let ceilingMaterialKey = 'drywallInsulated';
-  let ceilingCustomReflect = 0.7; // used only when ceilingMaterialKey is 'custom'
-  let floorReflect = 0.8; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
+  let ceilingCustomAbsorption = 0.06; // used only when ceilingMaterialKey is 'custom'
+  let floorAbsorption = 0.15; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
   let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
   let nextId = 1;
   let presets = {}; // name -> config
@@ -640,18 +656,31 @@
       preferredZones: JSON.parse(JSON.stringify(preferredZones)),
       listener: JSON.parse(JSON.stringify(listener)),
       wallMaterialKeys: JSON.parse(JSON.stringify(wallMaterialKeys)),
-      wallCustomReflect: JSON.parse(JSON.stringify(wallCustomReflect)),
-      ceilingMaterialKey, ceilingCustomReflect,
-      freq, wallReflect, floorReflect
+      wallCustomAbsorption: JSON.parse(JSON.stringify(wallCustomAbsorption)),
+      ceilingMaterialKey, ceilingCustomAbsorption,
+      freq, wallAbsorption, floorAbsorption
     };
   }
 
   // Sets the "Floor material" dropdown to whichever preset matches the
-  // current floorReflect value, or "custom" if the slider's been moved off
+  // current floorAbsorption value, or "custom" if the slider's been moved off
   // every preset -- so the dropdown never silently lies about the actual state.
   function syncFloorMaterialDropdown(){
-    const match = Object.keys(FLOOR_MATERIALS).find(k => Math.abs(FLOOR_MATERIALS[k] - floorReflect) < 1e-9);
+    const match = Object.keys(FLOOR_MATERIALS).find(k => Math.abs(FLOOR_MATERIALS[k] - floorAbsorption) < 1e-9);
     document.getElementById('floorMaterial').value = match || 'custom';
+  }
+
+  // Presets saved before the reflectivity->absorption terminology switch store
+  // the OLD pressure-reflection-coefficient fields (wallReflect etc., ~0.7-0.97
+  // typical) instead of the new absorption fields -- reinterpreting those
+  // numbers as absorption directly would silently corrupt their physical
+  // meaning (0.7 reflect is barely-absorptive; 0.7 absorption is heavily
+  // absorptive), so an old value is converted via alpha = 1 - reflect^2
+  // rather than read as-is.
+  function absorptionFromLegacyConfig(cfg, absorptionField, legacyReflectField, fallback){
+    if(cfg[absorptionField] != null) return cfg[absorptionField];
+    if(cfg[legacyReflectField] != null) return 1 - cfg[legacyReflectField] * cfg[legacyReflectField];
+    return fallback;
   }
 
   function loadConfig(cfg){
@@ -675,14 +704,25 @@
     // Older presets predate per-wall materials -- default every wall to
     // 'drywallInsulated' (same as a fresh install) rather than leaving it unset.
     wallMaterialKeys = JSON.parse(JSON.stringify(cfg.wallMaterialKeys || { left:'drywallInsulated', right:'drywallInsulated', front:'drywallInsulated', back:'drywallInsulated' }));
-    wallCustomReflect = JSON.parse(JSON.stringify(cfg.wallCustomReflect || { left:0.7, right:0.7, front:0.7, back:0.7 }));
+    if(cfg.wallCustomAbsorption){
+      wallCustomAbsorption = JSON.parse(JSON.stringify(cfg.wallCustomAbsorption));
+    } else if(cfg.wallCustomReflect){
+      wallCustomAbsorption = {};
+      for(const wallName of Object.keys(cfg.wallCustomReflect)){
+        const r = cfg.wallCustomReflect[wallName];
+        wallCustomAbsorption[wallName] = 1 - r * r;
+      }
+    } else {
+      wallCustomAbsorption = { left:0.06, right:0.06, front:0.06, back:0.06 };
+    }
     ceilingMaterialKey = cfg.ceilingMaterialKey || 'drywallInsulated';
-    ceilingCustomReflect = cfg.ceilingCustomReflect ?? 0.7;
-    freq = cfg.freq; wallReflect = cfg.wallReflect;
-    floorReflect = cfg.floorReflect ?? cfg.wallReflect;
+    ceilingCustomAbsorption = absorptionFromLegacyConfig(cfg, 'ceilingCustomAbsorption', 'ceilingCustomReflect', 0.06);
+    freq = cfg.freq;
+    wallAbsorption = absorptionFromLegacyConfig(cfg, 'wallAbsorption', 'wallReflect', 0.06);
+    floorAbsorption = cfg.floorAbsorption ?? (cfg.floorReflect != null ? 1 - cfg.floorReflect * cfg.floorReflect : wallAbsorption);
     renderRoomDimFields();
-    document.getElementById('floorReflect').value = floorReflect;
-    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+    document.getElementById('floorAbsorption').value = floorAbsorption;
+    document.getElementById('floorAbsorptionVal').textContent = floorAbsorption.toFixed(2);
     syncFloorMaterialDropdown();
     document.getElementById('freq').value = freq;
     document.getElementById('freqVal').textContent = freq + ' Hz';
@@ -784,12 +824,12 @@
     optimizerResult = null;
     listener = { x: 9, y: 9, z: 3.5, facing: 0 };
     freq = 60;
-    wallReflect = 0.7;
+    wallAbsorption = 0.06;
     wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
-    wallCustomReflect = { left: 0.7, right: 0.7, front: 0.7, back: 0.7 };
+    wallCustomAbsorption = { left: 0.06, right: 0.06, front: 0.06, back: 0.06 };
     ceilingMaterialKey = 'drywallInsulated';
-    ceilingCustomReflect = 0.7;
-    floorReflect = FLOOR_MATERIALS.hardwood;
+    ceilingCustomAbsorption = 0.06;
+    floorAbsorption = FLOOR_MATERIALS.hardwood;
     loadConfig(makeConfig());
   }
 
@@ -1122,7 +1162,7 @@
   // 4 -- no add/remove, no name editing, no enabled toggle (a wall can't be
   // "disabled"). Each card just picks a material and, for 'custom', exposes
   // the old flat-scalar slider. The small readout line shows each wall's
-  // resolved reflectivity AT THE CURRENT FREQUENCY -- refreshed cheaply by
+  // resolved absorption AT THE CURRENT FREQUENCY -- refreshed cheaply by
   // updateWallReadouts() on every draw() rather than rebuilding the whole list.
   const WALL_COLOR = '#9099a8';
   const WALL_NAMES = ['left', 'right', 'front', 'back'];
@@ -1150,9 +1190,9 @@
           </select>
         </div>
         <div class="row" data-role="customRow" style="display:none;">
-          <label>Reflectivity</label>
-          <input type="range" data-field="customReflect" min="0" max="0.95" step="0.05" value="${wallCustomReflect[wallName]}">
-          <span class="val" data-out="customReflect">${wallCustomReflect[wallName].toFixed(2)}</span>
+          <label>Absorption</label>
+          <input type="range" data-field="customAbsorption" min="0" max="0.99" step="0.01" value="${wallCustomAbsorption[wallName]}">
+          <span class="val" data-out="customAbsorption">${wallCustomAbsorption[wallName].toFixed(2)}</span>
         </div>
         <div class="hint" data-role="readout" style="margin:4px 0 0;"></div>
       `;
@@ -1168,10 +1208,10 @@
         updateWallReadouts();
         draw();
       });
-      const customInput = block.querySelector('[data-field="customReflect"]');
+      const customInput = block.querySelector('[data-field="customAbsorption"]');
       customInput.addEventListener('input', function(){
-        wallCustomReflect[wallName] = parseFloat(this.value);
-        block.querySelector('[data-out="customReflect"]').textContent = wallCustomReflect[wallName].toFixed(2);
+        wallCustomAbsorption[wallName] = parseFloat(this.value);
+        block.querySelector('[data-out="customAbsorption"]').textContent = wallCustomAbsorption[wallName].toFixed(2);
         updateWallReadouts();
         scheduleDraw();
       });
@@ -1186,9 +1226,9 @@
     blocks.forEach((block, i) => {
       const wallName = WALL_NAMES[i];
       const material = resolveWallMaterial(wallName);
-      const reflectAtFreq = wallMaterialReflectAtFreq(material, freq) ?? wallReflect;
+      const absorptionAtFreq = wallMaterialAbsorptionAtFreq(material, freq) ?? wallAbsorption;
       const readout = block.querySelector('[data-role="readout"]');
-      if(readout) readout.textContent = `Reflectivity @ ${Math.round(freq)}Hz: ${reflectAtFreq.toFixed(2)}`;
+      if(readout) readout.textContent = `Absorption @ ${Math.round(freq)}Hz: ${absorptionAtFreq.toFixed(2)}`;
     });
   }
 
@@ -1198,15 +1238,15 @@
   function syncCeilingUI(){
     document.getElementById('ceilingMaterial').value = ceilingMaterialKey;
     document.getElementById('ceilingCustomRow').style.display = ceilingMaterialKey === 'custom' ? 'flex' : 'none';
-    document.getElementById('ceilingCustomReflect').value = ceilingCustomReflect;
-    document.getElementById('ceilingCustomReflectVal').textContent = ceilingCustomReflect.toFixed(2);
+    document.getElementById('ceilingCustomAbsorption').value = ceilingCustomAbsorption;
+    document.getElementById('ceilingCustomAbsorptionVal').textContent = ceilingCustomAbsorption.toFixed(2);
     updateCeilingReadout();
   }
   function updateCeilingReadout(){
     const el = document.getElementById('ceilingReadout');
     if(!el) return;
-    const reflectAtFreq = wallMaterialReflectAtFreq(resolveCeilingMaterial(), freq) ?? wallReflect;
-    el.textContent = `Reflectivity @ ${Math.round(freq)}Hz: ${reflectAtFreq.toFixed(2)}`;
+    const absorptionAtFreq = wallMaterialAbsorptionAtFreq(resolveCeilingMaterial(), freq) ?? wallAbsorption;
+    el.textContent = `Absorption @ ${Math.round(freq)}Hz: ${absorptionAtFreq.toFixed(2)}`;
   }
 
   // ---- Zone (off-limits / preferred) list UI ----
@@ -1322,25 +1362,25 @@
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
   // These wrappers adapt RoomPhysics's explicit-parameter functions to this
-  // file's module-level mutable state (room, wallReflect, etc.), so every
+  // file's module-level mutable state (room, wallAbsorption, etc.), so every
   // existing call site below is unchanged. RoomPhysics is now the only
   // place the actual math lives — see src/room-physics.test.js for its coverage.
   // Resolves a wall's chosen material key into the actual material object
-  // wallMaterialReflectAtFreq expects -- 'custom' synthesizes a flat-scalar
-  // material (peakDepth 0) from that wall's own slider value, so "Custom"
+  // wallMaterialAbsorptionAtFreq expects -- 'custom' synthesizes a flat-scalar
+  // material (peakBoost 0) from that wall's own slider value, so "Custom"
   // doesn't need a separate code path in the physics layer at all.
   function resolveWallMaterial(wallName){
     const key = wallMaterialKeys[wallName];
-    if(key === 'custom') return { baseReflect: wallCustomReflect[wallName], peakDepth: 0 };
+    if(key === 'custom') return { baseAbsorption: wallCustomAbsorption[wallName], peakBoost: 0 };
     return RoomPhysics.WALL_MATERIALS[key];
   }
   function resolveCeilingMaterial(){
-    if(ceilingMaterialKey === 'custom') return { baseReflect: ceilingCustomReflect, peakDepth: 0 };
+    if(ceilingMaterialKey === 'custom') return { baseAbsorption: ceilingCustomAbsorption, peakBoost: 0 };
     return RoomPhysics.WALL_MATERIALS[ceilingMaterialKey];
   }
   function physicsCtx(){
     return {
-      room, wallReflect, floorReflect,
+      room, wallAbsorption, floorAbsorption,
       wallMaterials: {
         left: resolveWallMaterial('left'),
         right: resolveWallMaterial('right'),
@@ -1351,7 +1391,7 @@
     };
   }
   const sourceGainAtFreq = RoomPhysics.sourceGainAtFreq;
-  const wallMaterialReflectAtFreq = RoomPhysics.wallMaterialReflectAtFreq;
+  const wallMaterialAbsorptionAtFreq = RoomPhysics.wallMaterialAbsorptionAtFreq;
   const computeFieldAtPoint = RoomPhysics.computeFieldAtPoint;
 
   // Precomputes the room's modal coefficient list for one source set + one
@@ -2466,14 +2506,14 @@
   });
   document.getElementById('floorMaterial').addEventListener('change', function(){
     if(this.value === 'custom') return; // "Custom" is a status display, not a selectable preset action
-    floorReflect = FLOOR_MATERIALS[this.value];
-    document.getElementById('floorReflect').value = floorReflect;
-    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+    floorAbsorption = FLOOR_MATERIALS[this.value];
+    document.getElementById('floorAbsorption').value = floorAbsorption;
+    document.getElementById('floorAbsorptionVal').textContent = floorAbsorption.toFixed(2);
     scheduleDraw();
   });
-  document.getElementById('floorReflect').addEventListener('input', function(){
-    floorReflect = parseFloat(this.value);
-    document.getElementById('floorReflectVal').textContent = floorReflect.toFixed(2);
+  document.getElementById('floorAbsorption').addEventListener('input', function(){
+    floorAbsorption = parseFloat(this.value);
+    document.getElementById('floorAbsorptionVal').textContent = floorAbsorption.toFixed(2);
     syncFloorMaterialDropdown(); // dragging the slider off a preset value should show "Custom"
     scheduleDraw();
   });
@@ -2483,9 +2523,9 @@
     updateCeilingReadout();
     draw();
   });
-  document.getElementById('ceilingCustomReflect').addEventListener('input', function(){
-    ceilingCustomReflect = parseFloat(this.value);
-    document.getElementById('ceilingCustomReflectVal').textContent = ceilingCustomReflect.toFixed(2);
+  document.getElementById('ceilingCustomAbsorption').addEventListener('input', function(){
+    ceilingCustomAbsorption = parseFloat(this.value);
+    document.getElementById('ceilingCustomAbsorptionVal').textContent = ceilingCustomAbsorption.toFixed(2);
     updateCeilingReadout();
     scheduleDraw();
   });
@@ -2923,7 +2963,7 @@
       preferredZones = [];
       optimizerResult = null;
       listener = { x: 9, y: 9, z: 3.5, facing: 0 };
-      freq = 60; wallReflect = 0.7;
+      freq = 60; wallAbsorption = 0.06;
       loadConfig(makeConfig());
     }
     draw();

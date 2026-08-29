@@ -21,12 +21,12 @@ function magOf({ re, im }){
   return Math.sqrt(re*re + im*im);
 }
 
-// A minimal ctx with a flat mid reflectivity on every surface — used throughout.
+// A minimal ctx with a flat mid-range absorption on every surface — used throughout.
 const baseRoom = { w: 18, d: 13.5, h: 8 };
 function baseCtx(overrides){
   return Object.assign({
     room: baseRoom,
-    wallReflect: 0.7
+    wallAbsorption: 0.51
   }, overrides || {});
 }
 
@@ -103,81 +103,81 @@ test('sources without rolloffDbPerOct default to 24dB/oct (a 4th-order/LR4 AVR-t
   approx(actualDb, -24, 0.05);
 });
 
-console.log('\n-- wallMaterialReflectAtFreq / WALL_MATERIALS (frequency-dependent bare-wall reflectivity) --');
+console.log('\n-- wallMaterialAbsorptionAtFreq / WALL_MATERIALS (frequency-dependent bare-wall absorption) --');
 
-test('wallMaterialReflectAtFreq returns null for a null/undefined material (caller should fall back to flat wallReflect)', () => {
-  assert.strictEqual(P.wallMaterialReflectAtFreq(null, 80), null);
-  assert.strictEqual(P.wallMaterialReflectAtFreq(undefined, 80), null);
+test('wallMaterialAbsorptionAtFreq returns null for a null/undefined material (caller should fall back to flat wallAbsorption)', () => {
+  assert.strictEqual(P.wallMaterialAbsorptionAtFreq(null, 80), null);
+  assert.strictEqual(P.wallMaterialAbsorptionAtFreq(undefined, 80), null);
 });
 
-test('wallMaterialReflectAtFreq is flat baseReflect at every frequency when peakDepth is 0 (e.g. masonry -- no resonance mechanism)', () => {
+test('wallMaterialAbsorptionAtFreq is flat baseAbsorption at every frequency when peakBoost is 0 (e.g. masonry -- no resonance mechanism)', () => {
   const masonry = P.WALL_MATERIALS.masonry;
-  approx(P.wallMaterialReflectAtFreq(masonry, 20), masonry.baseReflect, 1e-9);
-  approx(P.wallMaterialReflectAtFreq(masonry, 80), masonry.baseReflect, 1e-9);
-  approx(P.wallMaterialReflectAtFreq(masonry, 300), masonry.baseReflect, 1e-9);
+  approx(P.wallMaterialAbsorptionAtFreq(masonry, 20), masonry.baseAbsorption, 1e-9);
+  approx(P.wallMaterialAbsorptionAtFreq(masonry, 80), masonry.baseAbsorption, 1e-9);
+  approx(P.wallMaterialAbsorptionAtFreq(masonry, 300), masonry.baseAbsorption, 1e-9);
 });
 
-test('wallMaterialReflectAtFreq dips to baseReflect*(1-peakDepth) exactly at peakFreq', () => {
-  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
-  approx(P.wallMaterialReflectAtFreq(material, 80), 0.8 * (1 - 0.4), 1e-9);
+test('wallMaterialAbsorptionAtFreq rises to baseAbsorption+peakBoost exactly at peakFreq', () => {
+  const material = { baseAbsorption: 0.36, peakFreq: 80, peakBoost: 0.4096, bandwidth: 30 };
+  approx(P.wallMaterialAbsorptionAtFreq(material, 80), 0.36 + 0.4096, 1e-9);
 });
 
-test('wallMaterialReflectAtFreq approaches baseReflect far from peakFreq', () => {
-  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
-  const farBelow = P.wallMaterialReflectAtFreq(material, 20);
-  const farAbove = P.wallMaterialReflectAtFreq(material, 300);
-  assert.ok(farBelow > 0.79, `expected near-baseReflect far below peakFreq, got ${farBelow}`);
-  assert.ok(farAbove > 0.79, `expected near-baseReflect far above peakFreq, got ${farAbove}`);
+test('wallMaterialAbsorptionAtFreq approaches baseAbsorption far from peakFreq', () => {
+  const material = { baseAbsorption: 0.36, peakFreq: 80, peakBoost: 0.4096, bandwidth: 30 };
+  const farBelow = P.wallMaterialAbsorptionAtFreq(material, 20);
+  const farAbove = P.wallMaterialAbsorptionAtFreq(material, 300);
+  assert.ok(farBelow < 0.37, `expected near-baseAbsorption far below peakFreq, got ${farBelow}`);
+  assert.ok(farAbove < 0.37, `expected near-baseAbsorption far above peakFreq, got ${farAbove}`);
 });
 
-test('wallMaterialReflectAtFreq is symmetric around peakFreq', () => {
-  const material = { baseReflect: 0.8, peakFreq: 80, peakDepth: 0.4, bandwidth: 30 };
-  const below = P.wallMaterialReflectAtFreq(material, 60); // 20 below
-  const above = P.wallMaterialReflectAtFreq(material, 100); // 20 above
+test('wallMaterialAbsorptionAtFreq is symmetric around peakFreq', () => {
+  const material = { baseAbsorption: 0.36, peakFreq: 80, peakBoost: 0.4096, bandwidth: 30 };
+  const below = P.wallMaterialAbsorptionAtFreq(material, 60); // 20 below
+  const above = P.wallMaterialAbsorptionAtFreq(material, 100); // 20 above
   approx(below, above, 1e-9);
 });
 
-test('WALL_MATERIALS.drywallInsulated dips deeper AND wider than drywallHollow (insulation damps the resonance more)', () => {
+test('WALL_MATERIALS.drywallInsulated has a bigger AND wider absorption peak than drywallHollow (insulation damps the resonance more)', () => {
   const insulated = P.WALL_MATERIALS.drywallInsulated;
   const hollow = P.WALL_MATERIALS.drywallHollow;
-  assert.ok(insulated.peakDepth > hollow.peakDepth, 'insulated should have a deeper dip');
-  assert.ok(insulated.bandwidth > hollow.bandwidth, 'insulated should have a wider (more damped) dip');
+  assert.ok(insulated.peakBoost > hollow.peakBoost, 'insulated should have a bigger absorption peak');
+  assert.ok(insulated.bandwidth > hollow.bandwidth, 'insulated should have a wider (more damped) peak');
 });
 
-console.log("\n-- wallMaterialReflectAtFreq: shape:'porousRamp' (e.g. suspended acoustic ceiling tile) --");
+console.log("\n-- wallMaterialAbsorptionAtFreq: shape:'porousRamp' (e.g. suspended acoustic ceiling tile) --");
 
-test("porousRamp absorption is negligible well below midFreq", () => {
-  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
-  const reflectAt20 = P.wallMaterialReflectAtFreq(material, 20);
-  assert.ok(reflectAt20 > 0.74, `expected near-baseReflect well below midFreq, got ${reflectAt20}`);
+test("porousRamp absorption is negligible above baseAbsorption well below midFreq", () => {
+  const material = { shape: 'porousRamp', baseAbsorption: 0.3, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.5 };
+  const absorbAt20 = P.wallMaterialAbsorptionAtFreq(material, 20);
+  assert.ok(absorbAt20 < 0.32, `expected near-baseAbsorption well below midFreq, got ${absorbAt20}`);
 });
 
-test("porousRamp absorption is exactly maxAbsorb/2 (the logistic midpoint) AT midFreq", () => {
-  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
-  const reflectAtMid = P.wallMaterialReflectAtFreq(material, 280);
-  approx(reflectAtMid, 0.75 * (1 - 0.6/2), 1e-9);
+test("porousRamp absorption is exactly baseAbsorption+maxAbsorbBoost/2 (the logistic midpoint) AT midFreq", () => {
+  const material = { shape: 'porousRamp', baseAbsorption: 0.3, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.5 };
+  const absorbAtMid = P.wallMaterialAbsorptionAtFreq(material, 280);
+  approx(absorbAtMid, 0.3 + 0.5/2, 1e-9);
 });
 
 test("porousRamp absorption increases monotonically with frequency (opposite trend from 'resonant')", () => {
-  const material = { shape: 'porousRamp', baseReflect: 0.75, midFreq: 280, slope: 0.03, maxAbsorb: 0.6 };
-  const r1 = P.wallMaterialReflectAtFreq(material, 20);
-  const r2 = P.wallMaterialReflectAtFreq(material, 150);
-  const r3 = P.wallMaterialReflectAtFreq(material, 300);
-  assert.ok(r1 > r2 && r2 > r3, `expected monotonically decreasing reflectivity (increasing absorption) with frequency: ${r1}, ${r2}, ${r3}`);
+  const material = { shape: 'porousRamp', baseAbsorption: 0.3, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.5 };
+  const a1 = P.wallMaterialAbsorptionAtFreq(material, 20);
+  const a2 = P.wallMaterialAbsorptionAtFreq(material, 150);
+  const a3 = P.wallMaterialAbsorptionAtFreq(material, 300);
+  assert.ok(a1 < a2 && a2 < a3, `expected monotonically increasing absorption with frequency: ${a1}, ${a2}, ${a3}`);
 });
 
 test('WALL_MATERIALS.suspendedTile shows only modest absorption within this app\'s typical sub-bass range, more by the top of the range', () => {
   const tile = P.WALL_MATERIALS.suspendedTile;
-  const at40 = P.wallMaterialReflectAtFreq(tile, 40);
-  const at300 = P.wallMaterialReflectAtFreq(tile, 300);
-  assert.ok(at40 > tile.baseReflect * 0.9, `expected tile to do little at 40Hz (a real, worth-knowing limitation), got ${at40}`);
-  assert.ok(at300 < at40, 'expected more absorption by 300Hz than at 40Hz');
+  const at40 = P.wallMaterialAbsorptionAtFreq(tile, 40);
+  const at300 = P.wallMaterialAbsorptionAtFreq(tile, 300);
+  assert.ok(at40 < tile.baseAbsorption + tile.maxAbsorbBoost * 0.1, `expected tile to do little at 40Hz (a real, worth-knowing limitation), got ${at40}`);
+  assert.ok(at300 > at40, 'expected more absorption by 300Hz than at 40Hz');
 });
 
 console.log('\n-- fieldDbAtPoint: known-configuration sanity checks --');
 
 test('pressure falls off with distance from a single source (no reflections)', () => {
-  // wallReflect=0 isolates the direct-path-only behavior (no boundary contributions)
+  // wallAbsorption=1 would isolate the direct-path-only behavior (no boundary contributions)
   const ctx = baseCtx();
   const sources = [{ x: 9, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
   const freq = 120;
@@ -262,7 +262,7 @@ test('radius 0 collapses every point onto the center', () => {
 console.log('\n-- spatiallyAveragedResponse (moving-mic-style measurement) --');
 
 test('radius 0 exactly matches a plain single-point fieldDbAtPoint at every frequency', () => {
-  const ctx = baseCtx({ wallReflect: 0.7 });
+  const ctx = baseCtx({ wallAbsorption: 0.51 });
   const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
   const freqs = [40, 80, 160];
   const result = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, ctx, { radiusFt: 0, numPoints: 8 });
@@ -281,7 +281,7 @@ test('spatial averaging smooths out a deep coherent null relative to the exact p
   // at the midpoint between them (equal path length + intentional half-period
   // phase flip = full cancellation) -- the classic worst case for a single
   // exact-point reading.
-  const ctx = baseCtx({ wallReflect: 0.985 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant rather than swamped in reverberation
+  const ctx = baseCtx({ wallAbsorption: 0.03 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant rather than swamped in reverberation
   const freq = 100;
   const lambda = P.C / freq;
   const sepFt = (lambda / 2) / P.FT_TO_M;
@@ -344,7 +344,7 @@ test('mode count for the default 18x13.5x8 room at the 300Hz cutoff falls in the
   // ellipsoid bound, or a sign error dropping half the octant) -- expected
   // order of magnitude is ~150-200 for this room per the mode-density estimate
   // this cutoff was chosen from.
-  const ctx = { room: baseRoom, wallReflect: 0.7 };
+  const ctx = { room: baseRoom, wallAbsorption: 0.51 };
   const modes = P.enumerateModes(ctx);
   assert.ok(modes.length > 50 && modes.length < 500,
     `expected roughly 100-300 modes below 300Hz for this room, got ${modes.length}`);
@@ -356,7 +356,7 @@ test('field has a local peak in frequency at an exact axial-mode resonance', () 
   // maximizes coupling to axial modes specifically, so the exact axialModes()
   // frequency should show up as a genuine local peak, not just a coincidence.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.985 }; // light damping -- keeps the peak sharp/detectable
+  const ctx = { room, wallAbsorption: 0.03 }; // light damping -- keeps the peak sharp/detectable
   const source = { x: 0, y: 0, z: 0, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 };
   const [f1] = P.axialModes(room.w, 1, 300); // exact x-axial mode 1 frequency
   const magAt = (f) => P.fieldDbAtPoint(0, 0, 0, [source], f, ctx);
@@ -373,7 +373,7 @@ test('a single isolated mode peaks in response exactly at its own resonance freq
   // peaks exactly where the mode's own k_n says it should, independent of
   // whatever other modes happen to be nearby in the full room sum.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.985 };
+  const ctx = { room, wallAbsorption: 0.03 };
   const modes = P.enumerateModes(ctx);
   const mode = modes.find(m => m.fn > 60 && m.fn < 250); // a representative mid-range mode
   assert.ok(mode, 'expected at least one mode in the 60-250Hz range for this room');
@@ -400,7 +400,7 @@ test("DEMONSTRATION: on-resonance peak magnitude grows as a mode's damping decre
   let prevMag = -1;
   for(const deltaN of dampingValues){
     const mode = { ...baseMode, deltaN };
-    const pre = P.precomputeModalField([source], freq, { room: baseRoom, wallReflect: 0.7 }, [mode]);
+    const pre = P.precomputeModalField([source], freq, { room: baseRoom, wallAbsorption: 0.51 }, [mode]);
     const { re, im } = P.computeFieldAtPoint(point.x, point.y, point.z, pre);
     const mag = Math.sqrt(re*re + im*im);
     assert.ok(mag > prevMag,
@@ -409,14 +409,14 @@ test("DEMONSTRATION: on-resonance peak magnitude grows as a mode's damping decre
   }
 });
 
-test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks estimatedT60\'s Sabine estimate (same order of magnitude, not exact equality)', () => {
+test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks estimatedT60\'s Eyring estimate (same order of magnitude, not exact equality)', () => {
   // These measure genuinely different things -- one mode's own decay vs a
   // diffuse-field room average -- so exact equality isn't expected (see
   // enumerateModes' comment on why per-mode damping varies by mode index even
   // under uniform absorption). This just confirms they're in the same
   // ballpark and both derived from the same underlying wall absorption.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7 }; // uniform absorption on every surface
+  const ctx = { room, wallAbsorption: 0.51 }; // uniform absorption on every surface
   const modes = P.enumerateModes(ctx);
   const mode = modes.find(m => m.fn > 100 && m.fn < 200);
   assert.ok(mode, 'expected a mode in the 100-200Hz range for this room');
@@ -424,10 +424,10 @@ test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks 
   // and T60 (60dB energy decay, e^{-delta_temporal*t}) is ln(1e6)/delta_temporal.
   const deltaTemporal = mode.deltaN * P.C;
   const t60FromMode = Math.log(1e6) / deltaTemporal;
-  const t60Sabine = P.estimatedT60(room, mode.fn, ctx);
-  const ratio = t60FromMode / t60Sabine;
+  const t60Eyring = P.estimatedT60(room, mode.fn, ctx);
+  const ratio = t60FromMode / t60Eyring;
   assert.ok(ratio > 0.3 && ratio < 3,
-    `expected same-order-of-magnitude T60 estimates: fromMode=${t60FromMode.toFixed(3)}s sabine=${t60Sabine.toFixed(3)}s ratio=${ratio.toFixed(2)}`);
+    `expected same-order-of-magnitude T60 estimates: fromMode=${t60FromMode.toFixed(3)}s eyring=${t60Eyring.toFixed(3)}s ratio=${ratio.toFixed(2)}`);
 });
 
 console.log('\n-- isNearNull / dB sensitivity near interference nulls --');
@@ -448,7 +448,7 @@ test('DEMONSTRATION: dB is far more sensitive to tiny position shifts near a nul
   // sources exactly half a wavelength apart, with one delayed by half a period —
   // this puts them in antiphase, guaranteeing a clean, deep destructive-interference
   // null exists on the line between them (rather than hoping a scan finds one).
-  const ctx = baseCtx({ wallReflect: 0.985 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant
+  const ctx = baseCtx({ wallAbsorption: 0.03 }); // near-rigid, light damping -- keeps the direct antiphase relationship dominant
   const freq = 150;
   const lambda = P.C / freq;
   const sepFt = (lambda / 2) / P.FT_TO_M; // half-wavelength separation, in feet
@@ -496,7 +496,7 @@ console.log('\n-- scoreSubPosition --');
 
 test('a position centered between two coherent-summing sources scores well (loud + flat)', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -517,7 +517,7 @@ test('a position with a deep null at one frequency scores worse than an equally-
   // Construct two single-sub scenarios with the SAME average level across frequency,
   // but one has a severe dip at a single frequency (a null) and the other doesn't.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 1, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const freqs = [40, 50, 60, 70, 80];
   const listeners = [{ x: 9, y: 6, z: 3.5 }];
 
@@ -541,7 +541,7 @@ test('a position with a deep null at one frequency scores worse than an equally-
 
 test('score combines multiple listeners by penalizing the WORST listener, not just averaging', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }];
   const freqs = [40, 60, 80];
 
@@ -563,7 +563,7 @@ test('worstMinDb penalty engages (score is reduced) when the worst listener dips
   // wavelength separation elsewhere), producing a deep dip relative to the
   // scene's own average across the freq list.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7 };
+  const ctx = { room, wallAbsorption: 0.51 };
   const listener = { x: 9, y: 6, z: 3.5 };
   const freq0 = 60;
   const lambda = P.C / freq0;
@@ -583,7 +583,7 @@ test('worstMinDb penalty engages (score is reduced) when the worst listener dips
 
 test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the scene average', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7 };
+  const ctx = { room, wallAbsorption: 0.51 };
   const silentCandidate = { x: 1, y: 1, z: 1, levelDb: -200 };
   const loudSource = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 6, z: 4 }];
@@ -599,7 +599,7 @@ console.log("\n-- scoreSubPosition: mode:'nullAvoidance' (for users with room co
 
 test("mode defaults to 'balanced' when omitted (backward compatible)", () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
   const freqs = [40, 60, 80];
@@ -610,7 +610,7 @@ test("mode defaults to 'balanced' when omitted (backward compatible)", () => {
 
 test("mode:'nullAvoidance' score equals worstMinDb exactly, ignoring avgMean and worstStdDev", () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
   const freqs = [40, 60, 80];
@@ -629,7 +629,7 @@ test("mode:'nullAvoidance' ranks the sharper-dip scenario worse, purely by track
   // calculation could) produces a genuine, sizeable dip at the low end of the
   // freq list relative to the flat scenario.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7 };
+  const ctx = { room, wallAbsorption: 0.51 };
   const freqs = [40, 50, 60, 70, 80];
   const listeners = [{ x: 9, y: 6, z: 3.5 }];
   const candidatePos = { x: 9, y: 6.75, z: 1, levelDb: -200 }; // silenced -- isolate the comparison to the source arrays below
@@ -651,7 +651,7 @@ test("mode:'nullAvoidance' ranks the sharper-dip scenario worse, purely by track
 
 test("optimizeSubPlacement threads mode through to scoreSubPosition", () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200, enabled: true }];
   const freqs = [40, 60, 80];
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
@@ -706,7 +706,7 @@ test('nullAvoidanceSpreadPenalty uses the NEAREST already-placed point, not an a
 
 test("scoreSubPosition in nullAvoidance mode subtracts the spread penalty from worstMinDb when alreadyPlaced is given", () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   const listeners = [{ x: 9, y: 9, z: 3.5 }];
   const freqs = [40, 60, 80];
@@ -720,7 +720,7 @@ test("scoreSubPosition in nullAvoidance mode subtracts the spread penalty from w
 
 test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters subs right at the minimum-separation floor', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -745,7 +745,7 @@ test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters 
 
 test('empty listenerPositions produces a NaN score rather than throwing', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [60], [], ctx);
   assert.ok(Number.isNaN(result.score), `expected NaN score with no listener positions, got ${result.score}`);
   assert.deepStrictEqual(result.listenerStats, []);
@@ -753,7 +753,7 @@ test('empty listenerPositions produces a NaN score rather than throwing', () => 
 
 test('empty freqList produces a NaN score rather than throwing', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.scoreSubPosition({ x: 9, y: 6, z: 1 }, [], room, [], [{ x: 9, y: 6, z: 3.5 }], ctx);
   assert.ok(Number.isNaN(result.score), `expected NaN score with an empty frequency list, got ${result.score}`);
 });
@@ -796,7 +796,7 @@ console.log('\n-- optimizeSubPlacement --');
 
 test('optimizer finds a best candidate and respects off-limits zones', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -825,7 +825,7 @@ test('optimizer finds a best candidate and respects off-limits zones', () => {
 
 test('optimizer returns null best when no valid candidates exist', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const offLimits = [{ x: 0, y: 0, width: 18, height: 13.5 }]; // blocks the entire room
   const result = P.optimizeSubPlacement({
     room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
@@ -840,7 +840,7 @@ console.log('\n-- optimizeMultipleSubs (greedy sequential placement) --');
 
 test('places the requested number of subs', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -859,7 +859,7 @@ test('each round accounts for previously-placed subs, not just the original main
   // the placed sub correctly folded in, round 2's winner should generally differ
   // from round 1's, since the room's field has changed.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -880,7 +880,7 @@ test('each round accounts for previously-placed subs, not just the original main
 
 test('greedy respects off-limits zones for every sub placed, not just the first', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const offLimits = [{ x: 0, y: 0, width: 18, height: 10 }]; // only y=[10,13.5] is allowed
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 3, freqList: [40,60,80],
@@ -893,7 +893,7 @@ test('greedy respects off-limits zones for every sub placed, not just the first'
 
 test('stops placing subs (without error) if candidates run out', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   // Preferred zone so small (relative to a coarse grid step) that at most 1 candidate exists.
   const tinyPreferred = [{ x: 9, y: 6.75, width: 0.4, height: 0.4 }];
   const result = P.optimizeMultipleSubs({
@@ -908,7 +908,7 @@ test('PERFORMANCE: cost scales linearly with sub count, not exponentially', () =
   // This is the actual point of greedy placement -- confirm empirically that going
   // from 1 to 4 subs costs roughly 4x the work (linear), not candidates^4 (exponential).
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -944,7 +944,7 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
   // two co-located subs simply sum louder rather than being penalized for
   // redundancy in the scoring function itself.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
@@ -965,7 +965,7 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
 
 test('minSeparationFt is configurable and respected', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 2, freqList: [60],
     listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: [], gridStepFt: 0.5, subHeightFt: 1,
@@ -981,8 +981,8 @@ test('minSeparationFt is configurable and respected', () => {
 test('default minSeparationFt (when not specified) is 25% of the room\'s smaller dimension, floored at 4ft', () => {
   const room1 = { w: 18, d: 13.5, h: 8 }; // 13.5*0.25 = 3.375 -> floored to 4
   const room2 = { w: 30, d: 24, h: 8 };   // 24*0.25 = 6
-  const ctx1 = { room: room1, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const ctx2 = { room: room2, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx1 = { room: room1, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx2 = { room: room2, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
 
   const r1 = P.optimizeMultipleSubs({
     room: room1, otherSources: [], numSubs: 2, freqList: [60],
@@ -1066,61 +1066,72 @@ test('returns 0 (not NaN) for a room with a negative dimension', () => {
   assert.strictEqual(fs, 0);
 });
 
-console.log('\n-- estimatedT60 (Sabine reverberation estimate) --');
+console.log('\n-- estimatedT60 (Eyring reverberation estimate) --');
 
-test('matches hand-calculated Sabine T60 for a uniform-reflectivity room', () => {
+test('matches hand-calculated Eyring T60 for a uniform-absorption room', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { wallReflect: 0.7 };
-  const alpha = 1 - 0.7*0.7;
+  const ctx = { wallAbsorption: 0.51 };
+  const alpha = 0.51;
   const areaFt2 = 2*(room.d*room.h) + 2*(room.w*room.h) + 2*(room.w*room.d);
-  const totalAbsorptionM2 = areaFt2 * alpha * (P.FT_TO_M ** 2);
+  const totalAreaM2 = areaFt2 * (P.FT_TO_M ** 2);
   const volumeM3 = (room.w*room.d*room.h) * (P.FT_TO_M ** 3);
-  const expected = 0.161 * volumeM3 / totalAbsorptionM2;
+  // Uniform absorption -> avgAlpha is just alpha itself.
+  const expected = 0.161 * volumeM3 / (-totalAreaM2 * Math.log(1 - alpha));
   approx(P.estimatedT60(room, 100, ctx), expected, 0.001);
 });
 
-test('more reflective (less absorptive) surfaces produce a LONGER T60', () => {
+test('Eyring T60 correctly approaches 0 as average absorption approaches 1 (Sabine\'s known breakdown case)', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const liveT60 = P.estimatedT60(room, 100, { wallReflect: 0.9 });
-  const deadT60 = P.estimatedT60(room, 100, { wallReflect: 0.3 });
-  assert.ok(liveT60 > deadT60, `expected a more reflective room to ring longer: live=${liveT60.toFixed(2)}s dead=${deadT60.toFixed(2)}s`);
+  // wallAbsorption -> 1 means a fully absorptive room -- Sabine's formula
+  // would asymptote to a nonzero floor here instead of continuing toward 0.
+  const nearlyFullyAbsorptive = P.estimatedT60(room, 100, { wallAbsorption: 0.9999 });
+  const moderatelyAbsorptive = P.estimatedT60(room, 100, { wallAbsorption: 0.51 });
+  assert.ok(nearlyFullyAbsorptive < moderatelyAbsorptive * 0.1,
+    `expected T60 to drop sharply as the room approaches full absorption: nearlyFullyAbsorptive=${nearlyFullyAbsorptive.toFixed(4)}s moderatelyAbsorptive=${moderatelyAbsorptive.toFixed(4)}s`);
+});
+
+test('less absorptive (more reflective) surfaces produce a LONGER T60', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const liveT60 = P.estimatedT60(room, 100, { wallAbsorption: 0.19 });
+  const deadT60 = P.estimatedT60(room, 100, { wallAbsorption: 0.91 });
+  assert.ok(liveT60 > deadT60, `expected a less absorptive room to ring longer: live=${liveT60.toFixed(2)}s dead=${deadT60.toFixed(2)}s`);
 });
 
 test('per-wall materials are respected -- masonry walls ring longer than insulated drywall', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const allMaterial = (key) => ({ left: P.WALL_MATERIALS[key], right: P.WALL_MATERIALS[key], front: P.WALL_MATERIALS[key], back: P.WALL_MATERIALS[key] });
-  const masonryT60 = P.estimatedT60(room, 500, { wallReflect: 0.7, wallMaterials: allMaterial('masonry') });
-  const drywallT60 = P.estimatedT60(room, 500, { wallReflect: 0.7, wallMaterials: allMaterial('drywallInsulated') });
+  const masonryT60 = P.estimatedT60(room, 500, { wallAbsorption: 0.51, wallMaterials: allMaterial('masonry') });
+  const drywallT60 = P.estimatedT60(room, 500, { wallAbsorption: 0.51, wallMaterials: allMaterial('drywallInsulated') });
   assert.ok(masonryT60 > drywallT60, `expected masonry (less absorptive) to outlast insulated drywall: masonry=${masonryT60.toFixed(2)}s drywall=${drywallT60.toFixed(2)}s`);
 });
 
 test('frequency-dependent -- T60 dips at a resonant wall material\'s peak absorption frequency', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const wallMaterials = { left: P.WALL_MATERIALS.drywallInsulated, right: P.WALL_MATERIALS.drywallInsulated, front: P.WALL_MATERIALS.drywallInsulated, back: P.WALL_MATERIALS.drywallInsulated };
-  const atPeak = P.estimatedT60(room, 80, { wallReflect: 0.7, wallMaterials }); // drywallInsulated's peakFreq
-  const farFromPeak = P.estimatedT60(room, 2000, { wallReflect: 0.7, wallMaterials });
+  const atPeak = P.estimatedT60(room, 80, { wallAbsorption: 0.51, wallMaterials }); // drywallInsulated's peakFreq
+  const farFromPeak = P.estimatedT60(room, 2000, { wallAbsorption: 0.51, wallMaterials });
   assert.ok(atPeak < farFromPeak, `expected shorter T60 right at the resonant absorption peak: atPeak=${atPeak.toFixed(2)}s farFromPeak=${farFromPeak.toFixed(2)}s`);
 });
 
-test('floorReflect and ceilingMaterial each independently affect the result', () => {
+test('floorAbsorption and ceilingMaterial each independently affect the result', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const base = P.estimatedT60(room, 100, { wallReflect: 0.7 });
-  const deaderFloor = P.estimatedT60(room, 100, { wallReflect: 0.7, floorReflect: 0.2 });
-  const deaderCeiling = P.estimatedT60(room, 100, { wallReflect: 0.7, ceilingMaterial: { baseReflect: 0.2, peakDepth: 0 } });
+  const base = P.estimatedT60(room, 100, { wallAbsorption: 0.51 });
+  const deaderFloor = P.estimatedT60(room, 100, { wallAbsorption: 0.51, floorAbsorption: 0.96 });
+  const deaderCeiling = P.estimatedT60(room, 100, { wallAbsorption: 0.51, ceilingMaterial: { baseAbsorption: 0.96, peakBoost: 0 } });
   assert.ok(deaderFloor < base, 'a more absorptive floor should shorten T60');
   assert.ok(deaderCeiling < base, 'a more absorptive ceiling should shorten T60');
 });
 
 test('feeds sensibly into schroederFrequency (finite, positive result)', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const t60 = P.estimatedT60(room, 60, { wallReflect: 0.75, ceilingMaterial: P.WALL_MATERIALS.suspendedTile });
+  const t60 = P.estimatedT60(room, 60, { wallAbsorption: 0.44, ceilingMaterial: P.WALL_MATERIALS.suspendedTile });
   const fs = P.schroederFrequency(room, t60);
   assert.ok(Number.isFinite(fs) && fs > 0, `expected a finite, positive Schroeder frequency, got ${fs}`);
 });
 
 test('returns 0 (not NaN/Infinity) for a degenerate room with zero volume', () => {
   const room = { w: 0, d: 13.5, h: 8 };
-  assert.strictEqual(P.estimatedT60(room, 100, { wallReflect: 0.7 }), 0);
+  assert.strictEqual(P.estimatedT60(room, 100, { wallAbsorption: 0.51 }), 0);
 });
 
 console.log('\n-- timeAlignDelays --');
@@ -1225,7 +1236,7 @@ test('DEMONSTRATION: two-ear dB difference is negligible at bass frequencies, mo
   // This is the actual physical claim behind adding two-ear sampling in the
   // first place -- confirm it empirically rather than just asserting it in prose.
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallReflect: 0.7, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
     { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
     { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
