@@ -123,7 +123,21 @@
     drywallInsulated: { baseAbsorption: 0.06, peakFreq: 80, peakBoost: 0.34, bandwidth: 55 },
     drywallHollow:    { baseAbsorption: 0.06, peakFreq: 90, peakBoost: 0.25, bandwidth: 40 },
     masonry:          { baseAbsorption: 0.03, peakFreq: 0,  peakBoost: 0,    bandwidth: 1 },
-    suspendedTile:    { shape: 'porousRamp', baseAbsorption: 0.44, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.47 }
+    // suspendedTile: porous absorbers are inherently weak at bass (their
+    // absorption mechanism needs airflow/particle velocity through the
+    // material, which is minimal at long wavelengths near a rigid backing),
+    // so baseAbsorption -- the floor this ramps up FROM, well below midFreq
+    // -- should be modest like the other materials' baselines (~0.05-0.10,
+    // in the ballpark of published ~125Hz mineral-fiber tile data), not the
+    // ~0.44 this held before this fix (inherited unchanged from the old
+    // reflect-space baseReflect:0.75 through the reflectivity->absorption
+    // rewrite -- unlike the resonant wall materials, it was never actually
+    // checked against low-frequency data). The high-frequency asymptote
+    // (baseAbsorption+maxAbsorbBoost, reached well beyond this app's 300Hz
+    // range) is kept at roughly its previous ~0.91, since real acoustic
+    // tile genuinely does become highly absorptive at higher frequencies --
+    // only the LOW end was wrong.
+    suspendedTile:    { shape: 'porousRamp', baseAbsorption: 0.08, midFreq: 280, slope: 0.03, maxAbsorbBoost: 0.83 }
   };
 
   // ---- Rectangular-room modal (eigenfunction) solution ----

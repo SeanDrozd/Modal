@@ -35,8 +35,18 @@
   // so mode counts stay modest (~150-800 for typical room sizes) and this
   // cap exists only as a generous sane ceiling, not a real constraint. See
   // flattenModes for what happens if this is ever exceeded.
-  const MODE_TEX_W = 64;
-  const MODE_TEX_H = 64;
+  //
+  // 64x64 (4096) turned out not generous enough -- a large-but-real room
+  // (e.g. 50x70x16ft) needs ~5000 modes below the 300Hz cutoff, since mode
+  // count grows with volume (roughly cubically with the cutoff frequency,
+  // per the standard 3D mode-density asymptotic). 128x128 (16384) gives
+  // ~3x headroom over that case at negligible extra cost (a few hundred KB
+  // of float-texture memory, still far under any real MAX_TEXTURE_SIZE, and
+  // the shader's per-pixel loop already breaks at uCount, the actual mode
+  // count -- see the fragment shader below -- so this costs nothing extra
+  // for the common small-room case).
+  const MODE_TEX_W = 128;
+  const MODE_TEX_H = 128;
   const MAX_MODES = MODE_TEX_W * MODE_TEX_H; // 4096
 
   const VERTEX_SRC = `
