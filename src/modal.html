@@ -223,6 +223,7 @@
         <label>Ceiling height</label>
         <span id="roomHField"></span>
       </div>
+      <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft &mdash; beyond that, this tool's single listening position and 1-2 sub optimizer stop being a meaningful fit for the room, well before the modal solution's own math or GPU limits would actually break.</div>
       <div class="row" style="margin-top:8px;">
         <label>Listener ear height</label>
         <span id="listenerZField"></span>
@@ -568,6 +569,21 @@
     });
   }
 
+  // Room dimension bounds. The lower end keeps the room physically sane; the
+  // upper end is a deliberate ceiling on the modal solution's own mode count
+  // (which grows roughly linearly with volume) -- a large-but-real room
+  // (e.g. 50x70x16ft) already produces 5000+ modes and, more importantly,
+  // this app's whole design (one exact listening position, a 1-2 sub
+  // optimizer) stops being a meaningful tool well before the physics or GPU
+  // mode cap (see field-render.js's MAX_MODES) would actually break --
+  // a much bigger room has that many more potential real listening spots
+  // that a single optimized point can't account for. 30x30ft/15ft ceiling
+  // comfortably covers real dedicated home theaters and large great rooms
+  // (which rarely exceed ~24x15ft/12ft even in premium builds) while
+  // keeping the tool's one-listener model meaningful.
+  const ROOM_MAX_WD_FT = 30;
+  const ROOM_MAX_H_FT = 15;
+
   // Renders the Room and Listener height length fields from current state
   // (room.w/d/h, listener.z) and wires their change handlers -- called from
   // loadConfig (so every preset load / reset-to-defaults / fresh-install path
@@ -578,13 +594,13 @@
     document.getElementById('roomHField').innerHTML = lengthFieldHtml('roomH', room.h);
     document.getElementById('listenerZField').innerHTML = lengthFieldHtml('listenerZ', listener.z);
     wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => {
-      room.w = Math.max(6, ft || 16); draw();
+      room.w = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 16)); draw();
     });
     wireLengthField(document.getElementById('roomDField'), 'roomD', (ft) => {
-      room.d = Math.max(6, ft || 13.5); draw();
+      room.d = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 13.5)); draw();
     });
     wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => {
-      room.h = Math.max(6, ft || 8);
+      room.h = Math.min(ROOM_MAX_H_FT, Math.max(6, ft || 8));
       if(listener.z > room.h) listener.z = room.h;
       draw();
     });
