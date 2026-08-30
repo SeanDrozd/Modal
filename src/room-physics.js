@@ -653,25 +653,39 @@
   // seat. Omitted weights default to 1, which makes every formula below
   // reduce EXACTLY to its pre-weighting form when no caller passes weights --
   // this is a hard backward-compatibility requirement, not just a default.
+  //
+  // precomputedModes (optional, last arg): enumerateModes(physicsCtx) only
+  // depends on room geometry + wall materials, never on candidatePos -- a
+  // grid-search optimizer calling this once per candidate (hundreds to
+  // thousands of times per run) was redoing that same work every single
+  // call. Callers doing a grid search should enumerate once and pass the
+  // result in here; omitted, this falls back to computing it itself so every
+  // existing call site (tests included) keeps working unchanged.
   const RELIEF_DB = 15; // nullAvoidance: how much a fully-unimportant (weight 0) listener's null is forgiven
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced){
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
       candidatePos
     );
     const allSources = otherSources.concat([candidateSource]);
-    const modes = enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
+    const modes = precomputedModes || enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
 
-    const perListenerDb = []; // [listenerIdx][freqIdx] = dB
-    for(const lp of listenerPositions){
-      const dbRow = [];
-      for(const f of freqList){
-        const precomputed = precomputeModalField(allSources, f, physicsCtx, modes);
+    // Looped frequency-outer, listener-inner (not the reverse) --
+    // precomputeModalField's result depends only on the sources/frequency/
+    // modes, never on the query point, so it's computed once per frequency
+    // here and reused across every listener at that frequency, instead of
+    // being redone once per (listener x frequency) pair. With a multi-row
+    // listening setup easily putting 5-15+ weighted seats into
+    // listenerPositions, that redundancy was the single biggest cost in the
+    // whole optimizer grid search -- far more than enumerateModes itself.
+    const perListenerDb = listenerPositions.map(() => []); // [listenerIdx][freqIdx] = dB
+    for(const f of freqList){
+      const precomputed = precomputeModalField(allSources, f, physicsCtx, modes);
+      listenerPositions.forEach((lp, i) => {
         const { re, im } = computeFieldAtPoint(lp.x, lp.y, lp.z, precomputed);
         const mag = Math.sqrt(re*re + im*im);
-        dbRow.push(20 * Math.log10(Math.max(mag, 1e-6)));
-      }
-      perListenerDb.push(dbRow);
+        perListenerDb[i].push(20 * Math.log10(Math.max(mag, 1e-6)));
+      });
     }
 
     // Per-listener stats: mean level and standard deviation (flatness) across
@@ -789,6 +803,12 @@
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
+    // Enumerated once for the whole grid, not once per candidate -- modes only
+    // depend on room geometry + wall materials (physicsCtx), never on the
+    // candidate position, so re-deriving them per grid cell (hundreds to
+    // thousands of times per search) was pure repeated work. See
+    // scoreSubPosition's precomputedModes comment.
+    const modes = enumerateModes(physicsCtx);
 
     const results = [];
     let best = null;
@@ -796,7 +816,7 @@
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
         if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)) continue;
-        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints);
+        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints, modes);
         const entry = { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
