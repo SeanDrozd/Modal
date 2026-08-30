@@ -442,26 +442,34 @@
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
   // Calibrated against published low-frequency (125Hz) absorption-coefficient
-  // data (alpha, this app's absorption convention directly):
-  //   hardwood: wood floor on joists -- alpha ~0.15 @125Hz.
-  //   thinCarpet: thin carpet with a thin felt underlay -- alpha ~0.10-0.20
-  //     @125Hz depending on subfloor (concrete vs. wood); 0.17 used here,
-  //     toward the upper-middle of that range, so a hard tile/wood floor
-  //     reads as more reflective than any carpet on top of it -- matching
-  //     the intuitive expectation, and still within the published range.
+  // data (alpha, this app's absorption convention directly) -- see the
+  // classic table (e.g. Everest's Master Handbook of Acoustics):
+  //   hardwood: wood floor on joists -- alpha ~0.15 @125Hz. Higher than bare
+  //     carpet, not lower -- a suspended wood floor flexes as a mild
+  //     membrane absorber (the same mechanism the resonant WALL_MATERIALS
+  //     use), which carpet has no equivalent of at bass frequencies.
+  //   thinCarpet: thin carpet with a thin felt underlay, no real pad --
+  //     alpha ~0.02-0.08 @125Hz (published figures range from ~0.02 for
+  //     carpet directly on concrete up to ~0.08 with a compliant pad; thin/
+  //     minimal backing sits toward the low end of that). At bass, a porous
+  //     material with no membrane mechanism absorbs very little regardless
+  //     of surface texture -- the same reason suspended acoustic ceiling
+  //     tile is weak in this range (see WALL_MATERIALS.suspendedTile).
   //   thickCarpet: heavy carpet on a proper pad (40oz hairfelt/foam rubber)
-  //     -- alpha ~0.08-0.10 @125Hz. Counterintuitively LOWER than
-  //     thinCarpet -- at bass frequencies carpet's absorption is governed by
-  //     whether there's a compliant backing (a pad), not pile height, so
-  //     "thicker pile" alone doesn't mean "more bass absorption" the way it
-  //     does at higher frequencies.
-  // Previous defaults (alpha 0.36/0.84/0.98) were wildly too absorptive,
-  // especially for carpet -- carpet is fundamentally a high-frequency
-  // absorber and does very little in the bass range this app models. Flat
-  // scalars (not frequency-dependent), unlike the wall/ceiling materials --
-  // real low-frequency carpet/floor data is sparse below 125Hz, so a single
-  // representative value is what's practical here.
-  const FLOOR_MATERIALS = { hardwood: 0.15, thinCarpet: 0.17, thickCarpet: 0.10 };
+  //     -- alpha ~0.08 @125Hz. Only modestly higher than thinCarpet despite
+  //     the pad -- carpet is fundamentally a high-frequency absorber, and
+  //     pile/pad thickness doesn't buy much at bass the way it does higher up.
+  // An earlier pass here had thinCarpet ABOVE hardwood specifically to make
+  // a hard floor read as more reflective than any carpet -- that matches
+  // intuition at the frequencies carpet is actually good at, but gets the
+  // bass-specific relationship backwards for the same reason the
+  // suspended-tile ceiling bug did (see WALL_MATERIALS.suspendedTile's
+  // comment): the published data says hardwood's membrane-flex mechanism
+  // beats carpet's weak porous absorption at bass, not the other way around.
+  // Flat scalars (not frequency-dependent), unlike the wall/ceiling
+  // materials -- real low-frequency carpet/floor data is sparse below
+  // 125Hz, so a single representative value is what's practical here.
+  const FLOOR_MATERIALS = { hardwood: 0.15, thinCarpet: 0.06, thickCarpet: 0.10 };
 
   let room = { w: 18, d: 13.5, h: 8 };
   let sources = [];
