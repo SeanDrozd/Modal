@@ -2014,15 +2014,43 @@
     }
 
     for(const p of pts) drawWallDists(p.x, p.y, p.px, p.py, offX, offY, scale, p.color);
-    drawWallDists(primaryRow().x, primaryRow().y, lx, ly, offX, offY, scale, '#f5d547');
+    // Wall-distance label for every row's own center point (not every seat) --
+    // rank doesn't gate this, just the marker/label opacity below.
+    for(const row of listenerRows){
+      const rlx = offX + row.x*scale, rly = offY + row.y*scale;
+      drawWallDists(row.x, row.y, rlx, rly, offX, offY, scale, '#f5d547');
+    }
 
     for(const p of pts) drawPoint(p.x, p.y, offX, offY, scale, p.color, labelFor(p.name), p.enabled);
-    ctx.strokeStyle = '#f5d547';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(lx-14, ly-14); ctx.lineTo(lx+14, ly+14);
-    ctx.moveTo(lx+14, ly-14); ctx.lineTo(lx-14, ly+14);
-    ctx.stroke();
+
+    // Every row's marker: the center point as an "X" cross (matching the old
+    // single-listener marker style exactly for rank 1), non-center seats
+    // (when seats>1) as small dots, and the row's own name -- lower-ranked
+    // rows fade out (RoomPhysics.rowRankWeight, floored so a rank-4 row is
+    // still legible, not invisible) as a visual cue for "matters less."
+    listenerRows.forEach((row, rank) => {
+      const alpha = Math.max(0.35, RoomPhysics.rowRankWeight(rank));
+      const seats = RoomPhysics.rowSeatPositions(row);
+      for(const seat of seats){
+        if(seat.offsetIndex === 0) continue; // the center seat is drawn as the row's own "X" cross below
+        const spx = offX + seat.x*scale, spy = offY + seat.y*scale;
+        ctx.fillStyle = `rgba(245,213,71,${alpha*0.7})`;
+        ctx.beginPath();
+        ctx.arc(spx, spy, 5, 0, Math.PI*2);
+        ctx.fill();
+      }
+      const rlx = offX + row.x*scale, rly = offY + row.y*scale;
+      ctx.strokeStyle = `rgba(245,213,71,${alpha})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(rlx-14, rly-14); ctx.lineTo(rlx+14, rly+14);
+      ctx.moveTo(rlx+14, rly-14); ctx.lineTo(rlx-14, rly+14);
+      ctx.stroke();
+      ctx.fillStyle = `rgba(245,213,71,${alpha})`;
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(row.name, rlx + 18, rly - 16);
+    });
 
     // facing direction + ear positions, so the head orientation used for the
     // ear-diff readout is visible, not just a number in the sidebar
@@ -2893,7 +2921,7 @@
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
 
   // ---- Dragging ----
-  let dragTarget = null; // 'listener', source id, 'panel:<id>', 'opening:<id>', or null
+  let dragTarget = null; // source id, listenerRow id, or null -- ids are unique across both (shared nextId counter)
 
   function getRoomCoords(evt){
     const rect = canvas.getBoundingClientRect();
@@ -2946,7 +2974,14 @@
     for(const s of sources){
       if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < 0.8) return s.id;
     }
-    if(Math.sqrt((x-primaryRow().x)**2+(y-primaryRow().y)**2) < 0.8) return 'listener';
+    // Only a row's own center point is hit-testable/draggable -- individual
+    // seats are derived (RoomPhysics.rowSeatPositions), not independently
+    // placed. Ids come from the same shared `nextId` counter as sources/
+    // zones, so a matched id is unambiguous -- moveTarget below checks
+    // `sources` first, then `listenerRows`, same as any other id-keyed list.
+    for(const r of listenerRows){
+      if(Math.sqrt((x-r.x)**2+(y-r.y)**2) < 0.8) return r.id;
+    }
     return null;
   }
 
@@ -3043,8 +3078,9 @@
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
     const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
-    if(dragTarget === 'listener'){ primaryRow().x = cx; primaryRow().y = cy; }
-    else { const s = sources.find(s=>s.id===dragTarget); if(s){ s.x = cx; s.y = cy; } }
+    const s = sources.find(s=>s.id===dragTarget);
+    if(s){ s.x = cx; s.y = cy; }
+    else { const r = listenerRows.find(r=>r.id===dragTarget); if(r){ r.x = cx; r.y = cy; } }
     scheduleDraw();
   }
   canvas.addEventListener('mousedown', (e) => {
