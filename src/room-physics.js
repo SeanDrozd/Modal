@@ -450,6 +450,43 @@
     return { leftDb, rightDb, diffDb: Math.abs(leftDb - rightDb), earPositions: ears };
   }
 
+  // ---- Multi-seat listening rows (e.g. a couch, a row of recliners) ----
+  // Generalizes earPositions' perpendicular-offset geometry from a fixed
+  // 2-ear pair to N seats at configurable spacing, using the exact same
+  // facing convention (0deg = -y, rightward perpendicular = (cos,sin)).
+  // row: { x, y, z, facing, seats, spacingFt }. Seats are generated
+  // symmetrically around the row's own (x,y) center point -- a 1-seat row
+  // collapses to exactly that center point (offsetIndex 0), matching the
+  // pre-multi-row single-listener case exactly.
+  function rowSeatPositions(row){
+    const n = Math.max(1, row.seats | 0);
+    const rad = (row.facing ?? 0) * Math.PI / 180;
+    const dx = Math.cos(rad), dy = Math.sin(rad);
+    const positions = [];
+    for(let i = 0; i < n; i++){
+      const offsetIndex = i - (n - 1) / 2; // 0 = center (or the two middle seats, for even n)
+      const dist = offsetIndex * row.spacingFt;
+      positions.push({ x: row.x + dx*dist, y: row.y + dy*dist, z: row.z, offsetIndex });
+    }
+    return positions;
+  }
+
+  // ---- Listening-row/seat importance weighting ----
+  // rank: 0-based index into an ordered list of rows (0 = rank 1, most
+  // important) -- geometric falloff, so each successively lower-ranked row
+  // still counts, just half as much as the one before it.
+  function rowRankWeight(rank){
+    return Math.pow(0.5, rank);
+  }
+  // offsetIndex/seats: as returned by rowSeatPositions -- the center seat(s)
+  // get full weight, tapering linearly to half weight at the row's own edges.
+  // A 1-seat row (maxOffset 0) always gets full weight.
+  function seatCenterWeight(offsetIndex, seats){
+    const maxOffset = (seats - 1) / 2;
+    if(!(maxOffset > 0)) return 1;
+    return 1 - 0.5 * (Math.abs(offsetIndex) / maxOffset);
+  }
+
   // ---- Axial room mode frequencies for one dimension ----
   function axialModes(dimFt, maxOrder, maxFreq){
     const dimM = dimFt * FT_TO_M;
@@ -608,6 +645,15 @@
   //
   // Returns a single scalar score where HIGHER IS BETTER, plus the raw per-listener
   // per-frequency dB values for diagnostics/visualization.
+  //
+  // Each entry in listenerPositions may carry an optional `weight` (0..1,
+  // typically rowRankWeight(rank)*seatCenterWeight(...) for a multi-row
+  // listening setup) expressing how much that listener matters relative to
+  // the others -- e.g. a rank-2 row's edge seat vs. the rank-1 row's center
+  // seat. Omitted weights default to 1, which makes every formula below
+  // reduce EXACTLY to its pre-weighting form when no caller passes weights --
+  // this is a hard backward-compatibility requirement, not just a default.
+  const RELIEF_DB = 15; // nullAvoidance: how much a fully-unimportant (weight 0) listener's null is forgiven
   function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
@@ -628,22 +674,41 @@
       perListenerDb.push(dbRow);
     }
 
-    // Per-listener stats: mean level and standard deviation (flatness) across frequency.
-    const listenerStats = perListenerDb.map(dbRow => {
+    // Per-listener stats: mean level and standard deviation (flatness) across
+    // frequency, plus that listener's own importance weight (defaults to 1).
+    const listenerStats = perListenerDb.map((dbRow, i) => {
       const mean = dbRow.reduce((a,b) => a+b, 0) / dbRow.length;
       const variance = dbRow.reduce((a,b) => a + (b-mean)*(b-mean), 0) / dbRow.length;
       const stdDev = Math.sqrt(variance);
       const minDb = Math.min(...dbRow);
-      return { mean, stdDev, minDb };
+      const weight = listenerPositions[i].weight ?? 1;
+      return { mean, stdDev, minDb, weight };
     });
 
-    // Combine across listeners: average mean level, but penalize by the WORST
-    // listener's flatness and worst listener's minimum (so one bad seat can't be
-    // hidden by averaging against good ones — matches "shouldn't be great at one
-    // seat and terrible at another").
-    const avgMean = listenerStats.reduce((a,s) => a+s.mean, 0) / listenerStats.length;
-    const worstStdDev = Math.max(...listenerStats.map(s => s.stdDev));
-    const worstMinDb = Math.min(...listenerStats.map(s => s.minDb));
+    // Combine across listeners: WEIGHTED average mean level (a low-weight
+    // listener's level counts for less), but still penalize by the true WORST
+    // listener's flatness and true worst listener's minimum -- weighting never
+    // hides a genuinely bad seat by averaging it away, it only scales how much
+    // that seat's badness is allowed to drag the score down (see below).
+    // No `|| 1` fallback on totalWeight, and no reduce-with-empty-array shortcut
+    // below -- an empty listenerPositions (or an all-zero-weight scene) should
+    // degrade to the same graceful NaN the rest of this function already
+    // produces for degenerate input (see the empty-input test), not a
+    // divide-by-a-fabricated-default or a crash on an undefined initial value.
+    const totalWeight = listenerStats.reduce((a,s) => a+s.weight, 0);
+    const avgMean = listenerStats.reduce((a,s) => a + s.mean*s.weight, 0) / totalWeight;
+    // Found via a plain loop (not Math.max(...) + a strict-equality re-find) so
+    // this stays correct when a stat is NaN (e.g. an empty freqList) -- NaN
+    // comparisons are always false, which would make a find-by-equality miss
+    // entirely; a `>`/`<` loop just harmlessly leaves the running entry as-is
+    // in that case; an empty listenerPositions falls back to the same
+    // -Infinity/+Infinity/weight-1 defaults Math.max/min(...[]) produced before.
+    let worstStdDevEntry = listenerStats.length ? listenerStats[0] : { stdDev: -Infinity, weight: 1 };
+    for(const s of listenerStats){ if(s.stdDev > worstStdDevEntry.stdDev) worstStdDevEntry = s; }
+    let worstMinDbEntry = listenerStats.length ? listenerStats[0] : { minDb: Infinity, weight: 1 };
+    for(const s of listenerStats){ if(s.minDb < worstMinDbEntry.minDb) worstMinDbEntry = s; }
+    const worstStdDev = worstStdDevEntry.stdDev;
+    const worstMinDb = worstMinDbEntry.minDb;
 
     // Score weights: level matters, but flatness (avoiding deep nulls) matters more —
     // a loud position with a severe null at one frequency is a worse real-world
@@ -658,9 +723,17 @@
     // across room sizes/field methods (e.g. the modal method's overall
     // amplitude scale differs from a free-field convention), so anchoring the
     // penalty to the scene's own average keeps this scale-invariant.
+    //
+    // Both penalties are scaled by the OFFENDING listener's own weight -- a
+    // bad null/rough response at a low-weight seat (e.g. a rank-3 row's edge
+    // seat) barely dents the score; the identical problem at the rank-1 row's
+    // center seat (weight 1) hits at full strength. 'nullAvoidance' mode has
+    // no penalty term to scale (its score IS the raw worst dB value), so it's
+    // given the analogous relief additively instead -- a low-weight listener's
+    // null is partially forgiven (up to RELIEF_DB) rather than discounted.
     const score = mode === 'nullAvoidance'
-      ? worstMinDb - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
-      : avgMean - (worstStdDev * 1.5) - Math.max(0, avgMean - worstMinDb - 20) * 0.5;
+      ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
+      : avgMean - (worstStdDev * 1.5 * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight;
 
     return {
       score,
@@ -807,6 +880,9 @@
     timeAlignDelays,
     earPositions,
     fieldDbAtEars,
+    rowSeatPositions,
+    rowRankWeight,
+    seatCenterWeight,
     isNearNull,
     nullAvoidanceSpreadPenalty,
     scoreSubPosition,

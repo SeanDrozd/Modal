@@ -1265,5 +1265,130 @@ test('DEMONSTRATION: two-ear dB difference is negligible at bass frequencies, mo
   assert.ok(trebleDiff > bassDiff, `expected MORE ear disagreement at 400Hz than 40Hz: bass=${bassDiff.toFixed(3)}dB treble=${trebleDiff.toFixed(3)}dB`);
 });
 
+console.log('\n-- rowSeatPositions / rowRankWeight / seatCenterWeight (multi-row listening positions) --');
+
+test('a 1-seat row collapses to exactly the row\'s own center point', () => {
+  const row = { x: 5, y: 7, z: 3.5, facing: 30, seats: 1, spacingFt: 2 };
+  const seats = P.rowSeatPositions(row);
+  assert.strictEqual(seats.length, 1);
+  approx(seats[0].x, 5, 1e-9);
+  approx(seats[0].y, 7, 1e-9);
+  approx(seats[0].z, 3.5, 1e-9);
+  approx(seats[0].offsetIndex, 0, 1e-9);
+});
+
+test('an odd seat count generates a true center seat at offsetIndex 0, symmetric neighbors on either side', () => {
+  const row = { x: 9, y: 6, z: 3.5, facing: 0, seats: 3, spacingFt: 2 };
+  const seats = P.rowSeatPositions(row);
+  assert.strictEqual(seats.length, 3);
+  const offsets = seats.map(s => s.offsetIndex);
+  assert.deepStrictEqual(offsets, [-1, 0, 1]);
+  // facing 0deg -> perpendicular offset is along x (matches earPositions' convention)
+  approx(seats[1].x, 9, 1e-9, 'center seat unchanged');
+  approx(seats[0].x, 9 - 2, 1e-9, 'left neighbor offset by spacingFt');
+  approx(seats[2].x, 9 + 2, 1e-9, 'right neighbor offset by spacingFt');
+  for(const s of seats) approx(s.y, 6, 1e-9, 'facing 0deg: y unchanged for every seat');
+});
+
+test('an even seat count has no single center seat -- the two middle seats straddle offsetIndex 0 symmetrically', () => {
+  const row = { x: 0, y: 0, z: 3, facing: 0, seats: 4, spacingFt: 1.5 };
+  const seats = P.rowSeatPositions(row);
+  const offsets = seats.map(s => s.offsetIndex);
+  assert.deepStrictEqual(offsets, [-1.5, -0.5, 0.5, 1.5]);
+});
+
+test('seats offset perpendicular to facing direction, matching earPositions\' convention', () => {
+  const row = { x: 9, y: 6, z: 3.5, facing: 90, seats: 2, spacingFt: 2 };
+  const seats = P.rowSeatPositions(row);
+  // At facing=90deg, earPositions offsets perpendicular to facing along y (not x) --
+  // rowSeatPositions should agree since it reuses the same dx=cos,dy=sin convention.
+  approx(seats[0].x, seats[1].x, 1e-9, 'facing 90deg: seats should share x');
+  assert.notStrictEqual(seats[0].y, seats[1].y, 'facing 90deg: seats should differ in y');
+});
+
+test('rowRankWeight halves for each successive rank, rank 0 (rank 1) is full weight', () => {
+  approx(P.rowRankWeight(0), 1, 1e-9);
+  approx(P.rowRankWeight(1), 0.5, 1e-9);
+  approx(P.rowRankWeight(2), 0.25, 1e-9);
+});
+
+test('seatCenterWeight is 1.0 at the center seat, 0.5 at the row\'s own edges, and 1 for a 1-seat row', () => {
+  approx(P.seatCenterWeight(0, 1), 1, 1e-9, 'single-seat row always full weight');
+  approx(P.seatCenterWeight(0, 3), 1, 1e-9, 'true center seat of a 3-seat row');
+  approx(P.seatCenterWeight(1, 3), 0.5, 1e-9, 'edge seat of a 3-seat row');
+  approx(P.seatCenterWeight(-1, 3), 0.5, 1e-9, 'edge seat is symmetric');
+});
+
+console.log('\n-- scoreSubPosition: per-listener weighting (multi-row listening positions) --');
+
+test('REGRESSION: omitting weight on every listener reproduces the exact pre-weighting score', () => {
+  // Same scene as an existing worstMinDb-penalty test above, but this test's
+  // entire point is confirming the weighted formula collapses back to the
+  // literal pre-weighting one when no listener specifies a weight at all --
+  // the load-bearing backward-compatibility guarantee for this change.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const source = { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const listeners = [{ x: 9, y: 6, z: 3.5 }, { x: 3, y: 10, z: 3.5 }];
+  const freqs = [40, 60, 80, 100];
+  const result = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, [source], room, freqs, listeners, ctx);
+  const expected = result.avgMean - (result.worstStdDev * 1.5) - Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
+  approx(result.score, expected, 1e-9, 'unweighted score should exactly match the original formula');
+});
+
+test('a severe null at a low-weight listener drags the balanced score down far less than the same null at weight 1', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.985 }; // near-rigid, light damping -- keeps the antiphase null sharp
+  const freq0 = 70;
+  const lambda = P.C / freq0;
+  const sepFt = (lambda / 2) / P.FT_TO_M;
+  const halfPeriodMs = (1000 / (2 * freq0)) * 0.999;
+  const otherSources = [{ x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const candidatePos = { x: 9 + sepFt/2, y: 6, z: 3, delayMs: halfPeriodMs };
+  const freqs = [freq0 * 0.4, freq0, freq0 * 1.7]; // freq0 is the null; the others are well off it
+  const nulledListener = { x: 9, y: 6, z: 3.5 }; // the listener that sits at the null
+
+  const fullWeight = P.scoreSubPosition(candidatePos, otherSources, room, freqs, [{ ...nulledListener, weight: 1 }], ctx);
+  const lowWeight = P.scoreSubPosition(candidatePos, otherSources, room, freqs, [{ ...nulledListener, weight: 0.1 }], ctx);
+  assert.ok(lowWeight.score > fullWeight.score,
+    `expected the low-weight listener's identical null to cost the score less: fullWeight=${fullWeight.score.toFixed(1)} lowWeight=${lowWeight.score.toFixed(1)}`);
+});
+
+test('a severe null at a low-weight listener drags the nullAvoidance score down far less than the same null at weight 1', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.985 };
+  const freq0 = 70;
+  const lambda = P.C / freq0;
+  const sepFt = (lambda / 2) / P.FT_TO_M;
+  const halfPeriodMs = (1000 / (2 * freq0)) * 0.999;
+  const otherSources = [{ x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const candidatePos = { x: 9 + sepFt/2, y: 6, z: 3, delayMs: halfPeriodMs };
+  const freqs = [freq0 * 0.4, freq0, freq0 * 1.7];
+  const nulledListener = { x: 9, y: 6, z: 3.5 };
+
+  const fullWeight = P.scoreSubPosition(candidatePos, otherSources, room, freqs, [{ ...nulledListener, weight: 1 }], ctx, 'nullAvoidance');
+  const lowWeight = P.scoreSubPosition(candidatePos, otherSources, room, freqs, [{ ...nulledListener, weight: 0.1 }], ctx, 'nullAvoidance');
+  assert.ok(lowWeight.score > fullWeight.score,
+    `expected the low-weight listener's null to be more forgiven in nullAvoidance mode too: fullWeight=${fullWeight.score.toFixed(1)} lowWeight=${lowWeight.score.toFixed(1)}`);
+});
+
+test('avgMean is a true weighted average across listeners, not a plain average', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const source = { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  const freqs = [40, 60, 80];
+  const candidatePos = { x: 9, y: 6.75, z: 1 };
+  const listeners = [{ x: 9, y: 6, z: 3.5 }, { x: 3, y: 10, z: 3.5 }];
+
+  const unweighted = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx);
+  const weighted = P.scoreSubPosition(candidatePos, [source], room, freqs, [
+    { ...listeners[0], weight: 1 },
+    { ...listeners[1], weight: 0 } // fully discounted -- should behave as if only listener 0 existed for avgMean
+  ], ctx);
+  const [m0, m1] = unweighted.listenerStats.map(s => s.mean);
+  approx(weighted.avgMean, m0, 1e-6, 'zero-weighting the second listener should leave avgMean at exactly the first listener\'s own mean');
+  assert.notStrictEqual(weighted.avgMean, unweighted.avgMean, 'weighted avgMean should generally differ from the plain average');
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);
