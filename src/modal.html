@@ -1597,16 +1597,36 @@
   // runSubOptimizer) -- it doesn't depend on the candidate position, so
   // recomputing it per grid cell (hundreds to thousands of times per round)
   // was pure repeated work; see scoreSubPosition's precomputedModes comment.
-  function runOneOptimizerRound(otherSourceList, freqList, listenerPositions, subHeight, step, excludePoints, minSeparationFt, modes){
+  //
+  // Async and yields to the browser every ROUND_CHUNK_SIZE candidates (an
+  // animation-frame pause, same mechanism runSubOptimizer already used
+  // BETWEEN rounds) -- without this, a single round is one long synchronous
+  // call that freezes the whole tab for its entire duration (which was the
+  // actual cause of "the button hangs for a few seconds": for a 1-sub
+  // search there's only ever one round, so the between-round yield never
+  // even got a chance to run). Chunking doesn't reduce total work, but it
+  // lets the browser paint/respond during the search instead of locking up,
+  // and lets onProgress (optional) drive a live percentage in the status text.
+  const ROUND_CHUNK_SIZE = 150;
+  async function runOneOptimizerRound(otherSourceList, freqList, listenerPositions, subHeight, step, excludePoints, minSeparationFt, modes, onProgress){
     const candidates = [];
     let best = null;
-    for(let x = step/2; x < room.w; x += step){
-      for(let y = step/2; y < room.d; y += step){
+    const xs = []; for(let x = step/2; x < room.w; x += step) xs.push(x);
+    const ys = []; for(let y = step/2; y < room.d; y += step) ys.push(y);
+    const totalGridCells = xs.length * ys.length;
+    let scanned = 0;
+    for(const x of xs){
+      for(const y of ys){
+        scanned++;
         if(!isCandidatePositionValid(x, y, excludePoints, minSeparationFt)) continue;
         const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, excludePoints, modes);
         const entry = { x, y, ...result };
         candidates.push(entry);
         if(best === null || entry.score > best.score) best = entry;
+        if(scanned % ROUND_CHUNK_SIZE === 0){
+          if(onProgress) onProgress(scanned / totalGridCells);
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
       }
     }
     return { best, allCandidates: candidates };
@@ -1661,11 +1681,14 @@
     let lastRound = null;
 
     for(let i = 0; i < numSubs; i++){
-      status.textContent = `Optimizing sub ${i+1} of ${numSubs}...`;
-      // yield to the browser so the status text actually paints between rounds
+      const subLabel = numSubs > 1 ? `sub ${i+1} of ${numSubs}` : 'position';
+      status.textContent = `Optimizing ${subLabel}...`;
+      // yield to the browser so the status text actually paints before the
+      // (now-chunked, but still potentially multi-second) round starts
       await new Promise(resolve => requestAnimationFrame(resolve));
 
-      const round = runOneOptimizerRound(currentOtherSources, freqList, listenerPositions, subHeight, step, placedPositions, minSeparationFt, modes);
+      const round = await runOneOptimizerRound(currentOtherSources, freqList, listenerPositions, subHeight, step, placedPositions, minSeparationFt, modes,
+        (fraction) => { status.textContent = `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`; });
       lastRound = round;
       if(round.best === null) break; // no valid candidates left; stop with whatever was placed so far
 
