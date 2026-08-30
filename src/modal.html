@@ -223,17 +223,19 @@
         <label>Ceiling height</label>
         <span id="roomHField"></span>
       </div>
-      <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft &mdash; beyond that, this tool's single listening position and 1-2 sub optimizer stop being a meaningful fit for the room, well before the modal solution's own math or GPU limits would actually break.</div>
-      <div class="row" style="margin-top:8px;">
-        <label>Listener ear height</label>
-        <span id="listenerZField"></span>
-      </div>
-      <div class="row-stacked">
-        <div class="row-stacked-head"><label>Listener facing (&deg;)</label><span class="val" id="listenerFacingVal">0&deg;</span></div>
-        <input type="range" id="listenerFacing" min="0" max="359" step="1" value="0">
-      </div>
-      <div class="hint">0&deg; faces into the room from the front wall; used to place the two ears (~17cm apart) for the ear-difference readout below the map.</div>
+      <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft &mdash; beyond that, this tool's 1-2 sub optimizer and handful of ranked listening positions stop being a meaningful fit for the room, well before the modal solution's own math or GPU limits would actually break.</div>
       <div id="modalInfo"></div>
+    </div>
+  </div>
+
+  <div class="section" id="listenerRowsSection">
+    <div class="section-title">
+      <span class="section-title-label"><span class="chevron">&#9662;</span>Listening Positions</span>
+      <button id="addListenerRowBtn" class="small">+ Add row</button>
+    </div>
+    <div class="section-body">
+      <div id="listenerRowsList"></div>
+      <div class="hint">A "row" is a group of seats (a couch, a row of recliners) &mdash; rank is just this list's order (drag/reorder with the arrows below): the top row matters most, and it fades from there. Within a row, the center seat matters most, tapering toward the ends. Position is set by dragging each row's marker on the map.</div>
     </div>
   </div>
 
@@ -479,7 +481,19 @@
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
   let zoneDrawMode = null; // null | 'offlimit' | 'preferred' -- which kind of rect the next drag creates
   let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
-  let listener = { x: 9, y: 9, z: 3.5, facing: 0 };
+  // Listening positions: an ordered list of "rows" (a couch, a row of
+  // recliners) -- array order IS rank (index 0 = rank 1, most important; see
+  // RoomPhysics.rowRankWeight). Each row's seats are generated from one
+  // center point + facing + spacing via RoomPhysics.rowSeatPositions, not
+  // independently placed. Starts empty like `sources` -- populated by
+  // defaultListenerRows()/loadConfig, not a hardcoded literal here, since a
+  // hardcoded id would collide with `nextId` before it's declared below.
+  let listenerRows = [];
+  // The rank-1 row is still "the" listener for every feature that only
+  // supports (or should only show) one position: the heatmap plane height,
+  // the frequency-response chart, the ear-diff readout, the stereo-triangle
+  // guide, and "time-align to listener".
+  function primaryRow(){ return listenerRows[0]; }
   let freq = 60;
   let wallAbsorption = 0.06; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
   let wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
@@ -581,26 +595,24 @@
   // upper end is a deliberate ceiling on the modal solution's own mode count
   // (which grows roughly linearly with volume) -- a large-but-real room
   // (e.g. 50x70x16ft) already produces 5000+ modes and, more importantly,
-  // this app's whole design (one exact listening position, a 1-2 sub
-  // optimizer) stops being a meaningful tool well before the physics or GPU
-  // mode cap (see field-render.js's MAX_MODES) would actually break --
+  // this app's whole design (a handful of ranked listening positions, a 1-2
+  // sub optimizer) stops being a meaningful tool well before the physics or
+  // GPU mode cap (see field-render.js's MAX_MODES) would actually break --
   // a much bigger room has that many more potential real listening spots
-  // that a single optimized point can't account for. 30x30ft/15ft ceiling
-  // comfortably covers real dedicated home theaters and large great rooms
-  // (which rarely exceed ~24x15ft/12ft even in premium builds) while
-  // keeping the tool's one-listener model meaningful.
+  // than a few ranked rows can account for. 30x30ft/15ft ceiling comfortably
+  // covers real dedicated home theaters and large great rooms (which rarely
+  // exceed ~24x15ft/12ft even in premium builds).
   const ROOM_MAX_WD_FT = 30;
   const ROOM_MAX_H_FT = 15;
 
-  // Renders the Room and Listener height length fields from current state
-  // (room.w/d/h, listener.z) and wires their change handlers -- called from
-  // loadConfig (so every preset load / reset-to-defaults / fresh-install path
-  // already covers this) and from the units toggle.
+  // Renders the Room length fields from current state (room.w/d/h) and wires
+  // their change handlers -- called from loadConfig (so every preset load /
+  // reset-to-defaults / fresh-install path already covers this) and from the
+  // units toggle.
   function renderRoomDimFields(){
     document.getElementById('roomWField').innerHTML = lengthFieldHtml('roomW', room.w);
     document.getElementById('roomDField').innerHTML = lengthFieldHtml('roomD', room.d);
     document.getElementById('roomHField').innerHTML = lengthFieldHtml('roomH', room.h);
-    document.getElementById('listenerZField').innerHTML = lengthFieldHtml('listenerZ', listener.z);
     wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => {
       room.w = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 16)); draw();
     });
@@ -609,11 +621,7 @@
     });
     wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => {
       room.h = Math.min(ROOM_MAX_H_FT, Math.max(6, ft || 8));
-      if(listener.z > room.h) listener.z = room.h;
-      draw();
-    });
-    wireLengthField(document.getElementById('listenerZField'), 'listenerZ', (ft) => {
-      listener.z = Math.max(0, Math.min(room.h, ft || 3.5));
+      for(const r of listenerRows){ if(r.z > room.h) r.z = room.h; }
       draw();
     });
   }
@@ -653,6 +661,15 @@
     ];
   }
 
+  // A single rank-1 row, one seat, at the same position/facing the app's old
+  // single `listener` always defaulted to -- so a fresh install (or a reset
+  // to defaults) looks and behaves identically to before this feature existed.
+  function defaultListenerRows(){
+    return [
+      { id: nextId++, name: 'Row 1', x: 9, y: 9, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }
+    ];
+  }
+
   // A sensible starting off-limits zone for sub optimization: excludes the
   // center of the room (most subs go near walls/corners in practice, not in
   // the middle of the floor), sized as a fraction of room dimensions so it
@@ -678,7 +695,7 @@
       sourcesEnabled,
       offLimitZones: JSON.parse(JSON.stringify(offLimitZones)),
       preferredZones: JSON.parse(JSON.stringify(preferredZones)),
-      listener: JSON.parse(JSON.stringify(listener)),
+      listenerRows: JSON.parse(JSON.stringify(listenerRows)),
       wallMaterialKeys: JSON.parse(JSON.stringify(wallMaterialKeys)),
       wallCustomAbsorption: JSON.parse(JSON.stringify(wallCustomAbsorption)),
       ceilingMaterialKey, ceilingCustomAbsorption,
@@ -724,7 +741,23 @@
     for(const s of sources){ if(s.id >= nextId) nextId = s.id + 1; }
     for(const z of offLimitZones){ if(z.id >= nextId) nextId = z.id + 1; }
     for(const z of preferredZones){ if(z.id >= nextId) nextId = z.id + 1; }
-    listener = JSON.parse(JSON.stringify(cfg.listener));
+    // Presets saved before multi-row listening positions store the OLD single
+    // `listener` shape ({x,y,z,facing}, no id/name/seats/spacingFt) -- migrate
+    // it into an equivalent single rank-1/1-seat row rather than silently
+    // dropping it (loadConfig previously had no such fallback for `listener`
+    // at all -- an absent field would have thrown).
+    if(cfg.listenerRows){
+      listenerRows = JSON.parse(JSON.stringify(cfg.listenerRows));
+    } else if(cfg.listener){
+      listenerRows = [{
+        id: nextId++, name: 'Row 1',
+        x: cfg.listener.x, y: cfg.listener.y, z: cfg.listener.z,
+        facing: cfg.listener.facing ?? 0, seats: 1, spacingFt: 2
+      }];
+    } else {
+      listenerRows = defaultListenerRows();
+    }
+    for(const r of listenerRows){ if(r.id >= nextId) nextId = r.id + 1; }
     // Older presets predate per-wall materials -- default every wall to
     // 'drywallInsulated' (same as a fresh install) rather than leaving it unset.
     wallMaterialKeys = JSON.parse(JSON.stringify(cfg.wallMaterialKeys || { left:'drywallInsulated', right:'drywallInsulated', front:'drywallInsulated', back:'drywallInsulated' }));
@@ -750,8 +783,6 @@
     syncFloorMaterialDropdown();
     document.getElementById('freq').value = freq;
     document.getElementById('freqVal').textContent = freq + ' Hz';
-    document.getElementById('listenerFacing').value = listener.facing ?? 0;
-    document.getElementById('listenerFacingVal').textContent = (listener.facing ?? 0) + '\u00b0';
     document.getElementById('sourcesMasterToggle').checked = sourcesEnabled;
     // resolutionScale and the dB color range are intentionally NOT part of the
     // saved config (see makeConfig) -- they're view/device preferences, not
@@ -763,6 +794,7 @@
     document.getElementById('dbMax').value = dbMax;
     syncLegendDbRange();
     renderSrcList();
+    renderListenerRowsList();
     renderWallList();
     syncCeilingUI();
     renderZoneList();
@@ -846,7 +878,7 @@
     offLimitZones = defaultOffLimitZones(room);
     preferredZones = [];
     optimizerResult = null;
-    listener = { x: 9, y: 9, z: 3.5, facing: 0 };
+    listenerRows = defaultListenerRows();
     freq = 60;
     wallAbsorption = 0.06;
     wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
@@ -1153,6 +1185,86 @@
       });
     });
   }
+  // ---- Listening position rows ("a couch", "a row of recliners") ----
+  // Same id-keyed add/remove/reorder pattern as renderSrcList() above --
+  // array order IS rank (top of the list = rank 1, most important; see
+  // RoomPhysics.rowRankWeight). A row's (x,y) is set by dragging its marker
+  // on the map (see hitTest/moveTarget), not a sidebar field, matching how
+  // sources are positioned.
+  const LISTENER_ROW_MAX_ROWS = 4;
+  const LISTENER_ROW_MAX_SEATS = 5;
+  function renderListenerRowsList(){
+    const list = document.getElementById('listenerRowsList');
+    list.innerHTML = '';
+    listenerRows.forEach((row, idx) => {
+      const block = document.createElement('div');
+      block.className = 'src-block';
+      block.innerHTML = `
+        <div class="src-label">
+          <div class="name-wrap">
+            <span class="dot" style="background:#f5d547"></span>
+            <input type="text" data-field="name" value="${escapeHtml(row.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:13.5px;width:100%;">
+          </div>
+          ${reorderButtonsHtml(idx, listenerRows.length)}
+        </div>
+        <div class="row"><label>Seats</label>
+          <input type="number" data-field="seats" min="1" max="${LISTENER_ROW_MAX_SEATS}" step="1" value="${row.seats}" style="width:52px;">
+        </div>
+        <div class="row" data-role="spacingRow" style="display:${row.seats > 1 ? 'flex' : 'none'};"><label>Seat spacing</label>
+          <input type="number" data-field="spacingFt" min="0.5" max="6" step="0.5" value="${row.spacingFt}" style="width:52px;">
+          <span style="color:var(--text-dim);font-size:12.5px;">ft</span>
+        </div>
+        <div class="row-stacked">
+          <div class="row-stacked-head"><label>Facing (&deg;)</label><span class="val" data-out="facing">${row.facing}&deg;</span></div>
+          <input type="range" data-field="facing" min="0" max="359" step="1" value="${row.facing}">
+        </div>
+        <div class="row"><label>Ear height</label>
+          ${lengthFieldHtml('z', row.z)}
+        </div>
+      `;
+      list.appendChild(block);
+
+      block.querySelector('[data-field="name"]').addEventListener('input', function(){
+        row.name = this.value || ('Row '+row.id);
+        scheduleDraw();
+      });
+      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
+        if(listenerRows.length <= 1){ showStatus('Keep at least one listening position', false); return; }
+        listenerRows = listenerRows.filter(r => r.id !== row.id);
+        renderListenerRowsList();
+        draw();
+      });
+      block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
+        if(moveArrayItem(listenerRows, idx, -1)){ renderListenerRowsList(); scheduleDraw(); }
+      });
+      block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
+        if(moveArrayItem(listenerRows, idx, 1)){ renderListenerRowsList(); scheduleDraw(); }
+      });
+      const seatsInput = block.querySelector('[data-field="seats"]');
+      seatsInput.addEventListener('change', function(){
+        row.seats = Math.max(1, Math.min(LISTENER_ROW_MAX_SEATS, parseInt(this.value, 10) || 1));
+        this.value = row.seats;
+        block.querySelector('[data-role="spacingRow"]').style.display = row.seats > 1 ? 'flex' : 'none';
+        draw();
+      });
+      block.querySelector('[data-field="spacingFt"]').addEventListener('change', function(){
+        row.spacingFt = Math.max(0.5, Math.min(6, parseFloat(this.value) || 2));
+        this.value = row.spacingFt;
+        draw();
+      });
+      const facingInput = block.querySelector('[data-field="facing"]');
+      facingInput.addEventListener('input', function(){
+        row.facing = parseFloat(this.value);
+        block.querySelector('[data-out="facing"]').textContent = row.facing + '°';
+        scheduleDraw();
+      });
+      wireLengthField(block, 'z', (ft) => {
+        row.z = Math.max(0, Math.min(room.h, ft || 0));
+        draw();
+      });
+    });
+  }
+
   function escapeHtml(str){
     return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
@@ -1365,6 +1477,20 @@
     draw();
   });
 
+  document.getElementById('addListenerRowBtn').addEventListener('click', () => {
+    if(listenerRows.length >= LISTENER_ROW_MAX_ROWS){ showStatus(`Keep at most ${LISTENER_ROW_MAX_ROWS} listening positions`, false); return; }
+    const n = listenerRows.length;
+    listenerRows.push({
+      id: nextId++,
+      name: 'Row ' + (n + 1),
+      x: Math.min(room.w - 1, 2 + n*1.5),
+      y: Math.max(1, room.d - 1.5 - n*1.5),
+      z: 3.5, facing: 0, seats: 1, spacingFt: 2
+    });
+    renderListenerRowsList();
+    draw();
+  });
+
   document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
     const slope = parseInt(document.getElementById('bulkRolloffSelect').value, 10);
     sources.forEach(s => { s.rolloffDbPerOct = slope; });
@@ -1375,7 +1501,7 @@
   document.getElementById('timeAlignBtn').addEventListener('click', () => {
     const activeSources = sources.filter(s => s.enabled !== false);
     if(activeSources.length < 2){ showStatus('Need at least 2 active sources to time-align', false); return; }
-    const results = RoomPhysics.timeAlignDelays(activeSources, listener);
+    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
     const byId = new Map(results.map(r => [r.id, r.delayMs]));
     for(const s of sources){
       if(byId.has(s.id)) s.delayMs = Math.round(byId.get(s.id) * 10) / 10; // match the 0.1ms slider step
@@ -1502,7 +1628,17 @@
     for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
 
     const activeMains = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    const listenerPositions = [{ x: listener.x, y: listener.y, z: listener.z }];
+    // Flatten every row's seats into one weighted list -- rank (list order)
+    // and in-row seat position both scale how much that seat's score
+    // contributes (see RoomPhysics.scoreSubPosition's weighting).
+    const listenerPositions = [];
+    listenerRows.forEach((row, rank) => {
+      const seats = RoomPhysics.rowSeatPositions(row);
+      seats.forEach(seat => listenerPositions.push({
+        x: seat.x, y: seat.y, z: seat.z,
+        weight: RoomPhysics.rowRankWeight(rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seats.length)
+      }));
+    });
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than a fixed number that's too
     // strict in a small room or too loose in a large one. 25%/4ft floor
@@ -1669,7 +1805,7 @@
     const offX = margin + (plotW - w*scale)/2;
     const offY = margin + (plotH - d*scale)/2;
     const precomputed = precomputeField();
-    const pz = listener.z;
+    const pz = primaryRow().z;
 
     // Render once in debug mode so pixel readback reflects the raw dB encoding.
     renderFieldGPU({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH }, true);
@@ -1762,7 +1898,7 @@
   // (computeFieldAtPoint takes px/py already, so this is a thin wrapper — kept
   // separate so verifyGPUAgainstCPU's intent reads clearly at the call site).
   function fieldDbAtPoint(roomX, roomY, precomputed){
-    const { re, im } = computeFieldAtPoint(roomX, roomY, listener.z, precomputed);
+    const { re, im } = computeFieldAtPoint(roomX, roomY, primaryRow().z, precomputed);
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6) / 1.0);
   }
@@ -1781,7 +1917,7 @@
   // frequencies) so the fitted range covers whichever is showing.
   function autofitColorRange(){
     const precomputed = precomputeField();
-    const heatmapRange = sampleFieldDbRange(precomputed, room.w, room.d, listener.z);
+    const heatmapRange = sampleFieldDbRange(precomputed, room.w, room.d, primaryRow().z);
     let min = heatmapRange.min, max = heatmapRange.max;
     if(freqResponseData && freqResponseData.response){
       for(const r of freqResponseData.response){
@@ -1840,7 +1976,7 @@
     const offY = margin + (plotH - d*scale)/2;
 
     const precomputed = precomputeField();
-    const pz = listener.z;
+    const pz = primaryRow().z;
 
     const renderPath = renderPaths[effectiveMode];
     renderPath({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
@@ -1853,7 +1989,7 @@
     drawOptimizerWinner(offX, offY, scale);
     drawZones(offX, offY, scale);
 
-    const lx = offX + listener.x*scale, ly = offY + listener.y*scale;
+    const lx = offX + primaryRow().x*scale, ly = offY + primaryRow().y*scale;
 
     // Stereo-triangle guide: connects whichever two sources are explicitly
     // marked isMain (see the "Front L/R" checkbox in the source list) to the
@@ -1873,12 +2009,12 @@
       ctx.setLineDash([]);
       function distFt(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
       labelMid(mainPts[0].px,mainPts[0].py,mainPts[1].px,mainPts[1].py, formatLength(distFt(mainPts[0],mainPts[1])), 16);
-      labelMid(mainPts[0].px,mainPts[0].py,lx,ly, formatLength(distFt(mainPts[0],{x:listener.x,y:listener.y})), -16);
-      labelMid(mainPts[1].px,mainPts[1].py,lx,ly, formatLength(distFt(mainPts[1],{x:listener.x,y:listener.y})), 16);
+      labelMid(mainPts[0].px,mainPts[0].py,lx,ly, formatLength(distFt(mainPts[0],{x:primaryRow().x,y:primaryRow().y})), -16);
+      labelMid(mainPts[1].px,mainPts[1].py,lx,ly, formatLength(distFt(mainPts[1],{x:primaryRow().x,y:primaryRow().y})), 16);
     }
 
     for(const p of pts) drawWallDists(p.x, p.y, p.px, p.py, offX, offY, scale, p.color);
-    drawWallDists(listener.x, listener.y, lx, ly, offX, offY, scale, '#f5d547');
+    drawWallDists(primaryRow().x, primaryRow().y, lx, ly, offX, offY, scale, '#f5d547');
 
     for(const p of pts) drawPoint(p.x, p.y, offX, offY, scale, p.color, labelFor(p.name), p.enabled);
     ctx.strokeStyle = '#f5d547';
@@ -1890,7 +2026,7 @@
 
     // facing direction + ear positions, so the head orientation used for the
     // ear-diff readout is visible, not just a number in the sidebar
-    const facingRad = (listener.facing ?? 0) * Math.PI / 180;
+    const facingRad = (primaryRow().facing ?? 0) * Math.PI / 180;
     const faceDx = Math.sin(facingRad), faceDy = -Math.cos(facingRad); // 0deg = -y (toward front wall/mains, "up" on map)
     ctx.strokeStyle = 'rgba(245,213,71,0.6)';
     ctx.lineWidth = 2;
@@ -1907,7 +2043,7 @@
     ctx.lineTo(lx + Math.cos(ahAngle + 2.6)*8 + faceDx*22, ly + Math.sin(ahAngle + 2.6)*8 + faceDy*22);
     ctx.stroke();
 
-    const earsScreen = earPositions(listener);
+    const earsScreen = earPositions(primaryRow());
     for(const [ear, elabel] of [[earsScreen.left,'L'],[earsScreen.right,'R']]){
       const epx = offX + ear.x*scale, epy = offY + ear.y*scale;
       ctx.fillStyle = '#f5d547';
@@ -2161,7 +2297,7 @@
       document.getElementById('earDiffInfo').innerHTML = '';
       return;
     }
-    const ears = earPositions(listener);
+    const ears = earPositions(primaryRow());
     const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, freq);
     const rightDb = dbAtFreq(ears.right.x, ears.right.y, ears.right.z, activeSources, freq);
     const diff = Math.abs(leftDb - rightDb);
@@ -2340,7 +2476,7 @@
     const maxHz = dynamicFreqCeilingHz();
     const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
     const response = RoomPhysics.spatiallyAveragedResponse(
-      listener.x, listener.y, listener.z, freqs, activeSources, physicsCtx(),
+      primaryRow().x, primaryRow().y, primaryRow().z, freqs, activeSources, physicsCtx(),
       { radiusFt: 2, numPoints: 20 }
     );
     freqResponseData = { response, maxHz };
@@ -2713,11 +2849,6 @@
       }
     });
   });
-  document.getElementById('listenerFacing').addEventListener('input', function(){
-    listener.facing = parseFloat(this.value);
-    document.getElementById('listenerFacingVal').textContent = listener.facing + '\u00b0';
-    scheduleDraw();
-  });
   document.getElementById('resetBtn').addEventListener('click', () => {
     currentPresetName = null;
     applySymmetricDefaults();
@@ -2815,7 +2946,7 @@
     for(const s of sources){
       if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < 0.8) return s.id;
     }
-    if(Math.sqrt((x-listener.x)**2+(y-listener.y)**2) < 0.8) return 'listener';
+    if(Math.sqrt((x-primaryRow().x)**2+(y-primaryRow().y)**2) < 0.8) return 'listener';
     return null;
   }
 
@@ -2912,7 +3043,7 @@
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
     const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
-    if(dragTarget === 'listener'){ listener.x = cx; listener.y = cy; }
+    if(dragTarget === 'listener'){ primaryRow().x = cx; primaryRow().y = cy; }
     else { const s = sources.find(s=>s.id===dragTarget); if(s){ s.x = cx; s.y = cy; } }
     scheduleDraw();
   }
@@ -2986,7 +3117,7 @@
       offLimitZones = defaultOffLimitZones(room);
       preferredZones = [];
       optimizerResult = null;
-      listener = { x: 9, y: 9, z: 3.5, facing: 0 };
+      listenerRows = defaultListenerRows();
       freq = 60; wallAbsorption = 0.06;
       loadConfig(makeConfig());
     }
