@@ -27,11 +27,12 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 
 ## Features
 
-**Sources & listening position**
+**Sources & listening positions**
 - Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff, with a bulk "apply to all" control), and height
-- "Time-align to listener": sets every source's delay so its direct sound arrives at the listening position together (see [How it works](#how-it-works) below for the real-world caveat this assumes away)
+- "Time-align to listener": sets every source's delay so its direct sound arrives at the top-ranked listening position together (see [How it works](#how-it-works) below for the real-world caveat this assumes away)
 - Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
-- Listener position and facing angle, with a two-ear dB readout (small, frequency-dependent interaural differences)
+- Multiple ranked listening-position "rows" (a couch, a row of recliners): each row is a group of 1-5 seats at a configurable spacing, facing angle, and ear height; a row's position is set by dragging its marker on the map. Row order is rank (drag to reorder — top row matters most), and the optimizer weighs both rank and in-row seat position (center seats matter more than the ends) when scoring sub placement — see [How it works](#how-it-works)
+- The top-ranked row's center seat doubles as "the" primary position for the features that only support one: the heat map's height plane, the frequency response chart, the two-ear dB readout, and the stereo-triangle guide
 
 **Room & modal solution**
 - Exact rectangular-room modal (eigenfunction) solution, not a truncated approximation (see [How it works](#how-it-works) below)
@@ -39,7 +40,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - Ceiling material picker (same three, plus suspended acoustic tile), floor material presets (hardwood, thin/thick carpet, or custom)
 
 **Subwoofer optimizer**
-- Scores candidate positions across a configurable frequency range and set of listening positions
+- Scores candidate positions across a configurable frequency range and every seat in every listening-position row, weighted by that row's rank and the seat's position within its row (see [How it works](#how-it-works))
 - "Balanced" mode (minimize variance + penalize deep nulls) or "null avoidance" mode (for rooms already using DSP/room correction, where flat average level matters less than avoiding un-fixable nulls), with a spread penalty so multiple subs don't cluster together
 - Off-limits and preferred zones, drawn on the map
 
@@ -80,9 +81,17 @@ Because a mode's *own* damping only depends on room geometry and wall materials 
 
 ### Delay, time alignment, and a real-world caveat worth knowing
 
-Each source's delay is a genuine time delay (`φ` grows linearly with frequency, `φ = 2π·f·Δt`), the same thing an AVR's per-channel "speaker distance" setting or a DSP delay line does in real life. "Time-align to listener" computes each source's distance to the listening position and delays every source except the farthest one so their direct sound all arrives together.
+Each source's delay is a genuine time delay (`φ` grows linearly with frequency, `φ = 2π·f·Δt`), the same thing an AVR's per-channel "speaker distance" setting or a DSP delay line does in real life. "Time-align to listener" computes each source's distance to the top-ranked listening row's center seat and delays every source except the farthest one so their direct sound all arrives together there.
 
 Applying that number in real life assumes you actually have a way to enter it: a real per-channel delay/distance control (an AVR or DSP setup), not just a subwoofer's 0/180° phase switch. A polarity switch isn't a delay at all, it's a fixed 180° flip applied identically at every frequency, whereas true time delay's phase shift grows with frequency. A continuous phase knob is a step up but still isn't equivalent: it's usually an analog all-pass network tuned around one reference frequency, not a frequency-proportional delay, and it has no ms readout to map back onto this tool's numbers anyway. Even with a real delay control, the number you calculate from a tape-measured distance is only the *geometric* delay, a sub's own onboard DSP/crossover/limiter processing adds its own latency that's rarely published and isn't captured by distance alone, so the calculated starting point is exactly that: a starting point, not the final answer. Verifying (or finding) the true delay in practice means measuring it (e.g. REW's impulse/step response alignment tools), the same instinct as previewing here before trusting the math on its own.
+
+### Ranked listening positions
+
+A listening-position "row" (a couch, a row of recliners) is one center point + a facing angle + a seat count/spacing — individual seats are generated symmetrically to either side of that center point (the same perpendicular-offset geometry the two-ear readout already uses, just generalized from a fixed 2-ear pair to *N* seats). Row order in the sidebar list *is* rank: the top row matters most, and each row below it matters half as much as the one above (rank 1 → weight 1.0, rank 2 → 0.5, rank 3 → 0.25, ...). Within a row, the center seat(s) get full weight, tapering linearly to half weight at the row's own outer edges.
+
+The optimizer flattens every row's seats into one list of weighted points before scoring a candidate sub position. A seat's weight scales how much its result can move the score: the average level across all seats is a true weighted average, and a bad null or rough response is still always found honestly (the worst seat, full stop — weighting never hides a real problem by averaging it away), but the *penalty* that worst seat contributes is scaled down if it's a low-weight seat. A severe null at a rank-3 row's edge seat barely dents the score; the identical null at the rank-1 row's center seat costs the full penalty. This means the optimizer will trade a small amount of quality at a low-priority seat for a meaningful gain at a high-priority one, rather than treating every seat as equally important.
+
+Features that only support one position — the heat map's height plane, the frequency response chart, the two-ear dB readout, and the stereo-triangle guide — all use the rank-1 row's center seat specifically, not an average or blend across rows.
 
 ### Absorption: two material shapes
 
@@ -113,7 +122,7 @@ The 20 points themselves aren't randomly scattered: directions come from a Fibon
 This is worth being explicit about, since it's easy to over-trust a clean-looking heat map:
 
 - **No furniture, HVAC, window coverings, doorways/openings, or localized absorption treatment (rugs, wall panels).** Only the 6 whole-room surfaces (4 walls, floor, ceiling) and their assigned materials are modeled — see [The modal solution](#the-modal-solution) for why localized treatment isn't representable in this method. Real rooms absorb more, and more unevenly, than bare wall/floor/ceiling construction suggests.
-- **Exact listener position, not a "typical seating area," for the heat map.** A real listening position isn't a mathematical point; the simulated field can look more precisely peaked/nulled than what you'd actually hear with your head's natural movement. The frequency response chart addresses this for its one view (see [How it works](#how-it-works)), but the heat map itself is still an exact-point snapshot.
+- **Exact seat positions, not a volume, for the heat map.** Multiple ranked rows/seats (see [Ranked listening positions](#ranked-listening-positions)) get you closer to a real seating area than one point ever could, but each seat is still a mathematical point — a real listener's head occupies a small volume and moves, so the simulated field can look more precisely peaked/nulled than what you'd actually hear. The frequency response chart addresses this for the rank-1 seat specifically (see [How it works](#how-it-works)), but the heat map itself is still an exact-point-per-seat snapshot.
 - **Single frequency at a time, and bass-focused only.** Real program material is broadband; a frequency sweep animation helps show how quickly the field changes across nearby frequencies, but there's no time-domain/impulse-response view. The modal solution itself only enumerates modes up to 300Hz, and the UI's own frequency range stays comfortably under that — this tool has nothing meaningful to say above the deep-bass/room-mode range.
 - **Material values are illustrative, not measured.** The wall/ceiling presets are typical-construction approximations, not data for your specific walls. Real behavior depends on details a preset can't capture (drywall thickness, stud spacing, how well-sealed the cavity is), so treat the absolute numbers as a starting point, not ground truth.
 
