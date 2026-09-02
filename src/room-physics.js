@@ -973,6 +973,19 @@
     return { best, allCandidates: results };
   }
 
+  // Number of full coordinate-descent refinement passes run after the initial
+  // greedy placement (see optimizeMultipleSubs below). Each pass re-optimizes
+  // every already-placed sub in turn, holding the others fixed -- this can move
+  // a sub that greedy locked in early to a better spot now that later subs'
+  // positions are also known, which pure greedy sequential placement has no way
+  // to do on its own. A pass exits early if nothing moved (the grid search is
+  // deterministic, so "no sub's re-optimized position changed" means every
+  // later pass would be identical too). Bounded rather than run-to-convergence
+  // to keep total cost predictable: at most POLISH_PASSES x numSubs additional
+  // full grid searches, the same order of magnitude as the initial greedy
+  // placement itself, not exponential.
+  const POLISH_PASSES = 2;
+
   // ---- Multi-sub greedy sequential optimizer ----
   // Places subs one at a time: find the best position for sub 1 (given only the
   // mains/other fixed sources), fix it in place, then find the best position for
@@ -981,7 +994,9 @@
   // optimal N-sub arrangement (that would require searching all N-tuples of
   // positions jointly), but it turns an exponential search (candidates^N) into a
   // linear one (candidates*N), which is the difference between "usable" and
-  // "computationally impossible" once N is more than 2 or so.
+  // "computationally impossible" once N is more than 2 or so. A bounded
+  // coordinate-descent polish pass runs afterward to partially close that gap
+  // -- see POLISH_PASSES above.
   //
   // Each already-placed sub is folded into `otherSources` for the next round, so
   // later subs are scored against the REAL combined field of everything placed
@@ -1036,7 +1051,39 @@
       currentOtherSources = currentOtherSources.concat([placedSub]);
     }
 
-    return { placedSubs, roundResults };
+    // Coordinate-descent polish: revisit each already-placed sub in turn,
+    // scored against everyone else (mains + every OTHER placed sub, excluding
+    // this one's own current position from both the hard exclusion check and
+    // the nullAvoidance mode's spread penalty -- both are driven from the same
+    // excludePoints list passed into scanGridCandidates, so omitting this sub
+    // here is what stops it from excluding/penalizing itself against its own
+    // pre-polish position). roundResults (above) is left untouched; polish
+    // results go in their own array so the "one roundResult per sub placed"
+    // invariant callers/tests rely on keeps holding exactly as before.
+    const polishResults = [];
+    if(placedSubs.length >= 2){
+      for(let pass = 0; pass < POLISH_PASSES; pass++){
+        let anyMoved = false;
+        for(let k = 0; k < placedSubs.length; k++){
+          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
+          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
+          const roundResult = optimizeSubPlacement({
+            room, otherSources: others, freqList, listenerPositions,
+            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+            excludePoints, minSeparationFt: separation, mode
+          });
+          polishResults.push(roundResult);
+          if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
+          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y) anyMoved = true;
+          placedSubs[k].x = roundResult.best.x;
+          placedSubs[k].y = roundResult.best.y;
+          placedSubs[k].z = roundResult.best.z;
+        }
+        if(!anyMoved) break; // converged; every later pass would be identical
+      }
+    }
+
+    return { placedSubs, roundResults, polishResults };
   }
 
   // Async/chunked twin of optimizeMultipleSubs, for the same reason
@@ -1080,7 +1127,39 @@
       currentOtherSources = currentOtherSources.concat([placedSub]);
     }
 
-    return { placedSubs, roundResults };
+    // Coordinate-descent polish -- see optimizeMultipleSubs' identical block
+    // for the full explanation. onProgress gets a third argument, 'polish',
+    // only during these rounds; the greedy rounds' calls above are unchanged
+    // (still just (fraction, i)), so the existing onProgress contract for
+    // callers that only look at the first two arguments keeps working as-is.
+    // roundIndex here means "which sub index is being re-optimized", not
+    // "which greedy round".
+    const polishResults = [];
+    if(placedSubs.length >= 2){
+      for(let pass = 0; pass < POLISH_PASSES; pass++){
+        let anyMoved = false;
+        for(let k = 0; k < placedSubs.length; k++){
+          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
+          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
+          const roundResult = await optimizeSubPlacementAsync({
+            room, otherSources: others, freqList, listenerPositions,
+            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+            excludePoints, minSeparationFt: separation, mode,
+            precomputedModes: modes, onYield, yieldEvery,
+            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
+          });
+          polishResults.push(roundResult);
+          if(roundResult.best === null) continue;
+          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y) anyMoved = true;
+          placedSubs[k].x = roundResult.best.x;
+          placedSubs[k].y = roundResult.best.y;
+          placedSubs[k].z = roundResult.best.z;
+        }
+        if(!anyMoved) break;
+      }
+    }
+
+    return { placedSubs, roundResults, polishResults };
   }
 
   return {

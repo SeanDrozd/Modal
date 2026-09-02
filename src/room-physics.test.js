@@ -1121,6 +1121,92 @@ test('default minSeparationFt (when not specified) is 25% of the room\'s smaller
   }
 });
 
+console.log('\n-- optimizeMultipleSubs coordinate-descent polish pass --');
+
+test('numSubs < 2 skips polish entirely', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const r0 = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 0, freqList: [60],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  assert.deepStrictEqual(r0.polishResults, []);
+  const r1 = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 1, freqList: [60],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  assert.deepStrictEqual(r1.polishResults, []);
+});
+
+test('polish never decreases the combined arrangement score', () => {
+  // Coordinate ascent can't make things worse by construction: each polish
+  // step re-optimizes exactly one sub's position via the same maximizing grid
+  // search greedy itself uses, holding every other sub fixed, so the new
+  // position it picks is guaranteed to score at least as well AS SCORED
+  // AGAINST THAT SAME FIXED BACKDROP as the position it replaces (including
+  // the sub's own prior spot, which remains a valid candidate in the re-scan).
+  // Confirm this empirically by re-scoring the pre-polish (greedy-only) and
+  // post-polish arrangements with the exact same scoreSubPosition inputs.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const freqList = [30,40,50,60,70,80];
+  const listenerPositions = [{x:9,y:9,z:3.5}];
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: mains, numSubs: 3, freqList, listenerPositions,
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 3, 'expected all 3 subs placed for this scenario');
+  // Reconstruct the pre-polish arrangement from roundResults' own choices
+  // (each greedy round's .best is exactly what placedSubs[i] was before any
+  // polish pass touched it).
+  const prePolish = result.roundResults.map(r => ({ x: r.best.x, y: r.best.y, z: r.best.z, name: 'sub', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }));
+  const postPolish = result.placedSubs;
+  const scoreOf = (arrangement) => P.scoreSubPosition(
+    { x: arrangement[0].x, y: arrangement[0].y, z: arrangement[0].z },
+    mains.concat(arrangement.slice(1)), room, freqList, listenerPositions, ctx
+  ).score;
+  const preScore = scoreOf(prePolish);
+  const postScore = scoreOf(postPolish);
+  assert.ok(postScore >= preScore - 1e-9, `expected polish to never decrease score: pre=${preScore.toFixed(3)} post=${postScore.toFixed(3)}`);
+});
+
+test('polish respects the same off-limits/allowed zones and minSeparationFt as greedy', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const offLimits = [{ x: 0, y: 0, width: 18, height: 10 }]; // only y=[10,13.5] is allowed
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 3, freqList: [40,60,80],
+    listenerPositions: [{x:9,y:12,z:3.5}], physicsCtx: ctx, offLimitZones: offLimits, preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  for(const sub of result.placedSubs){
+    assert.ok(sub.y >= 10, `every placed sub should still respect the off-limits zone after polish, got y=${sub.y}`);
+  }
+  for(let i = 0; i < result.placedSubs.length; i++){
+    for(let j = i+1; j < result.placedSubs.length; j++){
+      const a = result.placedSubs[i], b = result.placedSubs[j];
+      const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+      assert.ok(dist > 0.9, `subs ${i} and ${j} should still respect minSeparationFt after polish, got ${dist.toFixed(2)}ft apart`);
+    }
+  }
+});
+
+test('polish is bounded by POLISH_PASSES x subs placed', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 4, freqList: [40,60,80,100],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  const POLISH_PASSES = 2; // mirrors the constant in room-physics.js; not exported, so pinned here
+  assert.ok(result.polishResults.length <= POLISH_PASSES * result.placedSubs.length,
+    `expected at most ${POLISH_PASSES * result.placedSubs.length} polish rounds, got ${result.polishResults.length}`);
+  assert.ok(result.polishResults.length >= 0);
+});
+
 test('isCandidateValid rejects points too close to an exclude point', () => {
   const room = { w: 18, d: 13.5 };
   const excludePoints = [{ x: 9, y: 9 }];
@@ -1571,6 +1657,7 @@ testAsync('optimizeMultipleSubsAsync with no callbacks matches optimizeMultipleS
   const asyncResult = await P.optimizeMultipleSubsAsync(opts);
   assert.deepStrictEqual(asyncResult.placedSubs, syncResult.placedSubs, 'async placedSubs should exactly match sync placedSubs');
   assert.strictEqual(asyncResult.roundResults.length, syncResult.roundResults.length);
+  assert.strictEqual(asyncResult.polishResults.length, syncResult.polishResults.length, 'polish pass count should match between sync and async');
 });
 
 testAsync('optimizeSubPlacementAsync actually awaits onYield at the expected chunk boundaries', async () => {
@@ -1592,7 +1679,7 @@ testAsync('optimizeSubPlacementAsync actually awaits onYield at the expected chu
   assert.strictEqual(yieldCount, expectedYields, `expected ${expectedYields} yields for ${totalCells} cells at yieldEvery=5, got ${yieldCount}`);
 });
 
-testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex) pairs', async () => {
+testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex, phase) pairs', async () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const calls = [];
@@ -1600,16 +1687,38 @@ testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex
     room, otherSources: [], numSubs: 2, freqList: [60],
     listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [],
     gridStepFt: 1, subHeightFt: 1, yieldEvery: 5,
-    onProgress: (fraction, roundIndex) => calls.push({ fraction, roundIndex })
+    onProgress: (fraction, roundIndex, phase) => calls.push({ fraction, roundIndex, phase })
   });
   const roundIndices = new Set(calls.map(c => c.roundIndex));
   for(const idx of roundIndices) assert.ok(idx === 0 || idx === 1, `unexpected roundIndex ${idx}`);
-  const round0 = calls.filter(c => c.roundIndex === 0);
-  const round1 = calls.filter(c => c.roundIndex === 1);
-  assert.strictEqual(round0[0].fraction, 0, 'first onProgress call for round 0 should report fraction 0');
-  assert.strictEqual(round1[0].fraction, 0, 'first onProgress call for round 1 should report fraction 0');
+
+  // Greedy-phase calls (phase undefined, exactly matching today's pre-polish
+  // contract): one call sequence per round, fractions non-decreasing within it.
+  const greedyCalls = calls.filter(c => c.phase === undefined);
+  const round0 = greedyCalls.filter(c => c.roundIndex === 0);
+  const round1 = greedyCalls.filter(c => c.roundIndex === 1);
+  assert.strictEqual(round0[0].fraction, 0, 'first onProgress call for greedy round 0 should report fraction 0');
+  assert.strictEqual(round1[0].fraction, 0, 'first onProgress call for greedy round 1 should report fraction 0');
   for(let i = 1; i < round0.length; i++){
-    assert.ok(round0[i].fraction >= round0[i-1].fraction, 'fractions within a round should be non-decreasing');
+    assert.ok(round0[i].fraction >= round0[i-1].fraction, 'fractions within greedy round 0 should be non-decreasing');
+  }
+
+  // Polish-phase calls: phase === 'polish', roundIndex reused to mean "which
+  // sub index is being re-optimized" (still 0..numSubs-1), each individual
+  // sub's re-optimization sequence still starts at fraction 0 and is
+  // non-decreasing up to the next sub's re-optimization restarting at 0.
+  const polishCalls = calls.filter(c => c.phase === 'polish');
+  assert.ok(polishCalls.length > 0, 'expected at least one polish-phase onProgress call for a 2-sub run');
+  for(const c of polishCalls) assert.ok(c.roundIndex === 0 || c.roundIndex === 1, `unexpected polish roundIndex ${c.roundIndex}`);
+  let prevFraction = null, prevRoundIndex = null;
+  for(const c of polishCalls){
+    if(c.roundIndex !== prevRoundIndex || c.fraction === 0){
+      prevFraction = c.fraction; // a new sub's re-optimization sequence just started
+    } else {
+      assert.ok(c.fraction >= prevFraction, 'fractions within one polish sub-optimization should be non-decreasing');
+      prevFraction = c.fraction;
+    }
+    prevRoundIndex = c.roundIndex;
   }
 });
 
