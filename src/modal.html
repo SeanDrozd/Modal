@@ -246,7 +246,8 @@
         <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
           <input type="checkbox" id="sourcesMasterToggle" checked style="margin:0;"> All
         </label>
-        <button id="addSrcBtn" class="small">+ Add source</button>
+        <button id="addMainBtn" class="small">+ Add Main</button>
+        <button id="addSubBtn" class="small">+ Add Sub</button>
       </div>
     </div>
     <div class="section-body">
@@ -263,8 +264,10 @@
         </div>
       </div>
       <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click &mdash; each source can still be adjusted individually afterward.</div>
-      <button id="timeAlignBtn" class="full" style="margin-bottom:8px;">Time-align to listener</button>
-      <div class="hint" style="margin-bottom:10px;">Sets every source's delay (below) so its direct sound arrives at the listening position at the same time as the farthest source &mdash; the farthest source itself gets 0 delay, since delay can only push a signal later, never earlier. Each source's delay can still be adjusted individually afterward (e.g. to intentionally detune and watch the frequency response chart). Assumes you have a way to actually apply per-source delay in real life (an AVR's speaker-distance trim, or DSP) &mdash; see the README for the practical caveats.</div>
+      <div class="row" style="margin-bottom:8px;"><label>Auto time-align</label>
+        <input type="checkbox" id="autoTimeAlignToggle" checked style="width:auto; flex:0;">
+      </div>
+      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source (which always gets 0 delay, since delay can only push a signal later, never earlier), recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
       <div id="srcList"></div>
       <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
     </div>
@@ -274,6 +277,7 @@
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Frequency response</span></div>
     <div class="section-body">
       <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
+      <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
       <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
       <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
         <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
@@ -443,6 +447,14 @@
   const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
+  // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
+  // channel abbreviations and layout order (5.1 -> 7.1 -> 9.1, the last two
+  // being the "wide" pair some 9-channel receivers add): front left/right,
+  // center, side surrounds, back surrounds, front wide. Height channels
+  // (top front/middle/rear) are intentionally not included, per the request
+  // this was built from -- only surrounds get named. Once every name here is
+  // already in use, nextMainName() falls back to a generic numbered name.
+  const MAIN_CHANNEL_NAMES = ['FL','FR','C','SL','SR','SBL','SBR','FWL','FWR'];
   // Calibrated against published low-frequency (125Hz) absorption-coefficient
   // data (alpha, this app's absorption convention directly) -- see the
   // classic table (e.g. Everest's Master Handbook of Acoustics):
@@ -502,6 +514,7 @@
   let ceilingCustomAbsorption = 0.06; // used only when ceilingMaterialKey is 'custom'
   let floorAbsorption = 0.15; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
   let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
+  let autoTimeAlignEnabled = true; // see autoTimeAlign; a session/workflow preference, not a room property, so it lives in session settings, not a saved preset
   let nextId = 1;
   let presets = {}; // name -> config
   let currentPresetName = null;
@@ -915,7 +928,7 @@
     try {
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
-        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, freqSweepSpeed,
+        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed,
         lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
@@ -956,6 +969,10 @@
     if(session.optimizerMode === 'balanced' || session.optimizerMode === 'nullAvoidance'){
       optimizerMode = session.optimizerMode;
       document.getElementById('optimizerMode').value = optimizerMode;
+    }
+    if(typeof session.autoTimeAlignEnabled === 'boolean'){
+      autoTimeAlignEnabled = session.autoTimeAlignEnabled;
+      document.getElementById('autoTimeAlignToggle').checked = autoTimeAlignEnabled;
     }
     if(FREQ_SWEEP_SPEED_LEVELS.includes(session.freqSweepSpeed)){
       freqSweepSpeed = session.freqSweepSpeed;
@@ -1131,6 +1148,7 @@
       block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
         s.enabled = this.checked;
         block.style.opacity = this.checked ? '1' : '0.5';
+        autoTimeAlign(); syncDelaySlidersFromState(); // the active-source set changed, which time-align depends on
         scheduleDraw();
       });
       block.querySelector('[data-field="name"]').addEventListener('input', function(){
@@ -1144,6 +1162,7 @@
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(sources.length <= 1){ showStatus('Keep at least one source', false); return; }
         sources = sources.filter(x => x.id !== s.id);
+        autoTimeAlign();
         renderSrcList();
         draw();
       });
@@ -1181,6 +1200,7 @@
       });
       wireLengthField(block, 'z', (ft) => {
         s.z = Math.max(0, Math.min(room.h, ft || 0));
+        autoTimeAlign(); syncDelaySlidersFromState();
         draw();
       });
     });
@@ -1231,14 +1251,21 @@
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(listenerRows.length <= 1){ showStatus('Keep at least one listening position', false); return; }
         listenerRows = listenerRows.filter(r => r.id !== row.id);
+        autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
         renderListenerRowsList();
         draw();
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, -1)){ renderListenerRowsList(); scheduleDraw(); }
+        if(moveArrayItem(listenerRows, idx, -1)){
+          autoTimeAlign(); syncDelaySlidersFromState(); // reordering can change which row is rank 1
+          renderListenerRowsList(); scheduleDraw();
+        }
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, 1)){ renderListenerRowsList(); scheduleDraw(); }
+        if(moveArrayItem(listenerRows, idx, 1)){
+          autoTimeAlign(); syncDelaySlidersFromState();
+          renderListenerRowsList(); scheduleDraw();
+        }
       });
       const seatsInput = block.querySelector('[data-field="seats"]');
       seatsInput.addEventListener('change', function(){
@@ -1260,6 +1287,7 @@
       });
       wireLengthField(block, 'z', (ft) => {
         row.z = Math.max(0, Math.min(room.h, ft || 0));
+        autoTimeAlign(); syncDelaySlidersFromState();
         draw();
       });
     });
@@ -1458,11 +1486,57 @@
     }
   }
 
-  document.getElementById('addSrcBtn').addEventListener('click', () => {
-    const n = sources.length;
+  // Next unused name from MAIN_CHANNEL_NAMES, in order -- checks names
+  // actually IN USE (not a separate counter), so it's stable whether earlier
+  // channels were removed, renamed by hand, or never added via this button
+  // at all. Falls back to a generic numbered name once the whole list (up to
+  // 9.1) is taken.
+  function nextMainName(){
+    const used = new Set(sources.map(s => s.name));
+    for(const name of MAIN_CHANNEL_NAMES) if(!used.has(name)) return name;
+    let n = 1;
+    while(used.has('Main ' + n)) n++;
+    return 'Main ' + n;
+  }
+  // Same idea for subs: first unused "SW<n>", taking already-existing subs
+  // (however they got their name) into account rather than a separate counter.
+  // existingSources defaults to `sources`, but the optimizer (which names
+  // several subs in a row before any of them are actually in `sources` yet --
+  // see runSubOptimizer) passes sources.concat(placedSubs) so each round sees
+  // the ones it already placed this run, not just what was there before it started.
+  function nextSubName(existingSources){
+    const used = new Set((existingSources || sources).map(s => s.name));
+    let n = 1;
+    while(used.has('SW' + n)) n++;
+    return 'SW' + n;
+  }
+
+  document.getElementById('addMainBtn').addEventListener('click', () => {
+    const name = nextMainName();
+    const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
     const newSrc = {
       id: nextId++,
-      name: 'SW' + (sources.filter(s=>s.freqHigh<=150).length + 1),
+      name,
+      x: Math.min(room.w-1, 2 + n*1.5),
+      y: 1.5,
+      z: 3,
+      levelDb: 0, delayMs: 0,
+      freqLow: 80, freqHigh: 20000,
+      enabled: true,
+      isMain: name === 'FL' || name === 'FR', // only the actual L/R pair drives the stereo-triangle guide
+      rolloffDbPerOct: 24
+    };
+    sources.push(newSrc);
+    autoTimeAlign();
+    renderSrcList();
+    draw();
+  });
+
+  document.getElementById('addSubBtn').addEventListener('click', () => {
+    const n = sources.filter(s => s.freqHigh <= 150).length;
+    const newSrc = {
+      id: nextId++,
+      name: nextSubName(),
       x: Math.min(room.w-1, 2 + n*1.5),
       y: room.d - 1.5,
       z: 1,
@@ -1473,6 +1547,7 @@
       rolloffDbPerOct: 24
     };
     sources.push(newSrc);
+    autoTimeAlign();
     renderSrcList();
     draw();
   });
@@ -1498,17 +1573,55 @@
     draw();
   });
 
-  document.getElementById('timeAlignBtn').addEventListener('click', () => {
+  document.getElementById('autoTimeAlignToggle').addEventListener('change', function(){
+    autoTimeAlignEnabled = this.checked;
+    if(autoTimeAlignEnabled){ autoTimeAlign(); renderSrcList(); } // snap into alignment immediately, not just on the next move
+    saveSessionSettings();
+    draw();
+  });
+
+  // Recomputes every active source's delay so its direct sound arrives at
+  // the listening position together with the farthest source (see
+  // RoomPhysics.timeAlignDelays). Used to be a manual "Time-align to
+  // listener" button; now called automatically at every point a source or
+  // listening-row position/height/rank changes (see the call sites below,
+  // moveTarget for drags, the add/remove/reorder handlers, per-item height
+  // fields), so delays stay continuously in sync instead of needing a
+  // re-click, as long as autoTimeAlignEnabled is on (the "Auto time-align"
+  // checkbox). A manually-set delay still sticks until the next such change,
+  // which is enough to briefly detune and watch the frequency response
+  // chart without it being permanently overridden mid-adjustment; turning
+  // the checkbox off makes every delay stick indefinitely, not just until
+  // the next move.
+  function autoTimeAlign(){
+    if(!autoTimeAlignEnabled) return;
     const activeSources = sources.filter(s => s.enabled !== false);
-    if(activeSources.length < 2){ showStatus('Need at least 2 active sources to time-align', false); return; }
+    if(activeSources.length < 2) return;
     const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
     const byId = new Map(results.map(r => [r.id, r.delayMs]));
     for(const s of sources){
       if(byId.has(s.id)) s.delayMs = Math.round(byId.get(s.id) * 10) / 10; // match the 0.1ms slider step
     }
-    renderSrcList();
-    draw();
-  });
+  }
+  // Lightweight refresh of just the delay slider/readout in each already-
+  // rendered source block, instead of a full renderSrcList() rebuild.
+  // Called after a drag (moveTarget fires on every mousemove), where
+  // rebuilding the whole list's DOM every frame would be wasteful and would
+  // drop focus/cursor position out of any field the user has open. Relies on
+  // srcList's blocks being in the same order as `sources` (true immediately
+  // after any renderSrcList() call; nothing reorders sources in between).
+  function syncDelaySlidersFromState(){
+    const list = document.getElementById('srcList');
+    if(!list) return;
+    list.querySelectorAll('.src-block').forEach((block, idx) => {
+      const s = sources[idx];
+      if(!s) return;
+      const dly = block.querySelector('[data-field="delayMs"]');
+      const out = block.querySelector('[data-out="delayMs"]');
+      if(dly) dly.value = s.delayMs;
+      if(out) out.textContent = s.delayMs.toFixed(1);
+    });
+  }
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
   // These wrappers adapt RoomPhysics's explicit-parameter functions to this
@@ -1666,9 +1779,13 @@
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than a fixed number that's too
     // strict in a small room or too loose in a large one. 25%/4ft floor
-    // (rather than 15%/1ft) so subs land meaningfully apart by default -- a
-    // couple feet of separation is essentially meaningless at sub wavelengths.
-    const minSeparationFt = Math.max(4, Math.min(room.w, room.d) * 0.25);
+    // (rather than 15%/1ft) so subs land meaningfully apart by default, since
+    // a couple feet of separation is essentially meaningless at sub
+    // wavelengths. The outer Math.max(3, ...) is a hard floor: combined with
+    // isCandidateValid's square (not circular) exclusion check, this
+    // guarantees at least a 6x6ft clearance around every already-placed sub,
+    // a reasonable minimum footprint for an actual cabinet.
+    const minSeparationFt = Math.max(3, 4, Math.min(room.w, room.d) * 0.25);
     // Enumerated once for the whole multi-sub search, not once per candidate
     // per round -- room geometry/materials (physicsCtx()) don't change
     // between rounds, so this was being redone thousands of times per
@@ -1692,7 +1809,7 @@
       lastRound = round;
       if(round.best === null) break; // no valid candidates left; stop with whatever was placed so far
 
-      const placed = { id: nextId++, name: `Sub ${i+1}`, x: round.best.x, y: round.best.y, z: subHeight,
+      const placed = { id: nextId++, name: nextSubName(sources.concat(placedSubs)), x: round.best.x, y: round.best.y, z: subHeight,
         levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
       placedSubs.push(placed);
       placedPositions.push({ x: placed.x, y: placed.y });
@@ -2542,7 +2659,39 @@
     freqResponseData = { response, maxHz };
   }
 
+  // Linear interpolation between the two nearest sampled points in `response`
+  // ([{freq,db},...], log-spaced, ascending) -- matches the straight line
+  // segments the chart itself draws between samples, so the readout always
+  // agrees with what's visually on the curve. Clamps to the nearest sample
+  // rather than extrapolating outside the sampled range.
+  function dbAtFreqInResponse(response, targetFreq){
+    if(!response || response.length === 0) return null;
+    if(targetFreq <= response[0].freq) return response[0].db;
+    const last = response[response.length - 1];
+    if(targetFreq >= last.freq) return last.db;
+    for(let i = 0; i < response.length - 1; i++){
+      const a = response[i], b = response[i+1];
+      if(targetFreq >= a.freq && targetFreq <= b.freq){
+        const t = (targetFreq - a.freq) / (b.freq - a.freq);
+        return a.db + t * (b.db - a.db);
+      }
+    }
+    return null;
+  }
+
+  function updateFreqResponseReadout(){
+    const el = document.getElementById('freqResponseReadout');
+    if(!freqResponseData){
+      el.textContent = '';
+      return;
+    }
+    const db = dbAtFreqInResponse(freqResponseData.response, freq);
+    el.innerHTML = db == null ? '' :
+      `Current: <b>${Math.round(freq)} Hz</b>, <b>${Math.round(db)} dB</b>`;
+  }
+
   function redrawFreqResponseCanvas(){
+    updateFreqResponseReadout(); // tracks the slider live, same as the marker line drawn below
     const canvas = document.getElementById('freqResponseCanvas');
     const c2 = canvas.getContext('2d');
     // The canvas's backing-store resolution (canvas.width/height, the pixel
@@ -2943,6 +3092,7 @@
     for(const s of optimizerResult.placedSubs){
       sources.push(s); // already has a real id assigned when created in runSubOptimizer
     }
+    autoTimeAlign();
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
@@ -3113,6 +3263,7 @@
     const s = sources.find(s=>s.id===dragTarget);
     if(s){ s.x = cx; s.y = cy; }
     else { const r = listenerRows.find(r=>r.id===dragTarget); if(r){ r.x = cx; r.y = cy; } }
+    autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
     scheduleDraw();
   }
   canvas.addEventListener('mousedown', (e) => {

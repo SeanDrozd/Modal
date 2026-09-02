@@ -777,15 +777,26 @@
       const inAnyPreferred = preferredZones.some(zone => isPointInRect(px, py, zone));
       if(!inAnyPreferred) return false;
     }
-    // Enforce a minimum distance from any already-placed point (e.g. other subs
-    // placed in earlier greedy rounds). Without this, the greedy search can
-    // legitimately re-pick the exact same spot for multiple subs, since two
-    // co-located subs simply sum louder rather than being penalized for
-    // redundancy — nothing in the scoring function itself discourages stacking.
+    // Enforce a minimum clearance from any already-placed point (e.g. other
+    // subs placed in earlier greedy rounds). Without this, the greedy search
+    // can legitimately re-pick the exact same spot for multiple subs, since
+    // two co-located subs simply sum louder rather than being penalized for
+    // redundancy: nothing in the scoring function itself discourages stacking.
+    //
+    // Checked as a SQUARE footprint (both the x and y offset must clear
+    // minSeparationFt independently), not a circular radius. A circular
+    // check under-excludes near the diagonals: a candidate offset by
+    // (0.9*minSeparationFt, 0.9*minSeparationFt) is about 1.27*minSeparationFt
+    // from the placed point in a straight line, so a circular radius check
+    // would accept it even though it's well within minSeparationFt along
+    // BOTH axes. Real subwoofer cabinets have a rectangular footprint, so a
+    // square check is the physically appropriate one, and it strictly
+    // subsumes the circular guarantee: any point this accepts is still at
+    // least minSeparationFt away in straight-line distance too, since one of
+    // the two axis offsets alone already reaches that value.
     if(excludePoints && excludePoints.length > 0 && minSeparationFt > 0){
       for(const p of excludePoints){
-        const dist = Math.sqrt((px-p.x)**2 + (py-p.y)**2);
-        if(dist < minSeparationFt) return false;
+        if(Math.abs(px - p.x) < minSeparationFt && Math.abs(py - p.y) < minSeparationFt) return false;
       }
     }
     return true;
@@ -845,12 +856,17 @@
       offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
-    // scales sensibly across room sizes rather than being a fixed number that's
-    // too strict in a small room or too loose in a large one. 25%/4ft (rather
-    // than the previous 15%/1ft) so subs land meaningfully apart by default --
-    // a couple feet of separation is essentially meaningless at sub
-    // wavelengths (9-50+ ft across the usual 20-120Hz sub range).
-    const separation = minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25);
+    // scales sensibly across room sizes rather than being a fixed number
+    // that's too strict in a small room or too loose in a large one. 25%/4ft
+    // (rather than the previous 15%/1ft) so subs land meaningfully apart by
+    // default, since a couple feet of separation is essentially meaningless
+    // at sub wavelengths (9-50+ ft across the usual 20-120Hz sub range).
+    // Math.max(3, ...) floors the EFFECTIVE separation at 3ft even if a
+    // caller explicitly passes something smaller: with isCandidateValid's
+    // square (not circular) exclusion check, that's a real 6x6ft clearance
+    // around every already-placed sub, a reasonable minimum footprint for an
+    // actual cabinet regardless of what a caller-supplied override asks for.
+    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
 
     const placedSubs = [];
     const placedPositions = [];
