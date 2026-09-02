@@ -992,6 +992,28 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
   }
 });
 
+test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre-existing subs), not just other subs placed this run', () => {
+  // The bug: placedPositions (the exclusion list) used to start empty and
+  // only accumulate subs placed DURING this call. otherSources (mains,
+  // and any subs that existed before this call) were never in it, so a
+  // newly-placed sub could land right on top of one of them. Forcing the
+  // search into a preferred zone tight around an existing main makes this
+  // concrete: a 3ft square exclusion around that main should leave no valid
+  // candidate inside a 4x4ft zone centered on it.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const existingMain = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
+  const preferredZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
+
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [existingMain], numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], preferredZones, gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 0,
+    `expected no valid candidate inside a zone this tight around an existing source, but placed a sub at (${result.placedSubs[0]?.x},${result.placedSubs[0]?.y})`);
+});
+
 test('minSeparationFt is configurable and respected', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };

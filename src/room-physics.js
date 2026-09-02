@@ -881,7 +881,12 @@
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
 
     const placedSubs = [];
-    const placedPositions = [];
+    // Seeded with every existing otherSources position (mains, and any subs
+    // already placed before this call), not just subs placed during this
+    // run. Without this, a newly-placed sub could land at or very near an
+    // existing source's exact position, since isCandidateValid's
+    // minSeparationFt check only ever excludes points already in this list.
+    const placedPositions = otherSources.map(s => ({ x: s.x, y: s.y }));
     const roundResults = []; // one optimizeSubPlacement result per sub placed, for diagnostics/visualization
     let currentOtherSources = otherSources.slice();
 

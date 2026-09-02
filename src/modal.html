@@ -136,13 +136,17 @@
      same fix, as #freqVal's fixed min-width (in the body HTML below): a
      sibling's width changing mid-animation shouldn't move anything else. */
   #freqSweepPlayBtn { width: 78px; text-align: center; }
+  /* The clickable box sits well above the slider's own vertical center (not
+     overlapping it), so it never steals a click meant for the native range
+     thumb when their x-positions happen to coincide. Only a thin,
+     pointer-events:none tail extends down to the track for visual alignment. */
   #sweepEndMarker {
-    position: absolute; top: 50%; width: 10px; height: 16px; margin-top: -8px; margin-left: -5px;
+    position: absolute; top: 50%; width: 10px; height: 10px; margin-top: -22px; margin-left: -5px;
     background: rgba(245,213,71,0.85); border-radius: 2px; cursor: ew-resize; pointer-events: auto;
   }
   #sweepEndMarker::after {
-    content: ''; position: absolute; left: 50%; top: -4px; width: 2px; height: 4px;
-    background: rgba(245,213,71,0.85); transform: translateX(-50%);
+    content: ''; position: absolute; left: 50%; top: 10px; width: 2px; height: 12px;
+    background: rgba(245,213,71,0.85); transform: translateX(-50%); pointer-events: none;
   }
   #bottomPanel .stats-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   #bottomPanel .stats-row > * { flex: 1; min-width: 180px; }
@@ -1912,9 +1916,20 @@
   // the marker. Manually dragging the #freq slider itself is NOT constrained
   // by this; it only affects where the automated sweep restarts.
   let sweepEndFreq = null;
+  // The wrap math in freqSweepTick (`freq = min + (freq - end)`) is only a
+  // real wrap when end > min. At end === min it algebraically collapses to
+  // `freq = freq`, a no-op that lets freq climb forever instead of looping
+  // (the native slider silently clamps its displayed value to max while the
+  // internal freq, and the field computed from it, keep climbing past the
+  // slider's actual range). SWEEP_END_MIN_SPAN_HZ keeps the marker from ever
+  // being draggable (or loaded from a stale/corrupted session value) all the
+  // way down to min, guaranteeing a real, meaningful loop span.
+  const SWEEP_END_MIN_SPAN_HZ = 10;
   function effectiveSweepEndFreq(){
-    const max = parseFloat(document.getElementById('freq').max);
-    return sweepEndFreq != null ? Math.min(sweepEndFreq, max) : max;
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const floor = Math.min(max, min + SWEEP_END_MIN_SPAN_HZ);
+    return sweepEndFreq != null ? Math.max(floor, Math.min(sweepEndFreq, max)) : max;
   }
 
   // ---- WebGL context setup ----
@@ -2951,7 +2966,14 @@
   }
   function updateSweepMarkerDrag(clientX){
     if(!sweepMarkerDragging) return;
-    sweepEndFreq = Math.round(sweepMarkerFreqFromClientX(clientX));
+    // Floored at drag time (not just in effectiveSweepEndFreq) so the marker
+    // visually stops at the same point the sweep actually loops at, rather
+    // than letting it be dragged past that point and silently desyncing
+    // from where the loop really happens.
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const floor = Math.min(max, min + SWEEP_END_MIN_SPAN_HZ);
+    sweepEndFreq = Math.max(floor, Math.round(sweepMarkerFreqFromClientX(clientX)));
     positionSweepEndMarker();
   }
   function endSweepMarkerDrag(){
