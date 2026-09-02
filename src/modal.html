@@ -2725,28 +2725,41 @@
     const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
     const ctx = physicsCtx();
     const seats = allSeatPositions();
-    const primaryIndex = seats.findIndex(s => s.rank === 0 && s.offsetIndex === 0);
+    // The rank-1 row's own center point (primaryRow()) is NOT necessarily one
+    // of its generated seats: rowSeatPositions' offsetIndex only lands exactly
+    // on 0 for an ODD seat count (a true center seat). An even seat count (2,
+    // 4, ...) straddles the row's own center between its two middle seats --
+    // no seat sits there at all -- so searching `seats` for offsetIndex===0
+    // would silently find nothing (index -1) whenever the top row has an even
+    // seat count. Evaluated as its own extra point instead, appended to the
+    // batched call below for the shared per-frequency cost, but kept OUT of
+    // the seats used for bandMin/bandMax -- the band's whole purpose is the
+    // spread across real seats someone actually sits in, not a geometric
+    // reference point that may not correspond to any seat.
+    const primary = primaryRow();
+    const centers = seats.concat([{ x: primary.x, y: primary.y, z: primary.z }]);
+    const primaryIndex = centers.length - 1;
 
-    const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(seats, freqs, activeSources, ctx, { radiusFt: 2, numPoints: 20 });
+    const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, activeSources, ctx, { radiusFt: 2, numPoints: 20 });
 
     let afterPerCenterDb = null;
     if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
       const afterSources = activeSources.concat(optimizerResult.placedSubs);
-      afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(seats, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
+      afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
     }
 
     const points = freqs.map((f, j) => {
-      const dbAtSeat = seats.map((s, i) => perCenterDb[i][j]);
+      const dbAtSeat = seats.map((s, i) => perCenterDb[i][j]); // real seats only -- band spread
       const point = {
         freq: f,
-        db: dbAtSeat[primaryIndex],
+        db: perCenterDb[primaryIndex][j],
         bandMin: Math.min(...dbAtSeat),
         bandMax: Math.max(...dbAtSeat),
         afterDb: null, afterBandMin: null, afterBandMax: null
       };
       if(afterPerCenterDb){
         const afterDbAtSeat = seats.map((s, i) => afterPerCenterDb[i][j]);
-        point.afterDb = afterDbAtSeat[primaryIndex];
+        point.afterDb = afterPerCenterDb[primaryIndex][j];
         point.afterBandMin = Math.min(...afterDbAtSeat);
         point.afterBandMax = Math.max(...afterDbAtSeat);
       }
