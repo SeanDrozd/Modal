@@ -1812,11 +1812,12 @@
       room, otherSources: activeMains, numSubs, freqList, listenerPositions,
       physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
       gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
-      onProgress: (fraction, roundIndex) => {
+      onProgress: (fraction, roundIndex, phase) => {
         const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
+        const verb = phase === 'polish' ? 'Refining' : 'Optimizing';
         status.textContent = fraction === 0
-          ? `Optimizing ${subLabel}...`
-          : `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`;
+          ? `${verb} ${subLabel}...`
+          : `${verb} ${subLabel}... ${Math.round(fraction*100)}%`;
       },
       onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
     });
@@ -1829,10 +1830,13 @@
       placedSubs.push(Object.assign({}, sub, { id: nextId++, name: nextSubName(sources.concat(placedSubs)) }));
     }
 
-    // Show the LAST round's heatmap (i.e. the search that placed the final sub,
-    // accounting for all previously-placed subs) -- most representative of
-    // "given everything else, where's still good/bad" after full placement.
-    const lastRound = result.roundResults[result.roundResults.length - 1] || null;
+    // Show the LAST round's heatmap -- prefer the last polish round (the truly
+    // final search, reflecting the fully polished arrangement) if any ran,
+    // otherwise the last greedy round -- most representative of "given
+    // everything else, where's still good/bad" after full placement.
+    const lastRound = result.polishResults.length
+      ? result.polishResults[result.polishResults.length - 1]
+      : result.roundResults[result.roundResults.length - 1] || null;
     optimizerResult = lastRound ? { best: lastRound.best, allCandidates: lastRound.allCandidates, gridStepFt: step, placedSubs } : null;
 
     if(placedSubs.length === 0){
