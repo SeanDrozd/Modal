@@ -207,9 +207,16 @@ async function expandSection(page, sectionId){
   }
 
   // Default spawn formula: x = min(room.w-1, 2 + n*1.5), y = room.d - 1.5, where
-  // n = sources.length AT THE TIME of the click (2 mains already present).
-  await dragSourceFromTo({ x: 5,   y: 12 }, { x: 4.5,  y: 12 }); // sub 1 -> symmetric left
-  await dragSourceFromTo({ x: 6.5, y: 12 }, { x: 13.5, y: 12 }); // sub 2 -> symmetric right (mirror of sub1 about x=9)
+  // n = the count of existing SUB-like sources only (freqHigh <= 150) -- the
+  // 2 mains already present don't count toward n, even though they're
+  // present in `sources`. Grabbing from the wrong assumed spawn point here
+  // silently misses the actual sub marker (no error, just a no-op drag),
+  // leaving both subs at their real, un-repositioned spawn spots for the
+  // rest of the script -- which is what caused GIF B to end up dragging the
+  // off-limits zone instead of a sub, once its bounds later crossed the
+  // path this drag "should" have already cleared.
+  await dragSourceFromTo({ x: 2,   y: 12 }, { x: 4.5,  y: 12 }); // sub 1 -> symmetric left
+  await dragSourceFromTo({ x: 3.5, y: 12 }, { x: 13.5, y: 12 }); // sub 2 -> symmetric right (mirror of sub1 about x=9)
   await page.waitForTimeout(400);
 
   // Enlarge the default off-limits zone (50% of room, centered -- see
