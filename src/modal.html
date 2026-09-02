@@ -246,7 +246,8 @@
         <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
           <input type="checkbox" id="sourcesMasterToggle" checked style="margin:0;"> All
         </label>
-        <button id="addSrcBtn" class="small">+ Add source</button>
+        <button id="addMainBtn" class="small">+ Add Main</button>
+        <button id="addSubBtn" class="small">+ Add Sub</button>
       </div>
     </div>
     <div class="section-body">
@@ -274,6 +275,7 @@
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Frequency response</span></div>
     <div class="section-body">
       <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
+      <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
       <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
       <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
         <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
@@ -443,6 +445,14 @@
   const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
+  // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
+  // channel abbreviations and layout order (5.1 -> 7.1 -> 9.1, the last two
+  // being the "wide" pair some 9-channel receivers add): front left/right,
+  // center, side surrounds, back surrounds, front wide. Height channels
+  // (top front/middle/rear) are intentionally not included, per the request
+  // this was built from -- only surrounds get named. Once every name here is
+  // already in use, nextMainName() falls back to a generic numbered name.
+  const MAIN_CHANNEL_NAMES = ['FL','FR','C','SL','SR','SBL','SBR','FWL','FWR'];
   // Calibrated against published low-frequency (125Hz) absorption-coefficient
   // data (alpha, this app's absorption convention directly) -- see the
   // classic table (e.g. Everest's Master Handbook of Acoustics):
@@ -1458,11 +1468,52 @@
     }
   }
 
-  document.getElementById('addSrcBtn').addEventListener('click', () => {
-    const n = sources.length;
+  // Next unused name from MAIN_CHANNEL_NAMES, in order -- checks names
+  // actually IN USE (not a separate counter), so it's stable whether earlier
+  // channels were removed, renamed by hand, or never added via this button
+  // at all. Falls back to a generic numbered name once the whole list (up to
+  // 9.1) is taken.
+  function nextMainName(){
+    const used = new Set(sources.map(s => s.name));
+    for(const name of MAIN_CHANNEL_NAMES) if(!used.has(name)) return name;
+    let n = 1;
+    while(used.has('Main ' + n)) n++;
+    return 'Main ' + n;
+  }
+  // Same idea for subs: first unused "SW<n>", taking already-existing subs
+  // (however they got their name) into account rather than a separate counter.
+  function nextSubName(){
+    const used = new Set(sources.map(s => s.name));
+    let n = 1;
+    while(used.has('SW' + n)) n++;
+    return 'SW' + n;
+  }
+
+  document.getElementById('addMainBtn').addEventListener('click', () => {
+    const name = nextMainName();
+    const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
     const newSrc = {
       id: nextId++,
-      name: 'SW' + (sources.filter(s=>s.freqHigh<=150).length + 1),
+      name,
+      x: Math.min(room.w-1, 2 + n*1.5),
+      y: 1.5,
+      z: 3,
+      levelDb: 0, delayMs: 0,
+      freqLow: 80, freqHigh: 20000,
+      enabled: true,
+      isMain: name === 'FL' || name === 'FR', // only the actual L/R pair drives the stereo-triangle guide
+      rolloffDbPerOct: 24
+    };
+    sources.push(newSrc);
+    renderSrcList();
+    draw();
+  });
+
+  document.getElementById('addSubBtn').addEventListener('click', () => {
+    const n = sources.filter(s => s.freqHigh <= 150).length;
+    const newSrc = {
+      id: nextId++,
+      name: nextSubName(),
       x: Math.min(room.w-1, 2 + n*1.5),
       y: room.d - 1.5,
       z: 1,
@@ -2542,7 +2593,39 @@
     freqResponseData = { response, maxHz };
   }
 
+  // Linear interpolation between the two nearest sampled points in `response`
+  // ([{freq,db},...], log-spaced, ascending) -- matches the straight line
+  // segments the chart itself draws between samples, so the readout always
+  // agrees with what's visually on the curve. Clamps to the nearest sample
+  // rather than extrapolating outside the sampled range.
+  function dbAtFreqInResponse(response, targetFreq){
+    if(!response || response.length === 0) return null;
+    if(targetFreq <= response[0].freq) return response[0].db;
+    const last = response[response.length - 1];
+    if(targetFreq >= last.freq) return last.db;
+    for(let i = 0; i < response.length - 1; i++){
+      const a = response[i], b = response[i+1];
+      if(targetFreq >= a.freq && targetFreq <= b.freq){
+        const t = (targetFreq - a.freq) / (b.freq - a.freq);
+        return a.db + t * (b.db - a.db);
+      }
+    }
+    return null;
+  }
+
+  function updateFreqResponseReadout(){
+    const el = document.getElementById('freqResponseReadout');
+    if(!freqResponseData){
+      el.textContent = '';
+      return;
+    }
+    const db = dbAtFreqInResponse(freqResponseData.response, freq);
+    el.innerHTML = db == null ? '' :
+      `Current: <b>${Math.round(freq)} Hz</b>, <b>${db.toFixed(1)} dB</b>`;
+  }
+
   function redrawFreqResponseCanvas(){
+    updateFreqResponseReadout(); // tracks the slider live, same as the marker line drawn below
     const canvas = document.getElementById('freqResponseCanvas');
     const c2 = canvas.getContext('2d');
     // The canvas's backing-store resolution (canvas.width/height, the pixel

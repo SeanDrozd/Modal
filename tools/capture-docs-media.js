@@ -157,7 +157,7 @@ async function expandSection(page, sectionId){
   // ============================================================
   // Screenshots
   // ============================================================
-  await page.click('#addSrcBtn');
+  await page.click('#addSubBtn');
   await setFreq(page, 45);
   await page.waitForTimeout(300);
   await page.click('#autofitDbRangeBtn'); // fit the color range to THIS scene before capturing, not whatever range was left over
@@ -191,8 +191,8 @@ async function expandSection(page, sectionId){
   await page.click('#resetBtn');
   await page.waitForTimeout(300);
 
-  await page.click('#addSrcBtn'); await page.waitForTimeout(150);
-  await page.click('#addSrcBtn'); await page.waitForTimeout(150);
+  await page.click('#addSubBtn'); await page.waitForTimeout(150);
+  await page.click('#addSubBtn'); await page.waitForTimeout(150);
 
   let toScreen = await makeRoomToScreen(page);
 
