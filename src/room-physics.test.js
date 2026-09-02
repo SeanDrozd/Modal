@@ -13,6 +13,17 @@ function test(name, fn){
     console.log(`        ${e.message}`);
   }
 }
+// Async tests (for optimizeSubPlacementAsync/optimizeMultipleSubsAsync) can't use
+// test() above -- it calls fn() synchronously in a plain try/catch, so an
+// exception thrown after fn's first await would escape uncaught, unrelated to
+// passed/failed, and could fire after process.exit has already ended the run.
+// testAsync queues the test instead of running it immediately; the queue is
+// drained (in order, one at a time) by the async IIFE at the bottom of this
+// file, after every synchronous test() above has already run and printed.
+const pendingAsync = [];
+function testAsync(name, fn){
+  pendingAsync.push({ name, fn });
+}
 function approx(actual, expected, tol, msg){
   assert.ok(Math.abs(actual - expected) <= tol,
     `${msg || ''} expected ${expected} +/- ${tol}, got ${actual}`);
@@ -1471,5 +1482,110 @@ test('avgMean is a true weighted average across listeners, not a plain average',
   assert.notStrictEqual(weighted.avgMean, unweighted.avgMean, 'weighted avgMean should generally differ from the plain average');
 });
 
-console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed > 0 ? 1 : 0);
+console.log('\n-- optimizeSubPlacementAsync / optimizeMultipleSubsAsync (async twins of the sync optimizer) --');
+
+testAsync('optimizeSubPlacementAsync with no callbacks matches optimizeSubPlacement exactly', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const opts = {
+    room, otherSources: mains, freqList: [40,60,80], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  };
+  const syncResult = P.optimizeSubPlacement(opts);
+  const asyncResult = await P.optimizeSubPlacementAsync(opts);
+  assert.deepStrictEqual(asyncResult.best, syncResult.best, 'async best should exactly match sync best');
+  assert.strictEqual(asyncResult.allCandidates.length, syncResult.allCandidates.length, 'async should scan the same candidate count as sync');
+});
+
+testAsync('optimizeMultipleSubsAsync with no callbacks matches optimizeMultipleSubs exactly', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const opts = {
+    room, otherSources: mains, numSubs: 3, freqList: [40,60,80,100],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  };
+  const syncResult = P.optimizeMultipleSubs(opts);
+  const asyncResult = await P.optimizeMultipleSubsAsync(opts);
+  assert.deepStrictEqual(asyncResult.placedSubs, syncResult.placedSubs, 'async placedSubs should exactly match sync placedSubs');
+  assert.strictEqual(asyncResult.roundResults.length, syncResult.roundResults.length);
+});
+
+testAsync('optimizeSubPlacementAsync actually awaits onYield at the expected chunk boundaries', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const opts = {
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1,
+    yieldEvery: 5
+  };
+  const totalCells = P.countGridCells(room, 1);
+  // +1 for the unconditional pre-scan yield optimizeSubPlacementAsync does before
+  // walking any grid cells, guaranteeing one paint before the scan starts.
+  const expectedYields = Math.floor(totalCells / 5) + 1;
+  let yieldCount = 0;
+  await P.optimizeSubPlacementAsync(Object.assign({}, opts, {
+    onYield: () => new Promise(resolve => { yieldCount++; setTimeout(resolve, 0); })
+  }));
+  assert.strictEqual(yieldCount, expectedYields, `expected ${expectedYields} yields for ${totalCells} cells at yieldEvery=5, got ${yieldCount}`);
+});
+
+testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex) pairs', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const calls = [];
+  await P.optimizeMultipleSubsAsync({
+    room, otherSources: [], numSubs: 2, freqList: [60],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [],
+    gridStepFt: 1, subHeightFt: 1, yieldEvery: 5,
+    onProgress: (fraction, roundIndex) => calls.push({ fraction, roundIndex })
+  });
+  const roundIndices = new Set(calls.map(c => c.roundIndex));
+  for(const idx of roundIndices) assert.ok(idx === 0 || idx === 1, `unexpected roundIndex ${idx}`);
+  const round0 = calls.filter(c => c.roundIndex === 0);
+  const round1 = calls.filter(c => c.roundIndex === 1);
+  assert.strictEqual(round0[0].fraction, 0, 'first onProgress call for round 0 should report fraction 0');
+  assert.strictEqual(round1[0].fraction, 0, 'first onProgress call for round 1 should report fraction 0');
+  for(let i = 1; i < round0.length; i++){
+    assert.ok(round0[i].fraction >= round0[i-1].fraction, 'fractions within a round should be non-decreasing');
+  }
+});
+
+testAsync('optimizeSubPlacementAsync and optimizeMultipleSubsAsync work with no onYield/onProgress supplied', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const single = await P.optimizeSubPlacementAsync({
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  assert.ok(single.best !== null, 'expected a best candidate with no callbacks supplied');
+
+  const multi = await P.optimizeMultipleSubsAsync({
+    room, otherSources: [], numSubs: 2, freqList: [60],
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  assert.strictEqual(multi.placedSubs.length, 2, 'expected both subs placed with no callbacks supplied');
+});
+
+(async () => {
+  for(const { name, fn } of pendingAsync){
+    try {
+      await fn();
+      passed++;
+      console.log(`  ok  - ${name}`);
+    } catch(e){
+      failed++;
+      console.log(`FAIL  - ${name}`);
+      console.log(`        ${e.message}`);
+    }
+  }
+  console.log(`\n${passed} passed, ${failed} failed\n`);
+  process.exit(failed > 0 ? 1 : 0);
+})();
