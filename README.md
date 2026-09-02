@@ -134,9 +134,21 @@ The 20 points themselves aren't randomly scattered: directions come from a Fibon
 
 No build step or install required for the app itself.
 
-- **App**: open `src/modal.html` directly in a browser.
+- **App**: open `src/modal.html` directly in a browser, or use the hosted copy at **https://seandrozd.github.io/Modal/** (see below).
 - **Tests**: `node src/room-physics.test.js` (plain Node, no dependencies).
 - **Regenerating docs/ media**: `cd tools && npm install`, then `npm run capture-docs-media` and/or `npm run render-sphere-demo`.
+
+### Deploying (GitHub Pages)
+
+The whole app is static (no build step, no server), so it's served as-is straight from the repo:
+
+1. **Settings → Pages** → under "Build and deployment", set **Source** to "Deploy from a branch", **Branch** to `main` / `/ (root)`, then Save. (Not `/docs`, since that folder holds README screenshots, not the app.)
+2. GitHub builds and publishes the site, usually within a minute or two; the URL appears at the top of the Pages settings page once it's live (`https://<username>.github.io/<repo>/`).
+3. The repo root's `index.html` just redirects to `src/modal.html` (the app's actual location, left unmoved so local usage stays exactly the same); `.nojekyll` at the root skips GitHub's default Jekyll processing, since this is a plain static site that doesn't need it.
+
+Publishing Pages from a private repo requires a paid GitHub plan (Pro/Team/Enterprise). Note that even then, the **published site itself is still publicly viewable** at its `github.io` URL by default; only the repo/source stays private. Restricting who can view the *site* is a GitHub Enterprise Cloud feature, not available on Pro/Team.
+
+Since there's no build step, redeploying after a change is just: merge to `main`, wait for Pages to rebuild (automatic on every push to the configured branch).
 
 ## Credits
 
