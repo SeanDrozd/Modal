@@ -1713,69 +1713,15 @@
     return RoomPhysics.earPositions(lst, lst.facing ?? 0);
   }
 
-  // Scores one candidate sub position via RoomPhysics.scoreSubPosition (same
-  // weighting/tested implementation the optimizer's standalone reference uses),
-  // adapted to this file's (cx,cy,czHeight,...) call signature so existing
-  // callers below are unchanged.
-  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, excludePoints, modes){
-    const result = RoomPhysics.scoreSubPosition(
-      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), optimizerMode, excludePoints, modes
-    );
-    return { score: result.score, avgMean: result.avgMean, worstStdDev: result.worstStdDev, worstMinDb: result.worstMinDb };
-  }
-
   const isPointInZoneRect = RoomPhysics.isPointInRect;
-  function isCandidatePositionValid(px, py, excludePoints, minSeparationFt){
-    return RoomPhysics.isCandidateValid(px, py, room, offLimitZones, preferredZones, excludePoints, minSeparationFt);
-  }
 
-  // One round of grid search: scores every valid candidate position given a
-  // fixed set of "other" sources (mains + any subs already placed in earlier
-  // rounds), returns the winner plus the full scored grid. `modes` is
-  // enumerateModes(physicsCtx()) computed ONCE by the caller (see
-  // runSubOptimizer) -- it doesn't depend on the candidate position, so
-  // recomputing it per grid cell (hundreds to thousands of times per round)
-  // was pure repeated work; see scoreSubPosition's precomputedModes comment.
-  //
-  // Async and yields to the browser every ROUND_CHUNK_SIZE candidates (an
-  // animation-frame pause, same mechanism runSubOptimizer already used
-  // BETWEEN rounds) -- without this, a single round is one long synchronous
-  // call that freezes the whole tab for its entire duration (which was the
-  // actual cause of "the button hangs for a few seconds": for a 1-sub
-  // search there's only ever one round, so the between-round yield never
-  // even got a chance to run). Chunking doesn't reduce total work, but it
-  // lets the browser paint/respond during the search instead of locking up,
-  // and lets onProgress (optional) drive a live percentage in the status text.
-  const ROUND_CHUNK_SIZE = 150;
-  async function runOneOptimizerRound(otherSourceList, freqList, listenerPositions, subHeight, step, excludePoints, minSeparationFt, modes, onProgress){
-    const candidates = [];
-    let best = null;
-    const xs = []; for(let x = step/2; x < room.w; x += step) xs.push(x);
-    const ys = []; for(let y = step/2; y < room.d; y += step) ys.push(y);
-    const totalGridCells = xs.length * ys.length;
-    let scanned = 0;
-    for(const x of xs){
-      for(const y of ys){
-        scanned++;
-        if(!isCandidatePositionValid(x, y, excludePoints, minSeparationFt)) continue;
-        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, excludePoints, modes);
-        const entry = { x, y, ...result };
-        candidates.push(entry);
-        if(best === null || entry.score > best.score) best = entry;
-        if(scanned % ROUND_CHUNK_SIZE === 0){
-          if(onProgress) onProgress(scanned / totalGridCells);
-          await new Promise(resolve => requestAnimationFrame(resolve));
-        }
-      }
-    }
-    return { best, allCandidates: candidates };
-  }
-
-  // Greedy sequential multi-sub placement: place sub 1 optimally against the
-  // mains, fix it, place sub 2 optimally against mains+sub1, and so on. Linear
-  // cost in sub count instead of the combinatorial explosion of searching all
-  // N-tuples of positions jointly (see room-physics.js optimizeMultipleSubs,
-  // which this mirrors, for the tested reference version of this algorithm).
+  // Runs the optimizer via RoomPhysics.optimizeMultipleSubsAsync -- the same
+  // tested implementation optimizeMultipleSubs uses, just the async/chunked
+  // twin so a long search yields to the browser instead of freezing the tab
+  // (onYield below pauses on an animation frame every 150 scanned candidates
+  // by default; onProgress drives the live "Optimizing sub X... NN%" text).
+  // Naming/id assignment stays here, since it depends on this file's own
+  // sources/nextId state, not anything RoomPhysics knows about.
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
@@ -1802,54 +1748,32 @@
         weight: RoomPhysics.rowRankWeight(rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seats.length)
       }));
     });
-    // Default separation: a fraction of the room's smaller dimension, so it
-    // scales sensibly across room sizes rather than a fixed number that's too
-    // strict in a small room or too loose in a large one. 25%/4ft floor
-    // (rather than 15%/1ft) so subs land meaningfully apart by default, since
-    // a couple feet of separation is essentially meaningless at sub
-    // wavelengths. The outer Math.max(3, ...) is a hard floor: combined with
-    // isCandidateValid's square (not circular) exclusion check, this
-    // guarantees at least a 6x6ft clearance around every already-placed sub,
-    // a reasonable minimum footprint for an actual cabinet.
-    const minSeparationFt = Math.max(3, 4, Math.min(room.w, room.d) * 0.25);
-    // Enumerated once for the whole multi-sub search, not once per candidate
-    // per round -- room geometry/materials (physicsCtx()) don't change
-    // between rounds, so this was being redone thousands of times per
-    // optimizer run for no reason. See runOneOptimizerRound's comment.
-    const modes = RoomPhysics.enumerateModes(physicsCtx());
 
-    let currentOtherSources = activeMains.slice();
+    const result = await RoomPhysics.optimizeMultipleSubsAsync({
+      room, otherSources: activeMains, numSubs, freqList, listenerPositions,
+      physicsCtx: physicsCtx(), offLimitZones, preferredZones,
+      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
+      onProgress: (fraction, roundIndex) => {
+        const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
+        status.textContent = fraction === 0
+          ? `Optimizing ${subLabel}...`
+          : `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`;
+      },
+      onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
+    });
+
+    // Assign real ids/names now that placement is decided -- nextSubName looks
+    // at sources already named this run too, so e.g. a 3-sub search doesn't
+    // hand out "SW1" three times.
     const placedSubs = [];
-    // Seeded with every existing active source's position (mains, and any
-    // subs that existed before this optimizer run), not just subs placed
-    // during this run. Without this, a newly-placed sub could land at or
-    // very near an existing source's exact position, since minSeparationFt
-    // only ever excluded points already IN this list.
-    const placedPositions = activeMains.map(s => ({ x: s.x, y: s.y }));
-    let lastRound = null;
-
-    for(let i = 0; i < numSubs; i++){
-      const subLabel = numSubs > 1 ? `sub ${i+1} of ${numSubs}` : 'position';
-      status.textContent = `Optimizing ${subLabel}...`;
-      // yield to the browser so the status text actually paints before the
-      // (now-chunked, but still potentially multi-second) round starts
-      await new Promise(resolve => requestAnimationFrame(resolve));
-
-      const round = await runOneOptimizerRound(currentOtherSources, freqList, listenerPositions, subHeight, step, placedPositions, minSeparationFt, modes,
-        (fraction) => { status.textContent = `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`; });
-      lastRound = round;
-      if(round.best === null) break; // no valid candidates left; stop with whatever was placed so far
-
-      const placed = { id: nextId++, name: nextSubName(sources.concat(placedSubs)), x: round.best.x, y: round.best.y, z: subHeight,
-        levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
-      placedSubs.push(placed);
-      placedPositions.push({ x: placed.x, y: placed.y });
-      currentOtherSources = currentOtherSources.concat([placed]);
+    for(const sub of result.placedSubs){
+      placedSubs.push(Object.assign({}, sub, { id: nextId++, name: nextSubName(sources.concat(placedSubs)) }));
     }
 
     // Show the LAST round's heatmap (i.e. the search that placed the final sub,
     // accounting for all previously-placed subs) -- most representative of
     // "given everything else, where's still good/bad" after full placement.
+    const lastRound = result.roundResults[result.roundResults.length - 1] || null;
     optimizerResult = lastRound ? { best: lastRound.best, allCandidates: lastRound.allCandidates, gridStepFt: step, placedSubs } : null;
 
     if(placedSubs.length === 0){
