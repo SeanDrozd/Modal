@@ -264,8 +264,10 @@
         </div>
       </div>
       <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click &mdash; each source can still be adjusted individually afterward.</div>
-      <button id="timeAlignBtn" class="full" style="margin-bottom:8px;">Time-align to listener</button>
-      <div class="hint" style="margin-bottom:10px;">Sets every source's delay (below) so its direct sound arrives at the listening position at the same time as the farthest source &mdash; the farthest source itself gets 0 delay, since delay can only push a signal later, never earlier. Each source's delay can still be adjusted individually afterward (e.g. to intentionally detune and watch the frequency response chart). Assumes you have a way to actually apply per-source delay in real life (an AVR's speaker-distance trim, or DSP) &mdash; see the README for the practical caveats.</div>
+      <div class="row" style="margin-bottom:8px;"><label>Auto time-align</label>
+        <input type="checkbox" id="autoTimeAlignToggle" checked style="width:auto; flex:0;">
+      </div>
+      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source (which always gets 0 delay, since delay can only push a signal later, never earlier), recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
       <div id="srcList"></div>
       <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
     </div>
@@ -512,6 +514,7 @@
   let ceilingCustomAbsorption = 0.06; // used only when ceilingMaterialKey is 'custom'
   let floorAbsorption = 0.15; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
   let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
+  let autoTimeAlignEnabled = true; // see autoTimeAlign; a session/workflow preference, not a room property, so it lives in session settings, not a saved preset
   let nextId = 1;
   let presets = {}; // name -> config
   let currentPresetName = null;
@@ -925,7 +928,7 @@
     try {
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
-        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, freqSweepSpeed,
+        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed,
         lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
@@ -966,6 +969,10 @@
     if(session.optimizerMode === 'balanced' || session.optimizerMode === 'nullAvoidance'){
       optimizerMode = session.optimizerMode;
       document.getElementById('optimizerMode').value = optimizerMode;
+    }
+    if(typeof session.autoTimeAlignEnabled === 'boolean'){
+      autoTimeAlignEnabled = session.autoTimeAlignEnabled;
+      document.getElementById('autoTimeAlignToggle').checked = autoTimeAlignEnabled;
     }
     if(FREQ_SWEEP_SPEED_LEVELS.includes(session.freqSweepSpeed)){
       freqSweepSpeed = session.freqSweepSpeed;
@@ -1141,6 +1148,7 @@
       block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
         s.enabled = this.checked;
         block.style.opacity = this.checked ? '1' : '0.5';
+        autoTimeAlign(); syncDelaySlidersFromState(); // the active-source set changed, which time-align depends on
         scheduleDraw();
       });
       block.querySelector('[data-field="name"]').addEventListener('input', function(){
@@ -1154,6 +1162,7 @@
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(sources.length <= 1){ showStatus('Keep at least one source', false); return; }
         sources = sources.filter(x => x.id !== s.id);
+        autoTimeAlign();
         renderSrcList();
         draw();
       });
@@ -1191,6 +1200,7 @@
       });
       wireLengthField(block, 'z', (ft) => {
         s.z = Math.max(0, Math.min(room.h, ft || 0));
+        autoTimeAlign(); syncDelaySlidersFromState();
         draw();
       });
     });
@@ -1241,14 +1251,21 @@
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(listenerRows.length <= 1){ showStatus('Keep at least one listening position', false); return; }
         listenerRows = listenerRows.filter(r => r.id !== row.id);
+        autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
         renderListenerRowsList();
         draw();
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, -1)){ renderListenerRowsList(); scheduleDraw(); }
+        if(moveArrayItem(listenerRows, idx, -1)){
+          autoTimeAlign(); syncDelaySlidersFromState(); // reordering can change which row is rank 1
+          renderListenerRowsList(); scheduleDraw();
+        }
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, 1)){ renderListenerRowsList(); scheduleDraw(); }
+        if(moveArrayItem(listenerRows, idx, 1)){
+          autoTimeAlign(); syncDelaySlidersFromState();
+          renderListenerRowsList(); scheduleDraw();
+        }
       });
       const seatsInput = block.querySelector('[data-field="seats"]');
       seatsInput.addEventListener('change', function(){
@@ -1270,6 +1287,7 @@
       });
       wireLengthField(block, 'z', (ft) => {
         row.z = Math.max(0, Math.min(room.h, ft || 0));
+        autoTimeAlign(); syncDelaySlidersFromState();
         draw();
       });
     });
@@ -1509,6 +1527,7 @@
       rolloffDbPerOct: 24
     };
     sources.push(newSrc);
+    autoTimeAlign();
     renderSrcList();
     draw();
   });
@@ -1528,6 +1547,7 @@
       rolloffDbPerOct: 24
     };
     sources.push(newSrc);
+    autoTimeAlign();
     renderSrcList();
     draw();
   });
@@ -1553,17 +1573,55 @@
     draw();
   });
 
-  document.getElementById('timeAlignBtn').addEventListener('click', () => {
+  document.getElementById('autoTimeAlignToggle').addEventListener('change', function(){
+    autoTimeAlignEnabled = this.checked;
+    if(autoTimeAlignEnabled){ autoTimeAlign(); renderSrcList(); } // snap into alignment immediately, not just on the next move
+    saveSessionSettings();
+    draw();
+  });
+
+  // Recomputes every active source's delay so its direct sound arrives at
+  // the listening position together with the farthest source (see
+  // RoomPhysics.timeAlignDelays). Used to be a manual "Time-align to
+  // listener" button; now called automatically at every point a source or
+  // listening-row position/height/rank changes (see the call sites below,
+  // moveTarget for drags, the add/remove/reorder handlers, per-item height
+  // fields), so delays stay continuously in sync instead of needing a
+  // re-click, as long as autoTimeAlignEnabled is on (the "Auto time-align"
+  // checkbox). A manually-set delay still sticks until the next such change,
+  // which is enough to briefly detune and watch the frequency response
+  // chart without it being permanently overridden mid-adjustment; turning
+  // the checkbox off makes every delay stick indefinitely, not just until
+  // the next move.
+  function autoTimeAlign(){
+    if(!autoTimeAlignEnabled) return;
     const activeSources = sources.filter(s => s.enabled !== false);
-    if(activeSources.length < 2){ showStatus('Need at least 2 active sources to time-align', false); return; }
+    if(activeSources.length < 2) return;
     const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
     const byId = new Map(results.map(r => [r.id, r.delayMs]));
     for(const s of sources){
       if(byId.has(s.id)) s.delayMs = Math.round(byId.get(s.id) * 10) / 10; // match the 0.1ms slider step
     }
-    renderSrcList();
-    draw();
-  });
+  }
+  // Lightweight refresh of just the delay slider/readout in each already-
+  // rendered source block, instead of a full renderSrcList() rebuild.
+  // Called after a drag (moveTarget fires on every mousemove), where
+  // rebuilding the whole list's DOM every frame would be wasteful and would
+  // drop focus/cursor position out of any field the user has open. Relies on
+  // srcList's blocks being in the same order as `sources` (true immediately
+  // after any renderSrcList() call; nothing reorders sources in between).
+  function syncDelaySlidersFromState(){
+    const list = document.getElementById('srcList');
+    if(!list) return;
+    list.querySelectorAll('.src-block').forEach((block, idx) => {
+      const s = sources[idx];
+      if(!s) return;
+      const dly = block.querySelector('[data-field="delayMs"]');
+      const out = block.querySelector('[data-out="delayMs"]');
+      if(dly) dly.value = s.delayMs;
+      if(out) out.textContent = s.delayMs.toFixed(1);
+    });
+  }
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
   // These wrappers adapt RoomPhysics's explicit-parameter functions to this
@@ -2629,7 +2687,7 @@
     }
     const db = dbAtFreqInResponse(freqResponseData.response, freq);
     el.innerHTML = db == null ? '' :
-      `Current: <b>${Math.round(freq)} Hz</b>, <b>${db.toFixed(1)} dB</b>`;
+      `Current: <b>${Math.round(freq)} Hz</b>, <b>${Math.round(db)} dB</b>`;
   }
 
   function redrawFreqResponseCanvas(){
@@ -3034,6 +3092,7 @@
     for(const s of optimizerResult.placedSubs){
       sources.push(s); // already has a real id assigned when created in runSubOptimizer
     }
+    autoTimeAlign();
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
@@ -3204,6 +3263,7 @@
     const s = sources.find(s=>s.id===dragTarget);
     if(s){ s.x = cx; s.y = cy; }
     else { const r = listenerRows.find(r=>r.id===dragTarget); if(r){ r.x = cx; r.y = cy; } }
+    autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
     scheduleDraw();
   }
   canvas.addEventListener('mousedown', (e) => {
