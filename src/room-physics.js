@@ -662,6 +662,18 @@
   // result in here; omitted, this falls back to computing it itself so every
   // existing call site (tests included) keeps working unchanged.
   const RELIEF_DB = 15; // nullAvoidance: how much a fully-unimportant (weight 0) listener's null is forgiven
+  // 'balanced' mode: how many dB of score a full point of worstStdDev (flatness
+  // unevenness) costs, relative to avgMean's 1:1 weight. Lower values let raw
+  // output matter more relative to flatness. For example, wall/corner placements
+  // couple into every room mode more strongly than open-floor placements
+  // (a real, physically modeled effect: every mode's shape function peaks at
+  // the room's boundaries), genuinely raising avgMean there, but also tend to
+  // produce a somewhat less even response at a fixed listening point, raising
+  // worstStdDev too. At the previous 1.5, that flatness cost could outweigh a
+  // real boundary-reinforcement gain by a hair in close cases; 1.0 keeps
+  // flatness meaningfully penalized while letting a genuine level advantage
+  // win more decisively.
+  const BALANCED_FLATNESS_WEIGHT = 1.0;
   function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
@@ -747,7 +759,7 @@
     // null is partially forgiven (up to RELIEF_DB) rather than discounted.
     const score = mode === 'nullAvoidance'
       ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
-      : avgMean - (worstStdDev * 1.5 * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight;
+      : avgMean - (worstStdDev * BALANCED_FLATNESS_WEIGHT * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight;
 
     return {
       score,
@@ -922,6 +934,7 @@
     isNearNull,
     nullAvoidanceSpreadPenalty,
     scoreSubPosition,
+    BALANCED_FLATNESS_WEIGHT,
     isPointInRect,
     isCandidateValid,
     optimizeSubPlacement,
