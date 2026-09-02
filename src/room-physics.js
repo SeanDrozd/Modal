@@ -773,21 +773,25 @@
 
   // ---- Candidate position filtering ----
   // A candidate is valid if it's inside the room, outside every off-limits zone,
-  // and (if any preferred zones are defined) inside at least one preferred zone.
+  // and (if any allowed zones are defined) inside at least one allowed zone.
+  // ("Allowed zone" is a hard restriction: subs may ONLY be placed inside one, if
+  // any exist. This is distinct from a "preferred zone", which is a soft scoring
+  // bias applied later in scanGridCandidates -- see preferredZoneBonusDb -- and
+  // never excludes a candidate outright.)
   // Zones are axis-aligned rectangles: { x, y, width, height } in feet.
   function isPointInRect(px, py, rect){
     return px >= rect.x && px <= rect.x + rect.width &&
            py >= rect.y && py <= rect.y + rect.height;
   }
 
-  function isCandidateValid(px, py, room, offLimitZones, preferredZones, excludePoints, minSeparationFt){
+  function isCandidateValid(px, py, room, offLimitZones, allowedZones, excludePoints, minSeparationFt){
     if(px < 0 || px > room.w || py < 0 || py > room.d) return false;
     for(const zone of (offLimitZones || [])){
       if(isPointInRect(px, py, zone)) return false;
     }
-    if(preferredZones && preferredZones.length > 0){
-      const inAnyPreferred = preferredZones.some(zone => isPointInRect(px, py, zone));
-      if(!inAnyPreferred) return false;
+    if(allowedZones && allowedZones.length > 0){
+      const inAnyAllowed = allowedZones.some(zone => isPointInRect(px, py, zone));
+      if(!inAnyAllowed) return false;
     }
     // Enforce a minimum clearance from any already-placed point (e.g. other
     // subs placed in earlier greedy rounds). Without this, the greedy search
@@ -814,6 +818,20 @@
     return true;
   }
 
+  // A "preferred zone" is a soft bias, not a hard restriction: a candidate inside
+  // one gets a flat score bonus, but candidates outside are still fully considered
+  // (unlike an allowed zone, which excludes them via isCandidateValid above). This
+  // lets a genuinely better spot elsewhere still win, while nudging the optimizer
+  // toward the preferred area in close cases. Kept as a simple additive dB-scale
+  // bonus rather than a multiplier, so it composes cleanly regardless of the
+  // underlying score's sign or magnitude.
+  const PREFERRED_ZONE_BONUS_DB = 3;
+  function preferredZoneBonusDb(candidatePos, preferredZones){
+    if(!preferredZones || preferredZones.length === 0) return 0;
+    const inside = preferredZones.some(zone => isPointInRect(candidatePos.x, candidatePos.y, zone));
+    return inside ? PREFERRED_ZONE_BONUS_DB : 0;
+  }
+
   // ---- Shared grid-candidate scan ----
   // A generator, not a plain function, so the exact same "walk the grid,
   // validate a candidate, score it" logic can drive both a synchronous caller
@@ -825,7 +843,7 @@
   function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
-      offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -840,12 +858,20 @@
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
-        if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)){
+        if(!isCandidateValid(x, y, room, offLimitZones, allowedZones, excludePoints, minSeparationFt)){
           yield null;
           continue;
         }
         const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints, modes);
-        yield { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
+        // A preferred zone is a SOFT bias, unlike an allowed zone: it never
+        // excludes a candidate (isCandidateValid above knows nothing about
+        // it), it just adds a flat bonus to the score of any candidate that
+        // falls inside one, so a genuinely better spot outside the zone can
+        // still win. Applied here rather than inside scoreSubPosition to
+        // keep that function's existing, already-tested balanced/
+        // nullAvoidance formulas untouched.
+        const bonus = preferredZoneBonusDb({ x, y }, preferredZones);
+        yield { x, y, z, score: eval_.score + bonus, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
       }
     }
   }
@@ -863,10 +889,11 @@
   }
 
   // ---- Single-sub grid search optimizer ----
-  // Scans a grid of candidate positions (respecting off-limits/preferred zones
-  // and, if provided, a minimum separation from excludePoints), scores each with
-  // scoreSubPosition, and returns the best one plus the full scored grid (useful
-  // for visualizing "how good is every position", not just the winner).
+  // Scans a grid of candidate positions (respecting off-limits/allowed zones, a
+  // soft preferred-zone bonus, and, if provided, a minimum separation from
+  // excludePoints), scores each with scoreSubPosition, and returns the best one
+  // plus the full scored grid (useful for visualizing "how good is every
+  // position", not just the winner).
   function optimizeSubPlacement(options){
     const results = [];
     let best = null;
@@ -931,7 +958,7 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number
@@ -959,7 +986,7 @@
     for(let i = 0; i < numSubs; i++){
       const roundResult = optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode
       });
       roundResults.push(roundResult);
@@ -992,7 +1019,7 @@
   async function optimizeMultipleSubsAsync(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
       onYield, onProgress, yieldEvery
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
@@ -1006,7 +1033,7 @@
     for(let i = 0; i < numSubs; i++){
       const roundResult = await optimizeSubPlacementAsync({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
         precomputedModes: modes, onYield, yieldEvery,
         onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
@@ -1050,6 +1077,8 @@
     nullAvoidanceSpreadPenalty,
     scoreSubPosition,
     BALANCED_FLATNESS_WEIGHT,
+    PREFERRED_ZONE_BONUS_DB,
+    preferredZoneBonusDb,
     isPointInRect,
     isCandidateValid,
     scanGridCandidates,

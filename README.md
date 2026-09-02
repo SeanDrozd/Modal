@@ -43,7 +43,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 **Subwoofer optimizer**
 - Scores candidate positions across a configurable frequency range and every seat in every listening-position row, weighted by that row's rank and the seat's position within its row (see [How it works](#how-it-works))
 - "Balanced" mode (minimize variance + penalize deep nulls) or "null avoidance" mode (for rooms already using DSP/room correction, where flat average level matters less than avoiding un-fixable nulls), with a spread penalty so multiple subs don't cluster together
-- Off-limits and preferred zones, drawn on the map
+- Three zone types, drawn on the map: off-limits (never place a sub here), allowed (only place subs inside here, a hard restriction), and preferred (a soft bias toward here, but a meaningfully better spot elsewhere can still win)
 
 **Rendering & UI**
 - GPU (WebGL) rendering, with a built-in on-demand check that samples points and compares against the CPU path's exact math; GPU falls back to CPU automatically if unavailable
