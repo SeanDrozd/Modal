@@ -1482,8 +1482,12 @@
   }
   // Same idea for subs: first unused "SW<n>", taking already-existing subs
   // (however they got their name) into account rather than a separate counter.
-  function nextSubName(){
-    const used = new Set(sources.map(s => s.name));
+  // existingSources defaults to `sources`, but the optimizer (which names
+  // several subs in a row before any of them are actually in `sources` yet --
+  // see runSubOptimizer) passes sources.concat(placedSubs) so each round sees
+  // the ones it already placed this run, not just what was there before it started.
+  function nextSubName(existingSources){
+    const used = new Set((existingSources || sources).map(s => s.name));
     let n = 1;
     while(used.has('SW' + n)) n++;
     return 'SW' + n;
@@ -1717,9 +1721,13 @@
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than a fixed number that's too
     // strict in a small room or too loose in a large one. 25%/4ft floor
-    // (rather than 15%/1ft) so subs land meaningfully apart by default -- a
-    // couple feet of separation is essentially meaningless at sub wavelengths.
-    const minSeparationFt = Math.max(4, Math.min(room.w, room.d) * 0.25);
+    // (rather than 15%/1ft) so subs land meaningfully apart by default, since
+    // a couple feet of separation is essentially meaningless at sub
+    // wavelengths. The outer Math.max(3, ...) is a hard floor: combined with
+    // isCandidateValid's square (not circular) exclusion check, this
+    // guarantees at least a 6x6ft clearance around every already-placed sub,
+    // a reasonable minimum footprint for an actual cabinet.
+    const minSeparationFt = Math.max(3, 4, Math.min(room.w, room.d) * 0.25);
     // Enumerated once for the whole multi-sub search, not once per candidate
     // per round -- room geometry/materials (physicsCtx()) don't change
     // between rounds, so this was being redone thousands of times per
@@ -1743,7 +1751,7 @@
       lastRound = round;
       if(round.best === null) break; // no valid candidates left; stop with whatever was placed so far
 
-      const placed = { id: nextId++, name: `Sub ${i+1}`, x: round.best.x, y: round.best.y, z: subHeight,
+      const placed = { id: nextId++, name: nextSubName(sources.concat(placedSubs)), x: round.best.x, y: round.best.y, z: subHeight,
         levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
       placedSubs.push(placed);
       placedPositions.push({ x: placed.x, y: placed.y });

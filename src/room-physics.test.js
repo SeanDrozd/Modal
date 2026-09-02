@@ -1011,6 +1011,36 @@ test('isCandidateValid rejects points too close to an exclude point', () => {
   assert.strictEqual(P.isCandidateValid(15, 12, room, [], [], excludePoints, 2), true);
 });
 
+test('isCandidateValid checks a SQUARE footprint, not a circular radius: rejects a diagonal near-miss a circle of the same radius would accept', () => {
+  const room = { w: 18, d: 13.5 };
+  const excludePoints = [{ x: 9, y: 9 }];
+  const r = 4;
+  // A point offset (0.9r, 0.9r) is about 1.27r away in a straight line (well
+  // outside a circle of radius r), but only 0.9r away along EACH axis --
+  // a square check should still reject it, where a circular check would not.
+  const px = 9 + r * 0.9, py = 9 + r * 0.9;
+  const straightLineDist = Math.sqrt((px-9)**2 + (py-9)**2);
+  assert.ok(straightLineDist > r, 'test setup: this point should be outside a circle of radius r');
+  assert.strictEqual(P.isCandidateValid(px, py, room, [], [], excludePoints, r), false,
+    `expected the square check to reject a point ${straightLineDist.toFixed(2)}ft away in a straight line but only ${(r*0.9).toFixed(2)}ft away along each axis`);
+});
+
+test('isCandidateValid: any point it accepts is still at least minSeparationFt away in straight-line distance (square exclusion strictly subsumes the circular guarantee)', () => {
+  const room = { w: 18, d: 13.5 };
+  const excludePoints = [{ x: 9, y: 9 }];
+  const r = 3;
+  for(let dx = -6; dx <= 6; dx += 0.5){
+    for(let dy = -6; dy <= 6; dy += 0.5){
+      const px = 9 + dx, py = 9 + dy;
+      if(px < 0 || px > room.w || py < 0 || py > room.d) continue;
+      if(P.isCandidateValid(px, py, room, [], [], excludePoints, r)){
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        assert.ok(dist >= r - 1e-9, `accepted point (${dx},${dy}) is only ${dist.toFixed(2)}ft from the excluded point, expected >= ${r}ft`);
+      }
+    }
+  }
+});
+
 console.log('\n-- schroederFrequency --');
 
 test('matches hand-calculated value for a known room and T60', () => {
