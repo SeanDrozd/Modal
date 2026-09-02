@@ -814,15 +814,18 @@
     return true;
   }
 
-  // ---- Single-sub grid search optimizer ----
-  // Scans a grid of candidate positions (respecting off-limits/preferred zones
-  // and, if provided, a minimum separation from excludePoints), scores each with
-  // scoreSubPosition, and returns the best one plus the full scored grid (useful
-  // for visualizing "how good is every position", not just the winner).
-  function optimizeSubPlacement(options){
+  // ---- Shared grid-candidate scan ----
+  // A generator, not a plain function, so the exact same "walk the grid,
+  // validate a candidate, score it" logic can drive both a synchronous caller
+  // (optimizeSubPlacement, below) and an async/chunked caller
+  // (optimizeSubPlacementAsync) without duplicating the loop body between them.
+  // Yields null for an invalid cell (rather than skipping it) so a caller that's
+  // counting scanned cells for chunking purposes sees every grid cell, not just
+  // the valid ones.
+  function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
-      offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode
+      offLimitZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -830,19 +833,82 @@
     // depend on room geometry + wall materials (physicsCtx), never on the
     // candidate position, so re-deriving them per grid cell (hundreds to
     // thousands of times per search) was pure repeated work. See
-    // scoreSubPosition's precomputedModes comment.
-    const modes = enumerateModes(physicsCtx);
-
-    const results = [];
-    let best = null;
+    // scoreSubPosition's precomputedModes comment. A caller placing multiple
+    // subs across several grid scans can pass precomputedModes to avoid
+    // re-enumerating them once per sub too.
+    const modes = precomputedModes || enumerateModes(physicsCtx);
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
-        if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)) continue;
+        if(!isCandidateValid(x, y, room, offLimitZones, preferredZones, excludePoints, minSeparationFt)){
+          yield null;
+          continue;
+        }
         const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints, modes);
-        const entry = { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
+        yield { x, y, z, score: eval_.score, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
+      }
+    }
+  }
+
+  // Total number of grid cells scanGridCandidates will walk for a given room and
+  // step size, using the identical loop bounds -- kept in sync by construction so
+  // it can never drift from the actual candidate count.
+  function countGridCells(room, gridStepFt){
+    const step = gridStepFt || 0.5;
+    let n = 0;
+    for(let x = step/2; x < room.w; x += step){
+      for(let y = step/2; y < room.d; y += step) n++;
+    }
+    return n;
+  }
+
+  // ---- Single-sub grid search optimizer ----
+  // Scans a grid of candidate positions (respecting off-limits/preferred zones
+  // and, if provided, a minimum separation from excludePoints), scores each with
+  // scoreSubPosition, and returns the best one plus the full scored grid (useful
+  // for visualizing "how good is every position", not just the winner).
+  function optimizeSubPlacement(options){
+    const results = [];
+    let best = null;
+    for(const entry of scanGridCandidates(options)){
+      if(entry === null) continue;
+      results.push(entry);
+      if(best === null || entry.score > best.score) best = entry;
+    }
+    return { best, allCandidates: results };
+  }
+
+  // Async/chunked twin of optimizeSubPlacement, for callers (the UI) that need to
+  // yield control back to the browser periodically during a long search instead
+  // of freezing the tab for the whole synchronous scan. Behaviorally identical to
+  // optimizeSubPlacement when onYield/onProgress are omitted -- both drive the
+  // same scanGridCandidates generator, so there's only one copy of the actual
+  // search logic to keep correct.
+  //
+  // options additionally accepts:
+  //   onYield: () => Promise   -- awaited every yieldEvery scanned cells (default 150)
+  //   onProgress: (fraction) => void -- called with 0 before scanning starts, then
+  //                                      scanned/totalGridCells at each yield point
+  //   yieldEvery: number -- chunk size, default 150
+  async function optimizeSubPlacementAsync(options){
+    const { onYield, onProgress, yieldEvery } = options;
+    const chunkSize = yieldEvery || 150;
+    const totalGridCells = countGridCells(options.room, options.gridStepFt);
+    if(onProgress) onProgress(0);
+    if(onYield) await onYield();
+
+    const results = [];
+    let best = null;
+    let scanned = 0;
+    for(const entry of scanGridCandidates(options)){
+      scanned++;
+      if(entry !== null){
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
+      }
+      if(scanned % chunkSize === 0){
+        if(onProgress) onProgress(scanned / totalGridCells);
+        if(onYield) await onYield();
       }
     }
 
@@ -915,6 +981,50 @@
     return { placedSubs, roundResults };
   }
 
+  // Async/chunked twin of optimizeMultipleSubs, for the same reason
+  // optimizeSubPlacementAsync exists: lets a UI caller run a multi-sub search
+  // without freezing the tab. onProgress is called as (fraction, roundIndex) so
+  // a caller can show e.g. "Optimizing sub 2 of 3... 40%" without tracking round
+  // boundaries itself. Unlike optimizeMultipleSubs, enumerateModes is computed
+  // once for the whole run (not once per round) and threaded through via
+  // precomputedModes -- purely a perf win, produces numerically identical
+  // placements, since physicsCtx never changes between rounds.
+  async function optimizeMultipleSubsAsync(options){
+    const {
+      room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
+      onYield, onProgress, yieldEvery
+    } = options;
+    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const modes = enumerateModes(physicsCtx);
+
+    const placedSubs = [];
+    const placedPositions = otherSources.map(s => ({ x: s.x, y: s.y }));
+    const roundResults = [];
+    let currentOtherSources = otherSources.slice();
+
+    for(let i = 0; i < numSubs; i++){
+      const roundResult = await optimizeSubPlacementAsync({
+        room, otherSources: currentOtherSources, freqList, listenerPositions,
+        physicsCtx, offLimitZones, preferredZones, gridStepFt, subHeightFt,
+        excludePoints: placedPositions, minSeparationFt: separation, mode,
+        precomputedModes: modes, onYield, yieldEvery,
+        onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
+      });
+      roundResults.push(roundResult);
+      if(roundResult.best === null) break;
+      const placedSub = Object.assign(
+        { name: `Sub ${i+1}`, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+        { x: roundResult.best.x, y: roundResult.best.y, z: roundResult.best.z }
+      );
+      placedSubs.push(placedSub);
+      placedPositions.push({ x: placedSub.x, y: placedSub.y });
+      currentOtherSources = currentOtherSources.concat([placedSub]);
+    }
+
+    return { placedSubs, roundResults };
+  }
+
   return {
     FT_TO_M, C,
     sourceGainAtFreq,
@@ -942,7 +1052,11 @@
     BALANCED_FLATNESS_WEIGHT,
     isPointInRect,
     isCandidateValid,
+    scanGridCandidates,
+    countGridCells,
     optimizeSubPlacement,
-    optimizeMultipleSubs
+    optimizeSubPlacementAsync,
+    optimizeMultipleSubs,
+    optimizeMultipleSubsAsync
   };
 });

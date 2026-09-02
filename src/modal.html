@@ -242,7 +242,7 @@
         <label>Ceiling height</label>
         <span id="roomHField"></span>
       </div>
-      <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft &mdash; beyond that, this tool's 1-2 sub optimizer and handful of ranked listening positions stop being a meaningful fit for the room, well before the modal solution's own math or GPU limits would actually break.</div>
+      <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft. Beyond that, this tool's sub optimizer and handful of ranked listening positions stop being a meaningful fit for the room.</div>
       <div id="modalInfo"></div>
     </div>
   </div>
@@ -254,7 +254,7 @@
     </div>
     <div class="section-body">
       <div id="listenerRowsList"></div>
-      <div class="hint">A "row" is a group of seats (a couch, a row of recliners) &mdash; rank is just this list's order (drag/reorder with the arrows below): the top row matters most, and it fades from there. Within a row, the center seat matters most, tapering toward the ends. Position is set by dragging each row's marker on the map.</div>
+      <div class="hint">A "row" is a group of seats (a couch, a row of recliners), rank is just this list's order (drag/reorder with the arrows below): the top row matters most, and it fades from there. Within a row, the center seat matters most, tapering toward the ends. Position is set by dragging each row's marker on the map.</div>
     </div>
   </div>
 
@@ -282,13 +282,13 @@
           <button id="applyRolloffAllBtn" class="small">Apply to all</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click &mdash; each source can still be adjusted individually afterward.</div>
+      <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click. Each source can still be adjusted individually afterward.</div>
       <div class="row" style="margin-bottom:8px;"><label>Auto time-align</label>
         <input type="checkbox" id="autoTimeAlignToggle" checked style="width:auto; flex:0;">
       </div>
-      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source (which always gets 0 delay, since delay can only push a signal later, never earlier), recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
+      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source, recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
       <div id="srcList"></div>
-      <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position &mdash; check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
+      <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position. Check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
     </div>
   </div>
 
@@ -329,7 +329,7 @@
           <option value="nullAvoidance">Null avoidance (room correction)</option>
         </select>
       </div>
-      <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available &mdash; it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
+      <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available: it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
       <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
         <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
         <span style="color:var(--text-dim);font-size:12.5px;">to</span>
@@ -359,7 +359,7 @@
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Walls</span></div>
     <div class="section-body">
       <div id="wallList"></div>
-      <div class="hint">Ordinary drywall-on-studs construction absorbs more bass right around its own resonance (damped further by cavity insulation) than it does elsewhere &mdash; rigid materials like masonry stay close to flat across the whole range. These are typical/illustrative values, not measured for your exact walls.</div>
+      <div class="hint">Ordinary drywall-on-studs construction absorbs more bass right around its own resonance (damped further by cavity insulation) than it does elsewhere. Rigid materials like masonry stay close to flat across the whole range. These are typical/illustrative values, not measured for your exact walls.</div>
     </div>
   </div>
 
@@ -393,7 +393,7 @@
         <span class="val" id="ceilingCustomAbsorptionVal">0.06</span>
       </div>
       <div class="hint" id="ceilingReadout"></div>
-      <div class="hint">Suspended acoustic tile absorbs broadband (more at higher frequencies) rather than resonating like drywall &mdash; it does relatively little within this tool's bass-focused range.</div>
+      <div class="hint">Suspended acoustic tile absorbs broadband (more at higher frequencies) rather than resonating like drywall, so it does relatively little within this tool's bass-focused range.</div>
     </div>
   </div>
 
@@ -404,14 +404,14 @@
         <div class="row-stacked-head"><label>Grid resolution</label><span class="val" id="resolutionScaleVal">1.0x</span></div>
         <input type="range" id="resolutionScale" min="0.5" max="3" step="0.25" value="1">
       </div>
-      <div class="hint">Higher resolution reduces blockiness/aliasing in the field but slows down redraws &mdash; lower it if dragging feels sluggish.</div>
+      <div class="hint">Higher resolution reduces blockiness/aliasing in the field but slows down redraws. Lower it if dragging feels sluggish.</div>
       <div class="row" style="margin-top:8px;"><label>Rendering</label>
         <select id="renderModeSelect" style="width:auto; flex:1;">
           <option value="cpu">CPU (canvas)</option>
-          <option value="gpu" selected>GPU (WebGL) &mdash; experimental</option>
+          <option value="gpu" selected>GPU (WebGL, experimental)</option>
         </select>
       </div>
-      <div class="hint" id="renderModeHint">GPU mode computes the same physics as CPU mode, but in parallel on the graphics card &mdash; useful at high grid resolution. Still experimental; if results look wrong, switch back to CPU.</div>
+      <div class="hint" id="renderModeHint">GPU mode computes the same physics as CPU mode, but in parallel on the graphics card, which is useful at high grid resolution. Still experimental; if results look wrong, switch back to CPU.</div>
       <div id="truncationWarning" class="hint" style="display:none; color:var(--bad); margin-top:6px;"></div>
       <button id="verifyGpuBtn" class="small" style="margin-top:8px;">Verify GPU vs CPU</button>
       <div id="verifyResult" class="hint" style="margin-top:6px;"></div>
@@ -465,8 +465,6 @@
 
 <script>
 (function(){
-  const FT_TO_M = 0.3048;
-  const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
   // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
@@ -1504,9 +1502,9 @@
   function updateZoneDrawHint(){
     const hint = document.getElementById('zoneDrawHint');
     if(zoneDrawMode === 'offlimit'){
-      hint.innerHTML = `<span style="color:${OFFLIMIT_COLOR}">Drawing off-limits zone</span> &mdash; click-drag on the map. Click the button again to stop.`;
+      hint.innerHTML = `<span style="color:${OFFLIMIT_COLOR}">Drawing off-limits zone.</span> Click-drag on the map. Click the button again to stop.`;
     } else if(zoneDrawMode === 'preferred'){
-      hint.innerHTML = `<span style="color:${PREFERRED_COLOR}">Drawing preferred zone</span> &mdash; click-drag on the map. Click the button again to stop.`;
+      hint.innerHTML = `<span style="color:${PREFERRED_COLOR}">Drawing preferred zone.</span> Click-drag on the map. Click the button again to stop.`;
     } else {
       hint.textContent = "Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.";
     }
@@ -1702,8 +1700,14 @@
   }
 
   function dbAtFreq(px, py, pz, sourceList, atFreq){
-    const precomputed = precomputeFieldForSources(sourceList, atFreq);
-    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
+    const activeSources = sourceList.filter(s => s.enabled !== false);
+    return RoomPhysics.fieldDbAtPoint(px, py, pz, activeSources, atFreq, physicsCtx());
+  }
+  // Shared by the two spots below that can't delegate to fieldDbAtPoint the way
+  // dbAtFreq now does -- they operate on already-precomputed per-pixel field
+  // data (a heatmap render), not raw sources+frequency, so there's no
+  // "sources+freq" call to hand off to.
+  function magToDb(re, im){
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6));
   }
@@ -1713,69 +1717,15 @@
     return RoomPhysics.earPositions(lst, lst.facing ?? 0);
   }
 
-  // Scores one candidate sub position via RoomPhysics.scoreSubPosition (same
-  // weighting/tested implementation the optimizer's standalone reference uses),
-  // adapted to this file's (cx,cy,czHeight,...) call signature so existing
-  // callers below are unchanged.
-  function scoreCandidate(cx, cy, czHeight, otherSourceList, freqList, listenerPositions, excludePoints, modes){
-    const result = RoomPhysics.scoreSubPosition(
-      { x: cx, y: cy, z: czHeight }, otherSourceList, room, freqList, listenerPositions, physicsCtx(), optimizerMode, excludePoints, modes
-    );
-    return { score: result.score, avgMean: result.avgMean, worstStdDev: result.worstStdDev, worstMinDb: result.worstMinDb };
-  }
-
   const isPointInZoneRect = RoomPhysics.isPointInRect;
-  function isCandidatePositionValid(px, py, excludePoints, minSeparationFt){
-    return RoomPhysics.isCandidateValid(px, py, room, offLimitZones, preferredZones, excludePoints, minSeparationFt);
-  }
 
-  // One round of grid search: scores every valid candidate position given a
-  // fixed set of "other" sources (mains + any subs already placed in earlier
-  // rounds), returns the winner plus the full scored grid. `modes` is
-  // enumerateModes(physicsCtx()) computed ONCE by the caller (see
-  // runSubOptimizer) -- it doesn't depend on the candidate position, so
-  // recomputing it per grid cell (hundreds to thousands of times per round)
-  // was pure repeated work; see scoreSubPosition's precomputedModes comment.
-  //
-  // Async and yields to the browser every ROUND_CHUNK_SIZE candidates (an
-  // animation-frame pause, same mechanism runSubOptimizer already used
-  // BETWEEN rounds) -- without this, a single round is one long synchronous
-  // call that freezes the whole tab for its entire duration (which was the
-  // actual cause of "the button hangs for a few seconds": for a 1-sub
-  // search there's only ever one round, so the between-round yield never
-  // even got a chance to run). Chunking doesn't reduce total work, but it
-  // lets the browser paint/respond during the search instead of locking up,
-  // and lets onProgress (optional) drive a live percentage in the status text.
-  const ROUND_CHUNK_SIZE = 150;
-  async function runOneOptimizerRound(otherSourceList, freqList, listenerPositions, subHeight, step, excludePoints, minSeparationFt, modes, onProgress){
-    const candidates = [];
-    let best = null;
-    const xs = []; for(let x = step/2; x < room.w; x += step) xs.push(x);
-    const ys = []; for(let y = step/2; y < room.d; y += step) ys.push(y);
-    const totalGridCells = xs.length * ys.length;
-    let scanned = 0;
-    for(const x of xs){
-      for(const y of ys){
-        scanned++;
-        if(!isCandidatePositionValid(x, y, excludePoints, minSeparationFt)) continue;
-        const result = scoreCandidate(x, y, subHeight, otherSourceList, freqList, listenerPositions, excludePoints, modes);
-        const entry = { x, y, ...result };
-        candidates.push(entry);
-        if(best === null || entry.score > best.score) best = entry;
-        if(scanned % ROUND_CHUNK_SIZE === 0){
-          if(onProgress) onProgress(scanned / totalGridCells);
-          await new Promise(resolve => requestAnimationFrame(resolve));
-        }
-      }
-    }
-    return { best, allCandidates: candidates };
-  }
-
-  // Greedy sequential multi-sub placement: place sub 1 optimally against the
-  // mains, fix it, place sub 2 optimally against mains+sub1, and so on. Linear
-  // cost in sub count instead of the combinatorial explosion of searching all
-  // N-tuples of positions jointly (see room-physics.js optimizeMultipleSubs,
-  // which this mirrors, for the tested reference version of this algorithm).
+  // Runs the optimizer via RoomPhysics.optimizeMultipleSubsAsync -- the same
+  // tested implementation optimizeMultipleSubs uses, just the async/chunked
+  // twin so a long search yields to the browser instead of freezing the tab
+  // (onYield below pauses on an animation frame every 150 scanned candidates
+  // by default; onProgress drives the live "Optimizing sub X... NN%" text).
+  // Naming/id assignment stays here, since it depends on this file's own
+  // sources/nextId state, not anything RoomPhysics knows about.
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
@@ -1802,58 +1752,36 @@
         weight: RoomPhysics.rowRankWeight(rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seats.length)
       }));
     });
-    // Default separation: a fraction of the room's smaller dimension, so it
-    // scales sensibly across room sizes rather than a fixed number that's too
-    // strict in a small room or too loose in a large one. 25%/4ft floor
-    // (rather than 15%/1ft) so subs land meaningfully apart by default, since
-    // a couple feet of separation is essentially meaningless at sub
-    // wavelengths. The outer Math.max(3, ...) is a hard floor: combined with
-    // isCandidateValid's square (not circular) exclusion check, this
-    // guarantees at least a 6x6ft clearance around every already-placed sub,
-    // a reasonable minimum footprint for an actual cabinet.
-    const minSeparationFt = Math.max(3, 4, Math.min(room.w, room.d) * 0.25);
-    // Enumerated once for the whole multi-sub search, not once per candidate
-    // per round -- room geometry/materials (physicsCtx()) don't change
-    // between rounds, so this was being redone thousands of times per
-    // optimizer run for no reason. See runOneOptimizerRound's comment.
-    const modes = RoomPhysics.enumerateModes(physicsCtx());
 
-    let currentOtherSources = activeMains.slice();
+    const result = await RoomPhysics.optimizeMultipleSubsAsync({
+      room, otherSources: activeMains, numSubs, freqList, listenerPositions,
+      physicsCtx: physicsCtx(), offLimitZones, preferredZones,
+      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
+      onProgress: (fraction, roundIndex) => {
+        const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
+        status.textContent = fraction === 0
+          ? `Optimizing ${subLabel}...`
+          : `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`;
+      },
+      onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
+    });
+
+    // Assign real ids/names now that placement is decided -- nextSubName looks
+    // at sources already named this run too, so e.g. a 3-sub search doesn't
+    // hand out "SW1" three times.
     const placedSubs = [];
-    // Seeded with every existing active source's position (mains, and any
-    // subs that existed before this optimizer run), not just subs placed
-    // during this run. Without this, a newly-placed sub could land at or
-    // very near an existing source's exact position, since minSeparationFt
-    // only ever excluded points already IN this list.
-    const placedPositions = activeMains.map(s => ({ x: s.x, y: s.y }));
-    let lastRound = null;
-
-    for(let i = 0; i < numSubs; i++){
-      const subLabel = numSubs > 1 ? `sub ${i+1} of ${numSubs}` : 'position';
-      status.textContent = `Optimizing ${subLabel}...`;
-      // yield to the browser so the status text actually paints before the
-      // (now-chunked, but still potentially multi-second) round starts
-      await new Promise(resolve => requestAnimationFrame(resolve));
-
-      const round = await runOneOptimizerRound(currentOtherSources, freqList, listenerPositions, subHeight, step, placedPositions, minSeparationFt, modes,
-        (fraction) => { status.textContent = `Optimizing ${subLabel}... ${Math.round(fraction*100)}%`; });
-      lastRound = round;
-      if(round.best === null) break; // no valid candidates left; stop with whatever was placed so far
-
-      const placed = { id: nextId++, name: nextSubName(sources.concat(placedSubs)), x: round.best.x, y: round.best.y, z: subHeight,
-        levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
-      placedSubs.push(placed);
-      placedPositions.push({ x: placed.x, y: placed.y });
-      currentOtherSources = currentOtherSources.concat([placed]);
+    for(const sub of result.placedSubs){
+      placedSubs.push(Object.assign({}, sub, { id: nextId++, name: nextSubName(sources.concat(placedSubs)) }));
     }
 
     // Show the LAST round's heatmap (i.e. the search that placed the final sub,
     // accounting for all previously-placed subs) -- most representative of
     // "given everything else, where's still good/bad" after full placement.
+    const lastRound = result.roundResults[result.roundResults.length - 1] || null;
     optimizerResult = lastRound ? { best: lastRound.best, allCandidates: lastRound.allCandidates, gridStepFt: step, placedSubs } : null;
 
     if(placedSubs.length === 0){
-      status.innerHTML = '<span style="color:var(--bad)">No valid candidate positions found &mdash; check your off-limits/preferred zones.</span>';
+      status.innerHTML = '<span style="color:var(--bad)">No valid candidate positions found. Check your off-limits/preferred zones.</span>';
       document.getElementById('optimizerResultRow').style.display = 'none';
       return;
     }
@@ -2102,8 +2030,7 @@
   // separate so verifyGPUAgainstCPU's intent reads clearly at the call site).
   function fieldDbAtPoint(roomX, roomY, precomputed){
     const { re, im } = computeFieldAtPoint(roomX, roomY, primaryRow().z, precomputed);
-    const mag = Math.sqrt(re*re + im*im);
-    return 20 * Math.log10(Math.max(mag, 1e-6) / 1.0);
+    return magToDb(re, im);
   }
 
   // ---- Autofit dB range (manual, button-triggered) ----
@@ -2150,8 +2077,7 @@
       for(let i = 0; i < n; i++){
         const px = (i/(n-1)) * w;
         const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
-        const mag = Math.sqrt(re*re + im*im);
-        const db = 20 * Math.log10(Math.max(mag, 1e-6));
+        const db = magToDb(re, im);
         if(db < min) min = db;
         if(db > max) max = db;
       }
@@ -2165,7 +2091,7 @@
 
     const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
-    const lambda = C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
+    const lambda = RoomPhysics.C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
     const { sizeW, sizeH } = canvasDimsForRoom(w, d);
     if(canvas.width !== sizeW || canvas.height !== sizeH){
       canvas.width = sizeW;
@@ -2548,7 +2474,7 @@
     const el = document.getElementById('schroederInfo');
     el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
       `(estimated from room volume and your configured wall/floor/ceiling materials at ${Math.round(freq)} Hz, ` +
-      `T60 &asymp; ${t60.toFixed(2)}s) &mdash; below this, distinct room modes dominate; above it, ` +
+      `T60 &asymp; ${t60.toFixed(2)}s). Below this, distinct room modes dominate; above it, ` +
       `the field gets too dense/diffuse for a single-frequency snapshot to mean much.`;
   }
 
@@ -3242,10 +3168,10 @@
 
   function findZoneAt(x, y){
     for(const z of preferredZones){
-      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'preferred', id: z.id, zone: z };
+      if(isPointInZoneRect(x, y, z)) return { kind:'preferred', id: z.id, zone: z };
     }
     for(const z of offLimitZones){
-      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'offlimit', id: z.id, zone: z };
+      if(isPointInZoneRect(x, y, z)) return { kind:'offlimit', id: z.id, zone: z };
     }
     return null;
   }
