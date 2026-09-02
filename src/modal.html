@@ -302,6 +302,7 @@
     <div class="section-body">
       <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
       <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
+      <div id="freqResponseLegend" class="hint"></div>
       <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
       <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
         <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
@@ -535,9 +536,28 @@
   let listenerRows = [];
   // The rank-1 row is still "the" listener for every feature that only
   // supports (or should only show) one position: the heatmap plane height,
-  // the frequency-response chart, the ear-diff readout, the stereo-triangle
-  // guide, and "time-align to listener".
+  // the ear-diff readout, the stereo-triangle guide, and "time-align to
+  // listener". The frequency-response chart is the one exception: its main
+  // line still tracks the rank-1 seat, but it also shows the spread across
+  // every seat below (see allSeatPositions/computeFreqResponseData).
   function primaryRow(){ return listenerRows[0]; }
+  // Flattens every listening row into its individual seats (see
+  // RoomPhysics.rowSeatPositions), tagged with the row's rank and the seat's
+  // offsetIndex so a caller can identify "the" primary seat (rank 0,
+  // offsetIndex 0, i.e. primaryRow()'s own center point) among the list.
+  // Shared by runSubOptimizer (which additionally weights each seat) and the
+  // frequency-response chart (which doesn't weight, since its whole point is
+  // showing the true unweighted spread across every seat).
+  function allSeatPositions(){
+    const out = [];
+    listenerRows.forEach((row, rank) => {
+      const seats = RoomPhysics.rowSeatPositions(row);
+      seats.forEach(seat => {
+        out.push({ x: seat.x, y: seat.y, z: seat.z, rank, offsetIndex: seat.offsetIndex, rowSeatCount: seats.length });
+      });
+    });
+    return out;
+  }
   let freq = 60;
   let wallAbsorption = 0.06; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
   let wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
@@ -1781,17 +1801,12 @@
     for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
 
     const activeMains = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    // Flatten every row's seats into one weighted list -- rank (list order)
-    // and in-row seat position both scale how much that seat's score
-    // contributes (see RoomPhysics.scoreSubPosition's weighting).
-    const listenerPositions = [];
-    listenerRows.forEach((row, rank) => {
-      const seats = RoomPhysics.rowSeatPositions(row);
-      seats.forEach(seat => listenerPositions.push({
-        x: seat.x, y: seat.y, z: seat.z,
-        weight: RoomPhysics.rowRankWeight(rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seats.length)
-      }));
-    });
+    // Rank (list order) and in-row seat position both scale how much that
+    // seat's score contributes (see RoomPhysics.scoreSubPosition's weighting).
+    const listenerPositions = allSeatPositions().map(seat => ({
+      x: seat.x, y: seat.y, z: seat.z,
+      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
+    }));
 
     const result = await RoomPhysics.optimizeMultipleSubsAsync({
       room, otherSources: activeMains, numSubs, freqList, listenerPositions,
@@ -2089,10 +2104,13 @@
     const precomputed = precomputeField();
     const heatmapRange = sampleFieldDbRange(precomputed, room.w, room.d, primaryRow().z);
     let min = heatmapRange.min, max = heatmapRange.max;
-    if(freqResponseData && freqResponseData.response){
-      for(const r of freqResponseData.response){
-        if(r.db < min) min = r.db;
-        if(r.db > max) max = r.db;
+    if(freqResponseData && freqResponseData.points){
+      for(const p of freqResponseData.points){
+        for(const field of ['db', 'bandMin', 'bandMax', 'afterDb', 'afterBandMin', 'afterBandMax']){
+          if(p[field] == null) continue;
+          if(p[field] < min) min = p[field];
+          if(p[field] > max) max = p[field];
+        }
       }
     }
     if(!Number.isFinite(min) || !Number.isFinite(max)) return;
@@ -2672,11 +2690,23 @@
     }, 200);
   }
 
-  // { response, maxHz } from the last completed computeFreqResponseData()
-  // call, or null if there are no active sources (nothing to plot) --
-  // distinguished from "not computed yet" (also null, but before the first
-  // debounced compute finishes) only by redrawFreqResponseCanvas() checking
+  // { points, maxHz } from the last completed computeFreqResponseData() call,
+  // or null if there are no active sources (nothing to plot) -- distinguished
+  // from "not computed yet" (also null, but before the first debounced
+  // compute finishes) only by redrawFreqResponseCanvas() checking
   // activeSources itself; see there.
+  //
+  // Each entry in `points` is { freq, db, bandMin, bandMax, afterDb,
+  // afterBandMin, afterBandMax }:
+  //   - db: the rank-1 seat's own response (what this chart showed before
+  //     multi-listener support existed; still the main line).
+  //   - bandMin/bandMax: the lowest/highest response across EVERY configured
+  //     seat (all rows) at this frequency -- with only one seat configured
+  //     (today's default), these are numerically equal to db, so the shaded
+  //     band collapses to zero width and nothing visually changes.
+  //   - afterDb/afterBandMin/afterBandMax: the same three, computed with the
+  //     optimizer's pending suggestion (optimizerResult.placedSubs) added to
+  //     the source list -- null when no suggestion is currently pending.
   let freqResponseData = null;
   function computeFreqResponseData(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
@@ -2689,28 +2719,56 @@
     // always in sync, rather than two independently-tuned bounds.
     const maxHz = dynamicFreqCeilingHz();
     const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
-    const response = RoomPhysics.spatiallyAveragedResponse(
-      primaryRow().x, primaryRow().y, primaryRow().z, freqs, activeSources, physicsCtx(),
-      { radiusFt: 2, numPoints: 20 }
-    );
-    freqResponseData = { response, maxHz };
+    const ctx = physicsCtx();
+    const seats = allSeatPositions();
+    const primaryIndex = seats.findIndex(s => s.rank === 0 && s.offsetIndex === 0);
+
+    const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(seats, freqs, activeSources, ctx, { radiusFt: 2, numPoints: 20 });
+
+    let afterPerCenterDb = null;
+    if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
+      const afterSources = activeSources.concat(optimizerResult.placedSubs);
+      afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(seats, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
+    }
+
+    const points = freqs.map((f, j) => {
+      const dbAtSeat = seats.map((s, i) => perCenterDb[i][j]);
+      const point = {
+        freq: f,
+        db: dbAtSeat[primaryIndex],
+        bandMin: Math.min(...dbAtSeat),
+        bandMax: Math.max(...dbAtSeat),
+        afterDb: null, afterBandMin: null, afterBandMax: null
+      };
+      if(afterPerCenterDb){
+        const afterDbAtSeat = seats.map((s, i) => afterPerCenterDb[i][j]);
+        point.afterDb = afterDbAtSeat[primaryIndex];
+        point.afterBandMin = Math.min(...afterDbAtSeat);
+        point.afterBandMax = Math.max(...afterDbAtSeat);
+      }
+      return point;
+    });
+    freqResponseData = { points, maxHz };
   }
 
-  // Linear interpolation between the two nearest sampled points in `response`
-  // ([{freq,db},...], log-spaced, ascending) -- matches the straight line
-  // segments the chart itself draws between samples, so the readout always
-  // agrees with what's visually on the curve. Clamps to the nearest sample
-  // rather than extrapolating outside the sampled range.
-  function dbAtFreqInResponse(response, targetFreq){
-    if(!response || response.length === 0) return null;
-    if(targetFreq <= response[0].freq) return response[0].db;
-    const last = response[response.length - 1];
-    if(targetFreq >= last.freq) return last.db;
-    for(let i = 0; i < response.length - 1; i++){
-      const a = response[i], b = response[i+1];
+  // Linear interpolation between the two nearest sampled points in `points`
+  // ([{freq,...},...], log-spaced, ascending) for a given field name --
+  // matches the straight line segments the chart itself draws between
+  // samples, so the readout always agrees with what's visually on the curve.
+  // Clamps to the nearest sample rather than extrapolating outside the
+  // sampled range. Returns null if either neighboring sample's field is null
+  // (e.g. interpolating an `after*` field when no suggestion is pending).
+  function fieldAtFreqInResponse(points, targetFreq, field){
+    if(!points || points.length === 0) return null;
+    if(targetFreq <= points[0].freq) return points[0][field];
+    const last = points[points.length - 1];
+    if(targetFreq >= last.freq) return last[field];
+    for(let i = 0; i < points.length - 1; i++){
+      const a = points[i], b = points[i+1];
       if(targetFreq >= a.freq && targetFreq <= b.freq){
+        if(a[field] == null || b[field] == null) return null;
         const t = (targetFreq - a.freq) / (b.freq - a.freq);
-        return a.db + t * (b.db - a.db);
+        return a[field] + t * (b[field] - a[field]);
       }
     }
     return null;
@@ -2718,13 +2776,35 @@
 
   function updateFreqResponseReadout(){
     const el = document.getElementById('freqResponseReadout');
+    const legendEl = document.getElementById('freqResponseLegend');
     if(!freqResponseData){
       el.textContent = '';
+      legendEl.textContent = '';
       return;
     }
-    const db = dbAtFreqInResponse(freqResponseData.response, freq);
-    el.innerHTML = db == null ? '' :
-      `Current: <b>${Math.round(freq)} Hz</b>, <b>${Math.round(db)} dB</b>`;
+    const { points } = freqResponseData;
+    const db = fieldAtFreqInResponse(points, freq, 'db');
+    if(db == null){ el.innerHTML = ''; legendEl.textContent = ''; return; }
+    const bandMin = fieldAtFreqInResponse(points, freq, 'bandMin');
+    const bandMax = fieldAtFreqInResponse(points, freq, 'bandMax');
+    const hasSpread = (bandMax - bandMin) > 0.5;
+    // Omit the range clause entirely when every seat reads the same (a single
+    // configured seat, the common default case) rather than showing a
+    // zero-width "(range X to X dB)" that adds no information.
+    const rangeText = hasSpread ? ` (range ${Math.round(bandMin)} to ${Math.round(bandMax)} dB across seats)` : '';
+    const afterDb = fieldAtFreqInResponse(points, freq, 'afterDb');
+    const hasAfter = afterDb != null;
+    const afterText = hasAfter ? ` &rarr; suggested <b>${Math.round(afterDb)} dB</b>` : '';
+    el.innerHTML = `Current: <b>${Math.round(freq)} Hz</b>, <b>${Math.round(db)} dB</b>${rangeText}${afterText}`;
+
+    if(!hasSpread && !hasAfter){
+      legendEl.textContent = '';
+    } else {
+      const parts = [];
+      if(hasSpread) parts.push('Shaded blue = range across all listening positions.');
+      if(hasAfter) parts.push("Green = optimizer's suggested placement, not yet added.");
+      legendEl.textContent = parts.join(' ');
+    }
   }
 
   function redrawFreqResponseCanvas(){
@@ -2757,7 +2837,7 @@
       if(msg) c2.fillText(msg, 10, h/2);
       return;
     }
-    const { response, maxHz } = freqResponseData;
+    const { points, maxHz } = freqResponseData;
 
     const marginL = 38, marginR = 8, marginT = 8, marginB = 20;
     const plotW = w - marginL - marginR, plotH = h - marginT - marginB;
@@ -2793,15 +2873,49 @@
       c2.fillText(d.toFixed(0), 2, y + 4);
     }
 
-    c2.strokeStyle = '#4fb0e8';
-    c2.lineWidth = 1.5;
-    c2.beginPath();
-    response.forEach((r, i) => {
-      const x = xForFreq(r.freq);
-      const y = yForDb(r.db);
-      if(i === 0) c2.moveTo(x, y); else c2.lineTo(x, y);
-    });
-    c2.stroke();
+    // Fills the region between two per-point fields (e.g. bandMin/bandMax) as
+    // a single closed ribbon: the "max" field left-to-right, then the "min"
+    // field right-to-left back to the start, closePath, fill. Same
+    // moveTo/lineTo-loop-then-fill shape drawOptimizerWinner's star polygon
+    // uses elsewhere in this file, just an open ribbon instead of a closed
+    // star. Skips entirely if every point's min/max are equal (a single
+    // configured seat, or no pending suggestion for the after-band), so nothing
+    // renders when there's nothing to show, rather than a zero-width sliver.
+    function drawBand(minField, maxField, color){
+      const hasSpread = points.some(p => p[minField] != null && p[maxField] != null && (p[maxField] - p[minField]) > 0.01);
+      if(!hasSpread) return;
+      c2.fillStyle = color;
+      c2.beginPath();
+      points.forEach((p, i) => {
+        if(p[maxField] == null) return;
+        const x = xForFreq(p.freq), y = yForDb(p[maxField]);
+        if(i === 0) c2.moveTo(x, y); else c2.lineTo(x, y);
+      });
+      for(let i = points.length - 1; i >= 0; i--){
+        const p = points[i];
+        if(p[minField] == null) continue;
+        c2.lineTo(xForFreq(p.freq), yForDb(p[minField]));
+      }
+      c2.closePath();
+      c2.fill();
+    }
+    function drawLine(field, color){
+      c2.strokeStyle = color;
+      c2.lineWidth = 1.5;
+      c2.beginPath();
+      let started = false;
+      points.forEach(p => {
+        if(p[field] == null) return;
+        const x = xForFreq(p.freq), y = yForDb(p[field]);
+        if(!started){ c2.moveTo(x, y); started = true; } else c2.lineTo(x, y);
+      });
+      c2.stroke();
+    }
+
+    drawBand('bandMin', 'bandMax', 'rgba(79,176,232,0.15)');
+    drawBand('afterBandMin', 'afterBandMax', 'rgba(79,232,154,0.15)');
+    drawLine('db', '#4fb0e8');
+    drawLine('afterDb', '#4fe89a');
 
     // Tracks the frequency slider live (redrawFreqResponseCanvas runs on
     // every normal draw(), not just after a debounced recompute), so this

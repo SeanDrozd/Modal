@@ -393,6 +393,37 @@
     });
   }
 
+  // Batched twin of spatiallyAveragedResponse: computes the same spatially-
+  // averaged response at MULTIPLE center points at once, sharing the
+  // per-frequency precomputeModalField call across every center instead of
+  // redoing it once per center (the dominant cost -- see scoreSubPosition's
+  // identical frequency-outer/listener-inner pattern for the same reason).
+  // For a single center, produces numerically identical results to
+  // spatiallyAveragedResponse(centers[0].x, ...).
+  // centers: [{x,y,z}, ...]
+  // Returns { freqs, perCenterDb }, where perCenterDb[i][j] is the dB at
+  // centers[i] for freqs[j] (same order as the input freqs array).
+  function spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts){
+    const radiusFt = opts?.radiusFt ?? 2;
+    const numPoints = opts?.numPoints ?? 20;
+    const modes = enumerateModes(ctx);
+    const centerSamples = centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints));
+    const perCenterDb = centers.map(() => []);
+    for(const freq of freqs){
+      const precomputed = precomputeModalField(sources, freq, ctx, modes);
+      centerSamples.forEach((samplePoints, i) => {
+        let sumPower = 0;
+        for(const p of samplePoints){
+          const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed);
+          sumPower += re*re + im*im;
+        }
+        const avgPower = sumPower / samplePoints.length;
+        perCenterDb[i].push(10 * Math.log10(Math.max(avgPower, 1e-12)));
+      });
+    }
+    return { freqs, perCenterDb };
+  }
+
   // ---- Time alignment: delay each source so all arrive at a point together ----
   // Real speaker/sub distances from the listener differ, so their direct
   // sound arrives at different times -- AVR "speaker distance" settings (or
@@ -1064,6 +1095,7 @@
     fieldDbAtPoint,
     sphereSamplePoints,
     spatiallyAveragedResponse,
+    spatiallyAveragedResponseMulti,
     axialModes,
     estimatedT60,
     schroederFrequency,

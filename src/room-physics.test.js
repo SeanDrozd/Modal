@@ -324,6 +324,61 @@ test('returns one entry per input frequency, in the same order', () => {
   for(const r of result) assert.ok(Number.isFinite(r.db), `non-finite dB at freq=${r.freq}`);
 });
 
+console.log('\n-- spatiallyAveragedResponseMulti (batched multi-listener version) --');
+
+test('a single center produces numerically identical results to spatiallyAveragedResponse', () => {
+  const ctx = baseCtx({ wallAbsorption: 0.51 });
+  const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const freqs = [40, 80, 160];
+  const single = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, sources, ctx, { radiusFt: 1, numPoints: 12 });
+  const multi = P.spatiallyAveragedResponseMulti([{ x: 9, y: 9, z: 3.5 }], freqs, sources, ctx, { radiusFt: 1, numPoints: 12 });
+  assert.strictEqual(multi.perCenterDb.length, 1);
+  assert.strictEqual(multi.perCenterDb[0].length, freqs.length);
+  for(let i = 0; i < freqs.length; i++){
+    approx(multi.perCenterDb[0][i], single[i].db, 1e-9, `freq=${freqs[i]}`);
+  }
+});
+
+test('multiple centers produce independent, correctly-ordered curves, not averaged together', () => {
+  // Same antiphase construction as spatiallyAveragedResponse's own null-smoothing
+  // test: a clean destructive null sits at one specific point (9,6,3), not at a
+  // different point (3,10,3) far away with no such cancellation.
+  const ctx = baseCtx({ wallAbsorption: 0.03 });
+  const freq = 100;
+  const lambda = P.C / freq;
+  const sepFt = (lambda / 2) / P.FT_TO_M;
+  const halfPeriodMs = (1000 / (2 * freq)) * 0.999;
+  const sources = [
+    { x: 9 - sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 },
+    { x: 9 + sepFt/2, y: 6, z: 3, levelDb: 0, delayMs: halfPeriodMs, freqLow: 20, freqHigh: 20000 }
+  ];
+  const nullCenter = { x: 9, y: 6, z: 3 };
+  const farCenter = { x: 3, y: 10, z: 3 };
+  const { perCenterDb } = P.spatiallyAveragedResponseMulti([nullCenter, farCenter], [freq], sources, ctx, { radiusFt: 1, numPoints: 20 });
+  assert.ok(perCenterDb[1][0] > perCenterDb[0][0] + 5,
+    `expected the far center to read meaningfully higher than the null center: null=${perCenterDb[0][0].toFixed(1)}dB far=${perCenterDb[1][0].toFixed(1)}dB`);
+  // Cross-check against independent single-point calls, confirming batching
+  // didn't cross-contaminate the two centers' results.
+  const nullAlone = P.spatiallyAveragedResponse(nullCenter.x, nullCenter.y, nullCenter.z, [freq], sources, ctx, { radiusFt: 1, numPoints: 20 });
+  const farAlone = P.spatiallyAveragedResponse(farCenter.x, farCenter.y, farCenter.z, [freq], sources, ctx, { radiusFt: 1, numPoints: 20 });
+  approx(perCenterDb[0][0], nullAlone[0].db, 1e-9, 'null center should match its own independent call');
+  approx(perCenterDb[1][0], farAlone[0].db, 1e-9, 'far center should match its own independent call');
+});
+
+test('returns freqs and perCenterDb arrays matching input shape', () => {
+  const ctx = baseCtx();
+  const sources = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const freqs = [30, 200, 60, 150];
+  const centers = [{ x: 9, y: 9, z: 3.5 }, { x: 5, y: 5, z: 3.5 }, { x: 13, y: 11, z: 3.5 }];
+  const result = P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx);
+  assert.deepStrictEqual(result.freqs, freqs);
+  assert.strictEqual(result.perCenterDb.length, centers.length);
+  for(const dbRow of result.perCenterDb){
+    assert.strictEqual(dbRow.length, freqs.length);
+    for(const db of dbRow) assert.ok(Number.isFinite(db), 'non-finite dB');
+  }
+});
+
 console.log('\n-- axialModes --');
 
 test('axial mode formula matches hand-calculated values for a known dimension', () => {
