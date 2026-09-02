@@ -513,6 +513,35 @@ test('a position centered between two coherent-summing sources scores well (loud
   assert.notStrictEqual(nearCorner.score, center.score, 'different positions should generally score differently');
 });
 
+test('DEMONSTRATION: a wall/corner position with a meaningfully higher average level wins in balanced mode, not just an open-floor spot with slightly better flatness', () => {
+  // Wall/corner placements couple into every room mode more strongly than
+  // open-floor placements (mode shapes peak at every boundary), genuinely
+  // raising avgMean there, at some cost to worstStdDev (a less even response
+  // at a fixed listening point). BALANCED_FLATNESS_WEIGHT exists specifically
+  // so a real level advantage like this wins decisively rather than being
+  // erased by a close flatness difference (see its own comment for the
+  // motivating case this was tuned against).
+  const room = { w: 18, d: 13.5, h: 8 };
+  const wallMaterials = {
+    left: P.WALL_MATERIALS.drywallInsulated, right: P.WALL_MATERIALS.drywallInsulated,
+    front: P.WALL_MATERIALS.drywallInsulated, back: P.WALL_MATERIALS.drywallInsulated
+  };
+  const ctx = { room, wallAbsorption: 0.06, wallMaterials, ceilingMaterial: P.WALL_MATERIALS.drywallInsulated, floorAbsorption: 0.15 };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const listeners = [{ x: 9, y: 9, z: 3.5, weight: 1 }];
+  const freqs = [];
+  for(let f = 20; f <= 100; f += Math.max(2, (100-20)/12)) freqs.push(f);
+
+  const wallMid = P.scoreSubPosition({ x: 9, y: 0.5, z: 1 }, mains, room, freqs, listeners, ctx, 'balanced');
+  const openFloor = P.scoreSubPosition({ x: 9, y: 7, z: 1 }, mains, room, freqs, listeners, ctx, 'balanced');
+  assert.ok(wallMid.avgMean > openFloor.avgMean, 'test setup: the wall position should genuinely have higher average level');
+  assert.ok(wallMid.score > openFloor.score,
+    `expected the wall position to win on score too: wallMid=${wallMid.score.toFixed(2)} openFloor=${openFloor.score.toFixed(2)}`);
+});
+
 test('a position with a deep null at one frequency scores worse than an equally-loud-on-average flat position', () => {
   // Construct two single-sub scenarios with the SAME average level across frequency,
   // but one has a severe dip at a single frequency (a null) and the other doesn't.
@@ -578,7 +607,7 @@ test('worstMinDb penalty engages (score is reduced) when the worst listener dips
     `expected a null 20dB+ below the scene average to set up this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
   const expectedPenalty = Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
   assert.ok(expectedPenalty > 0, 'this scenario should actually exercise a nonzero penalty');
-  approx(result.score, result.avgMean - (result.worstStdDev * 1.5) - expectedPenalty, 1e-6, 'score should equal avgMean minus the stdDev and worstMinDb penalty terms');
+  approx(result.score, result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - expectedPenalty, 1e-6, 'score should equal avgMean minus the stdDev and worstMinDb penalty terms');
 });
 
 test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the scene average', () => {
@@ -592,7 +621,7 @@ test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the s
   const result = P.scoreSubPosition(silentCandidate, [loudSource], room, freqs, listeners, ctx);
   assert.ok(result.avgMean - result.worstMinDb <= 20,
     `expected no null 20dB+ below average for this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
-  approx(result.score, result.avgMean - (result.worstStdDev * 1.5), 1e-6, 'with the null penalty inactive, score should equal avgMean minus only the stdDev term');
+  approx(result.score, result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT), 1e-6, 'with the null penalty inactive, score should equal avgMean minus only the stdDev term');
 });
 
 console.log("\n-- scoreSubPosition: mode:'nullAvoidance' (for users with room correction/EQ) --");
@@ -961,6 +990,28 @@ test('REGRESSION: multi-sub placement never picks the same (or near-same) spot t
       assert.ok(dist > 0.9, `subs ${i+1} and ${j+1} are only ${dist.toFixed(2)}ft apart at (${a.x},${a.y}) and (${b.x},${b.y}) — expected meaningful separation`);
     }
   }
+});
+
+test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre-existing subs), not just other subs placed this run', () => {
+  // The bug: placedPositions (the exclusion list) used to start empty and
+  // only accumulate subs placed DURING this call. otherSources (mains,
+  // and any subs that existed before this call) were never in it, so a
+  // newly-placed sub could land right on top of one of them. Forcing the
+  // search into a preferred zone tight around an existing main makes this
+  // concrete: a 3ft square exclusion around that main should leave no valid
+  // candidate inside a 4x4ft zone centered on it.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const existingMain = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
+  const preferredZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
+
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [existingMain], numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], preferredZones, gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 0,
+    `expected no valid candidate inside a zone this tight around an existing source, but placed a sub at (${result.placedSubs[0]?.x},${result.placedSubs[0]?.y})`);
 });
 
 test('minSeparationFt is configurable and respected', () => {
@@ -1362,7 +1413,7 @@ test('REGRESSION: omitting weight on every listener reproduces the exact pre-wei
   const listeners = [{ x: 9, y: 6, z: 3.5 }, { x: 3, y: 10, z: 3.5 }];
   const freqs = [40, 60, 80, 100];
   const result = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, [source], room, freqs, listeners, ctx);
-  const expected = result.avgMean - (result.worstStdDev * 1.5) - Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
+  const expected = result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
   approx(result.score, expected, 1e-9, 'unweighted score should exactly match the original formula');
 });
 

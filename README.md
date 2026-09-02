@@ -47,7 +47,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 
 **Rendering & UI**
 - GPU (WebGL) rendering, with a built-in on-demand check that samples points and compares against the CPU path's exact math; GPU falls back to CPU automatically if unavailable
-- Frequency sweep animation (play/pause, adjustable speed) with wrap-around, over a range that adapts to the room (see below)
+- Frequency sweep animation (play/pause, adjustable speed) with wrap-around, over a range that adapts to the room (see below); a draggable end marker on the slider lets the sweep loop back to the start early, so it doesn't spend time sweeping through the less useful upper part of the range every lap
 - Frequency response chart: a log-frequency line plot at the listening position, spatially averaged over a small volume rather than one exact point (see [How it works](#how-it-works) below), with its frequency axis synced to the same room-adaptive range as the main frequency slider/sweep
 - The frequency slider's own range adapts to the room's own (worst-case) Schroeder frequency plus headroom, rather than a fixed cap. See [How it works](#how-it-works)
 - Feet & inches / meters unit toggle, applied consistently to every length field and on-canvas label in the app; internal storage stays in feet regardless

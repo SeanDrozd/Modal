@@ -127,8 +127,27 @@
   #bottomPanel { margin-top: 12px; }
   #bottomPanel .freq-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   #bottomPanel .freq-row label { font-size: 13.5px; color: var(--text); flex-shrink: 0; }
-  #bottomPanel .freq-row input[type="range"] { flex: 1; min-width: 120px; }
   #bottomPanel .freq-row .val { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #freqSliderWrap { position: relative; flex: 1; min-width: 120px; display: flex; align-items: center; }
+  #freqSliderWrap input[type="range"] { width: 100%; }
+  /* Fixed width so toggling between "Sweep" and "Pause" (different text/icon
+     widths) doesn't reflow the row and shift the slider (and sweep-end
+     marker) that comes before it in flex order. Same underlying cause, and
+     same fix, as #freqVal's fixed min-width (in the body HTML below): a
+     sibling's width changing mid-animation shouldn't move anything else. */
+  #freqSweepPlayBtn { width: 78px; text-align: center; }
+  /* The clickable box sits well above the slider's own vertical center (not
+     overlapping it), so it never steals a click meant for the native range
+     thumb when their x-positions happen to coincide. Only a thin,
+     pointer-events:none tail extends down to the track for visual alignment. */
+  #sweepEndMarker {
+    position: absolute; top: 50%; width: 10px; height: 10px; margin-top: -22px; margin-left: -5px;
+    background: rgba(245,213,71,0.85); border-radius: 2px; cursor: ew-resize; pointer-events: auto;
+  }
+  #sweepEndMarker::after {
+    content: ''; position: absolute; left: 50%; top: 10px; width: 2px; height: 12px;
+    background: rgba(245,213,71,0.85); transform: translateX(-50%); pointer-events: none;
+  }
   #bottomPanel .stats-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   #bottomPanel .stats-row > * { flex: 1; min-width: 180px; }
   #legend {
@@ -415,8 +434,11 @@
   <div id="bottomPanel">
     <div class="freq-row">
       <label>Freq (Hz)</label>
-      <input type="range" id="freq" min="20" max="250" step="1" value="60">
-      <span class="val" id="freqVal">60 Hz</span>
+      <div id="freqSliderWrap">
+        <input type="range" id="freq" min="20" max="250" step="1" value="60">
+        <div id="sweepEndMarker" title="Drag to set where the sweep loop restarts"></div>
+      </div>
+      <span class="val" id="freqVal" style="display:inline-block; min-width:52px;">60 Hz</span>
       <button id="freqSweepPlayBtn" class="small" title="Sweep through the frequency range">&#9654; Sweep</button>
       <button id="freqSweepSlowerBtn" class="small" title="Slower" style="padding:4px 9px;">&minus;</button>
       <span class="val" id="freqSweepSpeedVal" style="min-width:28px; text-align:center;">1x</span>
@@ -928,7 +950,7 @@
     try {
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
-        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed,
+        resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed, sweepEndFreq,
         lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
@@ -977,6 +999,10 @@
     if(FREQ_SWEEP_SPEED_LEVELS.includes(session.freqSweepSpeed)){
       freqSweepSpeed = session.freqSweepSpeed;
       document.getElementById('freqSweepSpeedVal').textContent = freqSweepSpeed + 'x';
+    }
+    if(Number.isFinite(session.sweepEndFreq)){
+      sweepEndFreq = session.sweepEndFreq;
+      positionSweepEndMarker();
     }
     if(session.optFreqLow != null) document.getElementById('optFreqLow').value = session.optFreqLow;
     if(session.optFreqHigh != null) document.getElementById('optFreqHigh').value = session.optFreqHigh;
@@ -1794,7 +1820,12 @@
 
     let currentOtherSources = activeMains.slice();
     const placedSubs = [];
-    const placedPositions = [];
+    // Seeded with every existing active source's position (mains, and any
+    // subs that existed before this optimizer run), not just subs placed
+    // during this run. Without this, a newly-placed sub could land at or
+    // very near an existing source's exact position, since minSeparationFt
+    // only ever excluded points already IN this list.
+    const placedPositions = activeMains.map(s => ({ x: s.x, y: s.y }));
     let lastRound = null;
 
     for(let i = 0; i < numSubs; i++){
@@ -1868,15 +1899,38 @@
 
   // ---- Frequency sweep animation ----
   // Auto-advances the freq slider through its full range at FREQ_SWEEP_BASE_HZ_PER_SEC
-  // (at 1x), wrapping from max back to min rather than reversing direction.
-  // Speed is a session/device preference, not a room property; play/pause
-  // state itself is intentionally NOT persisted (never auto-resume on load).
-  const FREQ_SWEEP_BASE_HZ_PER_SEC = 15;
+  // (at 1x), wrapping from the sweep-end marker (see sweepEndFreq below) back
+  // to min rather than reversing direction. Speed is a session/device
+  // preference, not a room property; play/pause state itself is
+  // intentionally NOT persisted (never auto-resume on load).
+  const FREQ_SWEEP_BASE_HZ_PER_SEC = 7.5; // half the previous 15, so every speed level (which all multiply this) runs 50% slower
   const FREQ_SWEEP_SPEED_LEVELS = [0.25, 0.5, 1, 2, 4, 8];
   let freqSweepSpeed = 1;
   let freqSweepPlaying = false;
   let freqSweepRafId = null;
   let freqSweepLastTs = null;
+  // Where the animated sweep loops back to the start, dragged by the user
+  // via the #sweepEndMarker handle on the freq slider. null means "not set,
+  // use the slider's own max," the sweep's original full-range behavior,
+  // so a fresh install/session shows no cutoff until the user actually drags
+  // the marker. Manually dragging the #freq slider itself is NOT constrained
+  // by this; it only affects where the automated sweep restarts.
+  let sweepEndFreq = null;
+  // The wrap math in freqSweepTick (`freq = min + (freq - end)`) is only a
+  // real wrap when end > min. At end === min it algebraically collapses to
+  // `freq = freq`, a no-op that lets freq climb forever instead of looping
+  // (the native slider silently clamps its displayed value to max while the
+  // internal freq, and the field computed from it, keep climbing past the
+  // slider's actual range). SWEEP_END_MIN_SPAN_HZ keeps the marker from ever
+  // being draggable (or loaded from a stale/corrupted session value) all the
+  // way down to min, guaranteeing a real, meaningful loop span.
+  const SWEEP_END_MIN_SPAN_HZ = 10;
+  function effectiveSweepEndFreq(){
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const floor = Math.min(max, min + SWEEP_END_MIN_SPAN_HZ);
+    return sweepEndFreq != null ? Math.max(floor, Math.min(sweepEndFreq, max)) : max;
+  }
 
   // ---- WebGL context setup ----
   // gl is null if WebGL is unavailable (older browser, disabled, or sandboxed
@@ -2622,6 +2676,12 @@
         document.getElementById('freqVal').textContent = Math.round(freq) + ' Hz';
       }
     }
+    // Reposition the sweep-end marker whenever draw() runs, not just on an
+    // actual range change, since the slider's own clientWidth (used for
+    // the marker's pixel math) can change from a plain window resize too;
+    // positionSweepEndMarker itself is defined further down in this file but
+    // hoisted (a plain function declaration), so calling it here is safe.
+    positionSweepEndMarker();
     return maxHz;
   }
 
@@ -2825,9 +2885,10 @@
     freqSweepLastTs = ts;
 
     const slider = document.getElementById('freq');
-    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const min = parseFloat(slider.min);
+    const end = effectiveSweepEndFreq(); // the marker, or the slider's true max if unset
     freq += FREQ_SWEEP_BASE_HZ_PER_SEC * freqSweepSpeed * dtSec;
-    if(freq > max) freq = min + (freq - max); // wrap, preserving overshoot for smooth continuity
+    if(freq > end) freq = min + (freq - end); // wrap at the marker, preserving overshoot for smooth continuity
 
     slider.value = freq;
     document.getElementById('freqVal').textContent = Math.round(freq) + ' Hz';
@@ -2873,6 +2934,61 @@
     document.getElementById('freqSweepSpeedVal').textContent = freqSweepSpeed + 'x';
     saveSessionSettings();
   });
+
+  // ---- Sweep-end marker. Positions the #sweepEndMarker handle over the
+  // #freq slider's track, and lets the user drag it to set effectiveSweepEndFreq().
+  // Approximates the native range input's thumb-vs-track geometry (the track
+  // is inset by half the thumb's width at each end, a standard range-input
+  // rendering quirk) using a fixed thumb-width estimate, close enough for a
+  // visual reference marker, not pixel-exact across every browser/OS.
+  const SWEEP_MARKER_THUMB_PX = 16;
+  function positionSweepEndMarker(){
+    const slider = document.getElementById('freq');
+    const marker = document.getElementById('sweepEndMarker');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const val = Math.max(min, Math.min(max, effectiveSweepEndFreq()));
+    const usable = Math.max(1, slider.clientWidth - SWEEP_MARKER_THUMB_PX);
+    const frac = max > min ? (val - min) / (max - min) : 1;
+    marker.style.left = (SWEEP_MARKER_THUMB_PX / 2 + frac * usable) + 'px';
+  }
+  function sweepMarkerFreqFromClientX(clientX){
+    const slider = document.getElementById('freq');
+    const rect = slider.getBoundingClientRect();
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const usable = Math.max(1, rect.width - SWEEP_MARKER_THUMB_PX);
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left - SWEEP_MARKER_THUMB_PX / 2) / usable));
+    return min + frac * (max - min);
+  }
+  let sweepMarkerDragging = false;
+  function beginSweepMarkerDrag(clientX){
+    sweepMarkerDragging = true;
+    updateSweepMarkerDrag(clientX);
+  }
+  function updateSweepMarkerDrag(clientX){
+    if(!sweepMarkerDragging) return;
+    // Floored at drag time (not just in effectiveSweepEndFreq) so the marker
+    // visually stops at the same point the sweep actually loops at, rather
+    // than letting it be dragged past that point and silently desyncing
+    // from where the loop really happens.
+    const slider = document.getElementById('freq');
+    const min = parseFloat(slider.min), max = parseFloat(slider.max);
+    const floor = Math.min(max, min + SWEEP_END_MIN_SPAN_HZ);
+    sweepEndFreq = Math.max(floor, Math.round(sweepMarkerFreqFromClientX(clientX)));
+    positionSweepEndMarker();
+  }
+  function endSweepMarkerDrag(){
+    if(!sweepMarkerDragging) return;
+    sweepMarkerDragging = false;
+    saveSessionSettings();
+  }
+  const sweepEndMarkerEl = document.getElementById('sweepEndMarker');
+  sweepEndMarkerEl.addEventListener('mousedown', (e) => { e.preventDefault(); beginSweepMarkerDrag(e.clientX); });
+  window.addEventListener('mousemove', (e) => { if(sweepMarkerDragging) updateSweepMarkerDrag(e.clientX); });
+  window.addEventListener('mouseup', endSweepMarkerDrag);
+  sweepEndMarkerEl.addEventListener('touchstart', (e) => { e.preventDefault(); beginSweepMarkerDrag(e.touches[0].clientX); }, {passive:false});
+  window.addEventListener('touchmove', (e) => { if(sweepMarkerDragging){ e.preventDefault(); updateSweepMarkerDrag(e.touches[0].clientX); } }, {passive:false});
+  window.addEventListener('touchend', endSweepMarkerDrag);
+  window.addEventListener('resize', positionSweepEndMarker);
   document.getElementById('floorMaterial').addEventListener('change', function(){
     if(this.value === 'custom') return; // "Custom" is a status display, not a selectable preset action
     floorAbsorption = FLOOR_MATERIALS[this.value];
