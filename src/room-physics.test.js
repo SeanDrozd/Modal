@@ -820,14 +820,14 @@ test('isCandidateValid rejects points inside an off-limits zone', () => {
   assert.strictEqual(P.isCandidateValid(0.5, 0.5, room, offLimits, []), true);
 });
 
-test('isCandidateValid with preferred zones ONLY accepts points inside one of them', () => {
+test('isCandidateValid with allowed zones ONLY accepts points inside one of them', () => {
   const room = { w: 18, d: 13.5 };
-  const preferred = [{ x: 0, y: 0, width: 2, height: 2 }];
-  assert.strictEqual(P.isCandidateValid(1, 1, room, [], preferred), true);
-  assert.strictEqual(P.isCandidateValid(9, 9, room, [], preferred), false, 'outside all preferred zones should be rejected when preferred zones exist');
+  const allowed = [{ x: 0, y: 0, width: 2, height: 2 }];
+  assert.strictEqual(P.isCandidateValid(1, 1, room, [], allowed), true);
+  assert.strictEqual(P.isCandidateValid(9, 9, room, [], allowed), false, 'outside all allowed zones should be rejected when allowed zones exist');
 });
 
-test('isCandidateValid with NO preferred zones allows anywhere in-room (not off-limits)', () => {
+test('isCandidateValid with NO allowed zones allows anywhere in-room (not off-limits)', () => {
   const room = { w: 18, d: 13.5 };
   assert.strictEqual(P.isCandidateValid(9, 9, room, [], []), true);
 });
@@ -934,11 +934,11 @@ test('greedy respects off-limits zones for every sub placed, not just the first'
 test('stops placing subs (without error) if candidates run out', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  // Preferred zone so small (relative to a coarse grid step) that at most 1 candidate exists.
-  const tinyPreferred = [{ x: 9, y: 6.75, width: 0.4, height: 0.4 }];
+  // Allowed zone so small (relative to a coarse grid step) that at most 1 candidate exists.
+  const tinyAllowed = [{ x: 9, y: 6.75, width: 0.4, height: 0.4 }];
   const result = P.optimizeMultipleSubs({
     room, otherSources: [], numSubs: 5, freqList: [60],
-    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], preferredZones: tinyPreferred, gridStepFt: 1, subHeightFt: 1
+    listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,     offLimitZones: [], allowedZones: tinyAllowed, gridStepFt: 1, subHeightFt: 1
   });
   assert.ok(result.placedSubs.length <= 5, 'should never place more than requested');
   assert.ok(result.placedSubs.length >= 0, 'should not throw even if it cannot fill all requested subs');
@@ -1008,18 +1008,18 @@ test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre
   // only accumulate subs placed DURING this call. otherSources (mains,
   // and any subs that existed before this call) were never in it, so a
   // newly-placed sub could land right on top of one of them. Forcing the
-  // search into a preferred zone tight around an existing main makes this
+  // search into an allowed zone tight around an existing main makes this
   // concrete: a 3ft square exclusion around that main should leave no valid
   // candidate inside a 4x4ft zone centered on it.
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51 };
   const existingMain = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
-  const preferredZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
+  const allowedZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
 
   const result = P.optimizeMultipleSubs({
     room, otherSources: [existingMain], numSubs: 1, freqList: [40,60,80],
     listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
-    offLimitZones: [], preferredZones, gridStepFt: 0.5, subHeightFt: 1
+    offLimitZones: [], allowedZones, gridStepFt: 0.5, subHeightFt: 1
   });
   assert.strictEqual(result.placedSubs.length, 0,
     `expected no valid candidate inside a zone this tight around an existing source, but placed a sub at (${result.placedSubs[0]?.x},${result.placedSubs[0]?.y})`);
@@ -1572,6 +1572,109 @@ testAsync('optimizeSubPlacementAsync and optimizeMultipleSubsAsync work with no 
     listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1
   });
   assert.strictEqual(multi.placedSubs.length, 2, 'expected both subs placed with no callbacks supplied');
+});
+
+console.log('\n-- preferredZoneBonusDb / soft preferred zones --');
+
+test('preferredZoneBonusDb is 0 with no zones', () => {
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, []), 0);
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, null), 0);
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, undefined), 0);
+});
+
+test('preferredZoneBonusDb is 0 outside every zone, PREFERRED_ZONE_BONUS_DB inside one', () => {
+  const zones = [{ x: 0, y: 0, width: 2, height: 2 }];
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, zones), 0, 'outside the zone should get no bonus');
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 1, y: 1 }, zones), P.PREFERRED_ZONE_BONUS_DB, 'inside the zone should get the full bonus');
+});
+
+test('a preferred zone (soft bias) does NOT exclude candidates outside it, unlike an allowed zone', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  // A tiny preferred zone in a corner, far from the room's center -- if this
+  // behaved like an allowed zone, the search would be restricted to it (at most
+  // a couple of grid cells). Instead every in-room cell should still be a
+  // candidate: allCandidates should cover the whole grid, not just the zone.
+  const tinyPreferred = [{ x: 0.5, y: 0.5, width: 0.4, height: 0.4 }];
+  const withZone = P.optimizeSubPlacement({
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], preferredZones: tinyPreferred,
+    gridStepFt: 1, subHeightFt: 1
+  });
+  const withoutZone = P.optimizeSubPlacement({
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], preferredZones: [],
+    gridStepFt: 1, subHeightFt: 1
+  });
+  assert.strictEqual(withZone.allCandidates.length, withoutZone.allCandidates.length,
+    'a preferred zone should never shrink the candidate set the way an allowed zone would');
+});
+
+test('a preferred zone nudges an otherwise near-tied candidate to win', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const opts = {
+    room, otherSources: [], freqList: [40,60,80], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 3, subHeightFt: 1
+  };
+  const withoutZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones: [] }));
+  // Find the grid's actual winner without any preference, then draw a tiny
+  // preferred zone around a DIFFERENT candidate that scored close (within the
+  // bonus margin) to confirm the bonus can flip the winner.
+  const sorted = withoutZone.allCandidates.slice().sort((a,b) => b.score - a.score);
+  const top = sorted[0];
+  const runnerUp = sorted.find(c => (c.x !== top.x || c.y !== top.y) && (top.score - c.score) < P.PREFERRED_ZONE_BONUS_DB);
+  assert.ok(runnerUp, 'expected a runner-up candidate within the bonus margin of the top candidate for this setup');
+  const preferredZones = [{ x: runnerUp.x - 0.1, y: runnerUp.y - 0.1, width: 0.2, height: 0.2 }];
+  const withZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones }));
+  assert.strictEqual(withZone.best.x, runnerUp.x, 'the preferred zone should flip the winner to the runner-up once its bonus closes the gap');
+  assert.strictEqual(withZone.best.y, runnerUp.y);
+});
+
+test('a preferred zone does NOT flip the winner when the outside candidate is meaningfully better', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const opts = {
+    room, otherSources: [], freqList: [40,60,80], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 3, subHeightFt: 1
+  };
+  const withoutZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones: [] }));
+  const sorted = withoutZone.allCandidates.slice().sort((a,b) => b.score - a.score);
+  const top = sorted[0];
+  // A worst-scoring candidate is guaranteed to be more than PREFERRED_ZONE_BONUS_DB
+  // behind the top candidate in any non-degenerate scenario with enough spread;
+  // guard with a skip-if-not-applicable check rather than assuming it.
+  const worst = sorted[sorted.length - 1];
+  if((top.score - worst.score) <= P.PREFERRED_ZONE_BONUS_DB) return; // setup too flat for this scenario; nothing to assert
+  const preferredZones = [{ x: worst.x - 0.1, y: worst.y - 0.1, width: 0.2, height: 0.2 }];
+  const withZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones }));
+  assert.strictEqual(withZone.best.x, top.x, 'a genuinely better spot outside the preferred zone should still win');
+  assert.strictEqual(withZone.best.y, top.y);
+});
+
+test('preferredZones omitted entirely does not throw and behaves as a 0 bonus', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const opts = {
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, subHeightFt: 1
+  };
+  const withOmitted = P.optimizeSubPlacement(opts);
+  const withEmpty = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones: [] }));
+  assert.deepStrictEqual(withOmitted.best, withEmpty.best, 'omitting preferredZones should behave identically to passing an empty array');
+});
+
+testAsync('optimizeSubPlacementAsync applies the same preferred-zone bonus as optimizeSubPlacement', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const preferredZones = [{ x: 8.5, y: 8.5, width: 1, height: 1 }];
+  const opts = {
+    room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], preferredZones, gridStepFt: 1, subHeightFt: 1
+  };
+  const syncResult = P.optimizeSubPlacement(opts);
+  const asyncResult = await P.optimizeSubPlacementAsync(opts);
+  assert.deepStrictEqual(asyncResult.best, syncResult.best, 'async best should exactly match sync best with a preferred zone applied');
 });
 
 (async () => {
