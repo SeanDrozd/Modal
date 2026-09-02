@@ -1794,7 +1794,12 @@
 
     let currentOtherSources = activeMains.slice();
     const placedSubs = [];
-    const placedPositions = [];
+    // Seeded with every existing active source's position (mains, and any
+    // subs that existed before this optimizer run), not just subs placed
+    // during this run. Without this, a newly-placed sub could land at or
+    // very near an existing source's exact position, since minSeparationFt
+    // only ever excluded points already IN this list.
+    const placedPositions = activeMains.map(s => ({ x: s.x, y: s.y }));
     let lastRound = null;
 
     for(let i = 0; i < numSubs; i++){
