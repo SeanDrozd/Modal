@@ -465,8 +465,6 @@
 
 <script>
 (function(){
-  const FT_TO_M = 0.3048;
-  const C = 343;
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
   // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
@@ -1702,8 +1700,14 @@
   }
 
   function dbAtFreq(px, py, pz, sourceList, atFreq){
-    const precomputed = precomputeFieldForSources(sourceList, atFreq);
-    const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
+    const activeSources = sourceList.filter(s => s.enabled !== false);
+    return RoomPhysics.fieldDbAtPoint(px, py, pz, activeSources, atFreq, physicsCtx());
+  }
+  // Shared by the two spots below that can't delegate to fieldDbAtPoint the way
+  // dbAtFreq now does -- they operate on already-precomputed per-pixel field
+  // data (a heatmap render), not raw sources+frequency, so there's no
+  // "sources+freq" call to hand off to.
+  function magToDb(re, im){
     const mag = Math.sqrt(re*re + im*im);
     return 20 * Math.log10(Math.max(mag, 1e-6));
   }
@@ -2026,8 +2030,7 @@
   // separate so verifyGPUAgainstCPU's intent reads clearly at the call site).
   function fieldDbAtPoint(roomX, roomY, precomputed){
     const { re, im } = computeFieldAtPoint(roomX, roomY, primaryRow().z, precomputed);
-    const mag = Math.sqrt(re*re + im*im);
-    return 20 * Math.log10(Math.max(mag, 1e-6) / 1.0);
+    return magToDb(re, im);
   }
 
   // ---- Autofit dB range (manual, button-triggered) ----
@@ -2074,8 +2077,7 @@
       for(let i = 0; i < n; i++){
         const px = (i/(n-1)) * w;
         const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
-        const mag = Math.sqrt(re*re + im*im);
-        const db = 20 * Math.log10(Math.max(mag, 1e-6));
+        const db = magToDb(re, im);
         if(db < min) min = db;
         if(db > max) max = db;
       }
@@ -2089,7 +2091,7 @@
 
     const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
-    const lambda = C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
+    const lambda = RoomPhysics.C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
     const { sizeW, sizeH } = canvasDimsForRoom(w, d);
     if(canvas.width !== sizeW || canvas.height !== sizeH){
       canvas.width = sizeW;
@@ -3166,10 +3168,10 @@
 
   function findZoneAt(x, y){
     for(const z of preferredZones){
-      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'preferred', id: z.id, zone: z };
+      if(isPointInZoneRect(x, y, z)) return { kind:'preferred', id: z.id, zone: z };
     }
     for(const z of offLimitZones){
-      if(x >= z.x && x <= z.x+z.width && y >= z.y && y <= z.y+z.height) return { kind:'offlimit', id: z.id, zone: z };
+      if(isPointInZoneRect(x, y, z)) return { kind:'offlimit', id: z.id, zone: z };
     }
     return null;
   }
