@@ -1221,6 +1221,7 @@
         s.enabled = this.checked;
         block.style.opacity = this.checked ? '1' : '0.5';
         autoTimeAlign(); syncDelaySlidersFromState(); // the active-source set changed, which time-align depends on
+        updateReoptimizeExistingVisibility(); // enabling/disabling a sub changes whether there's anything to re-optimize
         scheduleDraw();
       });
       block.querySelector('[data-field="name"]').addEventListener('input', function(){
@@ -1262,6 +1263,7 @@
       });
       block.querySelector('[data-field="freqHigh"]').addEventListener('change', function(){
         s.freqHigh = Math.max(s.freqLow+1, parseFloat(this.value)||20000);
+        updateReoptimizeExistingVisibility(); // freqHigh crossing the sub/main threshold (150Hz) changes what counts as an existing sub
         draw();
       });
       const rolloffSelect = block.querySelector('[data-field="rolloffDbPerOct"]');
@@ -1817,6 +1819,24 @@
     };
   }
 
+  // Shared by both optimizer workflows below, so a future tuning change
+  // (sample count, weighting formula) can't be applied to one and silently
+  // missed in the other.
+  function buildOptimizerFreqList(freqLow, freqHigh){
+    const freqList = [];
+    const freqStep = Math.max(2, (freqHigh - freqLow) / 12); // ~12 samples across the band
+    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
+    return freqList;
+  }
+  // Rank (list order) and in-row seat position both scale how much that
+  // seat's score contributes (see RoomPhysics.scoreSubPosition's weighting).
+  function buildOptimizerListenerPositions(){
+    return allSeatPositions().map(seat => ({
+      x: seat.x, y: seat.y, z: seat.z,
+      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
+    }));
+  }
+
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
@@ -1827,17 +1847,9 @@
 
     if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
 
-    const freqList = [];
-    const freqStep = Math.max(2, (freqHigh - freqLow) / 12); // ~12 samples across the band
-    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
-
+    const freqList = buildOptimizerFreqList(freqLow, freqHigh);
     const activeMains = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    // Rank (list order) and in-row seat position both scale how much that
-    // seat's score contributes (see RoomPhysics.scoreSubPosition's weighting).
-    const listenerPositions = allSeatPositions().map(seat => ({
-      x: seat.x, y: seat.y, z: seat.z,
-      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
-    }));
+    const listenerPositions = buildOptimizerListenerPositions();
 
     const result = await RoomPhysics.optimizeMultipleSubsAsync({
       room, otherSources: activeMains, numSubs, freqList, listenerPositions,
@@ -1896,21 +1908,20 @@
 
     if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
 
-    const freqList = [];
-    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
-    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
+    const freqList = buildOptimizerFreqList(freqLow, freqHigh);
 
-    const existingSubs = sources.filter(s => s.enabled !== false && s.freqHigh <= 150);
-    const otherSources = sources.filter(s => s.enabled !== false && s.freqHigh > 150);
+    // Gated by sourcesEnabled (the master "All" mute toggle), matching every
+    // other active-sources computation in this file (e.g. runSubOptimizer's
+    // activeMains) -- otherwise this workflow would keep optimizing against
+    // sources the rest of the app currently treats as muted.
+    const existingSubs = sourcesEnabled ? sources.filter(s => s.enabled !== false && s.freqHigh <= 150) : [];
+    const otherSources = sourcesEnabled ? sources.filter(s => s.enabled !== false && s.freqHigh > 150) : [];
     if(existingSubs.length === 0){
       status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
       return;
     }
 
-    const listenerPositions = allSeatPositions().map(seat => ({
-      x: seat.x, y: seat.y, z: seat.z,
-      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
-    }));
+    const listenerPositions = buildOptimizerListenerPositions();
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
     let refinedSubs, lastBest, lastAllCandidates, movedCount;
