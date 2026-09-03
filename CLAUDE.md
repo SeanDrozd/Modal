@@ -11,8 +11,6 @@ Modal is a browser-based room acoustics simulator: `src/room-physics.js` (pure p
 - If `modal.html` needs an async/chunked variant of something for UI responsiveness (yielding to `requestAnimationFrame` during a long search), that async wrapper still belongs in `room-physics.js`, built on a shared primitive with its sync twin (see `scanGridCandidates` driving both `optimizeSubPlacement` and `optimizeSubPlacementAsync`; see `polishSubPlacements`/`polishSubPlacementsAsync` as a standalone entry point extracted so a second caller could reuse the exact same refinement loop instead of a third hand-copied version). Never hand-duplicate a search/scoring loop between a sync and async version, or between two UI workflows, "just for now": it doesn't stay in sync.
 - **Every exported `room-physics.js` function needs coverage in `room-physics.test.js`.** A physics/optimizer change with no new or updated test is incomplete.
 
-**Why this matters, concretely:** `modal.html` once had its own hand-written copy of the optimizer's grid-search loop instead of calling `RoomPhysics.optimizeSubPlacement`. A real bug (the sub-placement exclusion zone not accounting for existing sources) got fixed in one copy and missed in the other, and only surfaced later via code review. The fix was a full consolidation PR deleting the duplicate. Don't recreate that problem: one implementation of any given algorithm, in `room-physics.js`, called from wherever it's needed.
-
 ## Workflow
 
 - **Branch and PR, never commit directly to `main`.** Create a feature branch before any commit in this repo, push it, and hand off the PR link. This applies even for small changes.
