@@ -4,7 +4,7 @@ Interactive room acoustics simulator: visualize standing waves, find optimal sub
 
 A browser-based tool for reasoning about a room's bass response. It renders a single-frequency sound-pressure field across the room floor plan via an exact rectangular-room modal solution (wall/floor/ceiling material absorption, not individual reflections), lets you configure speakers, subs, and room construction, and can automatically search for subwoofer positions that minimize peaks and nulls at your listening position. Deliberately bass-focused: the modal solution and the UI's frequency range are both scoped to roughly 300Hz and below, where room modes dominate.
 
-No build step, no dependencies: open `src/modal.html` in a browser.
+No build step, no dependencies: open `src/modal.html` in a browser, or **[try it live](https://seandrozd.github.io/Modal/)**.
 
 ![Frequency sweep across a room with two symmetrically-placed subs, showing a bad null forming at the listening position as frequency changes](docs/sweep-demo.webp)
 
