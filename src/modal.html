@@ -352,6 +352,8 @@
         <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
       </div>
       <button id="runOptimizerBtn" class="full" style="margin-top:6px;">Find best sub position</button>
+      <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
+      <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
       <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
       <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
         <label style="font-size:12.5px;">Show score heatmap</label>
@@ -1274,6 +1276,17 @@
         draw();
       });
     });
+    updateReoptimizeExistingVisibility();
+  }
+
+  // "Re-optimize existing subs" only makes sense with at least one active
+  // sub-like source already in the room -- same classifier addSubBtn already
+  // uses to stagger new spawn positions (freqHigh <= 150). Called every time
+  // renderSrcList() runs, so it stays in sync with add/remove/enable-toggle.
+  function updateReoptimizeExistingVisibility(){
+    const hasExistingSubs = sources.some(s => s.enabled !== false && s.freqHigh <= 150);
+    document.getElementById('reoptimizeExistingBtn').style.display = hasExistingSubs ? 'block' : 'none';
+    document.getElementById('reoptimizeExistingHint').style.display = hasExistingSubs ? 'block' : 'none';
   }
   // ---- Listening position rows ("a couch", "a row of recliners") ----
   // Same id-keyed add/remove/reorder pattern as renderSrcList() above --
@@ -1786,6 +1799,24 @@
   // by default; onProgress drives the live "Optimizing sub X... NN%" text).
   // Naming/id assignment stays here, since it depends on this file's own
   // sources/nextId state, not anything RoomPhysics knows about.
+  // Shared status-text builder for both optimizer workflows (add new subs /
+  // re-optimize existing ones) -- both ultimately drive an onProgress callback
+  // shaped (fraction, roundIndex, phase), whether that's optimizeMultipleSubsAsync's
+  // greedy+polish rounds, polishSubPlacementsAsync's polish-only rounds (roundIndex
+  // reused as "which sub"), or a plain optimizeSubPlacementAsync single-sub search
+  // (called with just (fraction), so roundIndex/phase come through as undefined --
+  // numSubs===1 already ignores roundIndex, and phase undefined already means
+  // "Optimizing", so this reads correctly with no special-casing).
+  function optimizerStatusUpdater(status, numSubs){
+    return (fraction, roundIndex, phase) => {
+      const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
+      const verb = phase === 'polish' ? 'Refining' : 'Optimizing';
+      status.textContent = fraction === 0
+        ? `${verb} ${subLabel}...`
+        : `${verb} ${subLabel}... ${Math.round(fraction*100)}%`;
+    };
+  }
+
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
@@ -1812,13 +1843,7 @@
       room, otherSources: activeMains, numSubs, freqList, listenerPositions,
       physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
       gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
-      onProgress: (fraction, roundIndex, phase) => {
-        const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
-        const verb = phase === 'polish' ? 'Refining' : 'Optimizing';
-        status.textContent = fraction === 0
-          ? `${verb} ${subLabel}...`
-          : `${verb} ${subLabel}... ${Math.round(fraction*100)}%`;
-      },
+      onProgress: optimizerStatusUpdater(status, numSubs),
       onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
     });
 
@@ -1850,6 +1875,79 @@
     status.innerHTML = `<span style="color:${partial ? 'var(--accent)' : 'var(--good)'}">` +
       `${partial ? `Only placed ${placedSubs.length} of ${numSubs} requested (ran out of valid positions). ` : ''}` +
       `Suggested position${placedSubs.length>1?'s':''}: ${posList}.</span>`;
+    document.getElementById('optimizerResultRow').style.display = 'flex';
+    draw();
+  }
+
+  // "Re-optimize existing subs": given the subs already in the room, find
+  // better positions for those SAME subs (in place), rather than adding new
+  // ones. Runs coordinate-descent refinement starting from each sub's real
+  // current position (RoomPhysics.polishSubPlacementsAsync), not a fresh
+  // greedy placement -- a sub that's already well placed can genuinely stay
+  // put, unlike a from-scratch search which would essentially never land back
+  // on an existing manually-placed spot by chance. With exactly one existing
+  // sub there's nothing to hold fixed against, so that case runs a plain full
+  // single-sub search instead (RoomPhysics.optimizeSubPlacementAsync).
+  async function runReoptimizeExistingSubs(){
+    const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
+    const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
+    const step = optGridStepFt;
+    const status = document.getElementById('optimizerStatus');
+
+    if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
+
+    const freqList = [];
+    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
+    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
+
+    const existingSubs = sources.filter(s => s.enabled !== false && s.freqHigh <= 150);
+    const otherSources = sources.filter(s => s.enabled !== false && s.freqHigh > 150);
+    if(existingSubs.length === 0){
+      status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
+      return;
+    }
+
+    const listenerPositions = allSeatPositions().map(seat => ({
+      x: seat.x, y: seat.y, z: seat.z,
+      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
+    }));
+
+    const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
+    let refinedSubs, lastBest, lastAllCandidates, movedCount;
+
+    if(existingSubs.length === 1){
+      const result = await RoomPhysics.optimizeSubPlacementAsync({
+        room, otherSources, freqList, listenerPositions,
+        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+        gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
+        onProgress: optimizerStatusUpdater(status, 1), onYield
+      });
+      const moved = result.best !== null && (result.best.x !== existingSubs[0].x || result.best.y !== existingSubs[0].y);
+      refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
+      lastBest = result.best;
+      lastAllCandidates = result.allCandidates;
+      movedCount = moved ? 1 : 0;
+    } else {
+      const result = await RoomPhysics.polishSubPlacementsAsync({
+        room, otherSources, subs: existingSubs, freqList, listenerPositions,
+        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+        gridStepFt: step, mode: optimizerMode,
+        onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield
+      });
+      refinedSubs = result.placedSubs;
+      const lastRound = result.polishResults[result.polishResults.length - 1] || null;
+      lastBest = lastRound ? lastRound.best : null;
+      lastAllCandidates = lastRound ? lastRound.allCandidates : [];
+      movedCount = result.moved.filter(Boolean).length;
+    }
+
+    optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: refinedSubs, applyInPlace: true };
+
+    const keptCount = existingSubs.length - movedCount;
+    const posList = refinedSubs.map(s => `(${formatLength(s.x)},${formatLength(s.y)})`).join(', ');
+    status.innerHTML = `<span style="color:var(--good)">` +
+      `Re-optimized ${existingSubs.length} sub${existingSubs.length>1?'s':''}: ${movedCount} moved` +
+      `${keptCount > 0 ? `, ${keptCount} already optimal` : ''}. New positions: ${posList}.</span>`;
     document.getElementById('optimizerResultRow').style.display = 'flex';
     draw();
   }
@@ -2744,7 +2842,13 @@
 
     let afterPerCenterDb = null;
     if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
-      const afterSources = activeSources.concat(optimizerResult.placedSubs);
+      // applyInPlace (re-optimizing EXISTING subs): these are the same subs,
+      // just refined, so REPLACE each by matching id rather than concatenating
+      // -- concatenating would double-count each one at both its old and new
+      // position. Otherwise (adding brand-new subs): concatenate, as before.
+      const afterSources = optimizerResult.applyInPlace
+        ? activeSources.map(s => optimizerResult.placedSubs.find(p => p.id === s.id) || s)
+        : activeSources.concat(optimizerResult.placedSubs);
       afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
     }
 
@@ -3289,19 +3393,41 @@
     draw();
   });
 
+  // Both optimizer-run buttons disable each other while either is in-flight,
+  // since they share the one optimizerResult/preview surface (accept/clear
+  // below act on whichever workflow most recently ran).
+  function setOptimizerButtonsDisabled(disabled){
+    document.getElementById('runOptimizerBtn').disabled = disabled;
+    document.getElementById('reoptimizeExistingBtn').disabled = disabled;
+  }
   document.getElementById('runOptimizerBtn').addEventListener('click', async function(){
-    const btn = this;
     const status = document.getElementById('optimizerStatus');
     status.textContent = 'Optimizing...';
-    btn.disabled = true;
+    setOptimizerButtonsDisabled(true);
     document.getElementById('acceptOptimizerBtn').style.display = 'none';
     try {
       await runSubOptimizer();
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
+        document.getElementById('acceptOptimizerBtn').textContent = 'Add suggested sub(s) as sources';
         document.getElementById('acceptOptimizerBtn').style.display = 'block';
       }
     } finally {
-      btn.disabled = false;
+      setOptimizerButtonsDisabled(false);
+    }
+  });
+  document.getElementById('reoptimizeExistingBtn').addEventListener('click', async function(){
+    const status = document.getElementById('optimizerStatus');
+    status.textContent = 'Optimizing...';
+    setOptimizerButtonsDisabled(true);
+    document.getElementById('acceptOptimizerBtn').style.display = 'none';
+    try {
+      await runReoptimizeExistingSubs();
+      if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
+        document.getElementById('acceptOptimizerBtn').textContent = 'Apply refined positions';
+        document.getElementById('acceptOptimizerBtn').style.display = 'block';
+      }
+    } finally {
+      setOptimizerButtonsDisabled(false);
     }
   });
   document.getElementById('clearOptimizerBtn').addEventListener('click', () => {
@@ -3313,8 +3439,19 @@
   });
   document.getElementById('acceptOptimizerBtn').addEventListener('click', () => {
     if(!optimizerResult || !optimizerResult.placedSubs) return;
-    for(const s of optimizerResult.placedSubs){
-      sources.push(s); // already has a real id assigned when created in runSubOptimizer
+    if(optimizerResult.applyInPlace){
+      // These ARE the existing subs, just refined -- find each by id and
+      // move it in place (same "find by id, mutate x/y" pattern moveTarget
+      // already uses for dragging a source on the map), rather than pushing
+      // new source objects.
+      for(const refined of optimizerResult.placedSubs){
+        const s = sources.find(s => s.id === refined.id);
+        if(s){ s.x = refined.x; s.y = refined.y; s.z = refined.z; }
+      }
+    } else {
+      for(const s of optimizerResult.placedSubs){
+        sources.push(s); // already has a real id assigned when created in runSubOptimizer
+      }
     }
     autoTimeAlign();
     optimizerResult = null;
