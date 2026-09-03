@@ -21,7 +21,18 @@ Same room, same two subs, same frequency, before/after running the sub-placement
 | ![Main view: interference field, sources, and stereo-triangle guide](docs/overview.png) | ![Subwoofer placement optimizer, showing a score heatmap and suggested position](docs/optimizer.png) |
 | Main view: interference field, sources, and the stereo-triangle guide | Subwoofer placement optimizer, with a score heatmap and suggested position |
 
-![Per-wall and ceilisdfgasfasdfers): each row is a group of 1-5 seats at a configurable spacing, facing angle, and ear height; a row's position is set by dragging its marker on the map. Row order is rank (drag to reorder, top row matters most), and the optimizer weighs both rank and in-row seat position (center seats matter more than the ends) when scoring sub placement. See [How it works](#how-it-works)
+![Per-wall and ceiling material configuration](docs/materials.png)
+
+Per-wall and ceiling material configuration, each with its own frequency-dependent absorption curve.
+
+## Features
+
+**Sources & listening positions**
+- "+ Add Main" and "+ Add Sub" add a source with the right crossover range already set (80Hz to 20kHz for mains, 20 to 80Hz for subs); Add Main cycles through standard channel abbreviations in layout order (FL, FR, C, SL, SR, SBL, SBR, FWL, FWR, covering 5.1 through 9.1) before falling back to a generic numbered name, and Add Sub numbers SW1, SW2, ...
+- Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff, with a bulk "apply to all" control), and height
+- Every source's delay is kept automatically time-aligned to the top-ranked listening position (an "Auto time-align" checkbox, on by default), recalculated whenever a source or listening position moves (see [How it works](#how-it-works) below for the real-world caveat this assumes away); a manually-set delay sticks until the next such change, or indefinitely with the checkbox off
+- Reorderable source list; mark exactly two sources as "Front L/R" to show a stereo-triangle guide (distances + geometry) on the map, independent of how many other sources (subs, etc.) exist
+- Multiple ranked listening-position "rows" (a couch, a row of recliners): each row is a group of 1-5 seats at a configurable spacing, facing angle, and ear height; a row's position is set by dragging its marker on the map. Row order is rank (drag to reorder, top row matters most), and the optimizer weighs both rank and in-row seat position (center seats matter more than the ends) when scoring sub placement. See [How it works](#how-it-works)
 - The top-ranked row's center seat doubles as "the" primary position for the features that only support one: the heat map's height plane, the two-ear dB readout, and the stereo-triangle guide. The frequency response chart's own line still tracks this seat, but it also shows the spread across every configured seat (see [How it works](#how-it-works))
 
 **Room & modal solution**
