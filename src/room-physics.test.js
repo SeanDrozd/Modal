@@ -1207,6 +1207,109 @@ test('polish is bounded by POLISH_PASSES x subs placed', () => {
   assert.ok(result.polishResults.length >= 0);
 });
 
+console.log('\n-- polishSubPlacements / polishSubPlacementsAsync (standalone re-optimization) --');
+
+test('feeding an already-converged arrangement back in produces zero further movement', () => {
+  // polishSubPlacements early-exits a pass once nothing moves, meaning a
+  // converged output is (by construction) a coordinate-wise local optimum:
+  // feeding it back in as the STARTING arrangement should find nothing left
+  // to improve, for any of the subs.
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const freqList = [40,60,80,100];
+  const listenerPositions = [{x:9,y:9,z:3.5}];
+  const opts = {
+    room, otherSources: mains, freqList, listenerPositions, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, mode: 'balanced'
+  };
+  const converged = P.optimizeMultipleSubs(Object.assign({}, opts, { numSubs: 3, subHeightFt: 1 }));
+  assert.strictEqual(converged.placedSubs.length, 3, 'expected all 3 subs placed for this scenario');
+  const result = P.polishSubPlacements(Object.assign({}, opts, { subs: converged.placedSubs }));
+  assert.ok(result.moved.every(m => m === false), 'expected no further movement when re-polishing an already-converged arrangement');
+});
+
+test('a suboptimally-placed sub moves, and the arrangement score does not decrease', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const freqList = [30,40,50,60,70,80,90,100];
+  const listenerPositions = [{x:9,y:9,z:3.5}];
+  const subs = [
+    { name: 'SW1', x: 0.5, y: 0.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { name: 'SW2', x: 17.5, y: 13, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const scoreOf = (arrangement) => P.scoreSubPosition(
+    { x: arrangement[0].x, y: arrangement[0].y, z: arrangement[0].z },
+    mains.concat(arrangement.slice(1)), room, freqList, listenerPositions, ctx
+  ).score;
+  const beforeScore = scoreOf(subs);
+  const result = P.polishSubPlacements({
+    room, otherSources: mains, subs, freqList, listenerPositions, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 0.5, mode: 'balanced'
+  });
+  const afterScore = scoreOf(result.placedSubs);
+  assert.ok(result.moved.some(m => m === true), 'expected at least one sub to move from these deliberately poor starting spots');
+  assert.ok(afterScore >= beforeScore - 1e-9, `expected polish to never decrease score: before=${beforeScore.toFixed(3)} after=${afterScore.toFixed(3)}`);
+});
+
+test('polishSubPlacements works on copies, never mutating the caller\'s subs', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const subs = [
+    { name: 'SW1', x: 1, y: 1, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { name: 'SW2', x: 17, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const originalPositions = subs.map(s => ({ x: s.x, y: s.y, z: s.z }));
+  P.polishSubPlacements({
+    room, otherSources: [], subs, freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, mode: 'balanced'
+  });
+  assert.deepStrictEqual(subs.map(s => ({ x: s.x, y: s.y, z: s.z })), originalPositions, 'the input subs array/objects should be untouched');
+});
+
+test('each sub is searched at its own z when subHeightFt is not overridden', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const subs = [
+    { name: 'SW1', x: 1, y: 1, z: 0.5, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { name: 'SW2', x: 17, y: 12, z: 2.5, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const result = P.polishSubPlacements({
+    room, otherSources: [], subs, freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, mode: 'balanced'
+  });
+  assert.strictEqual(result.placedSubs[0].z, 0.5, 'sub 1 should keep searching at its own original height');
+  assert.strictEqual(result.placedSubs[1].z, 2.5, 'sub 2 should keep searching at its own original height');
+});
+
+testAsync('polishSubPlacementsAsync matches polishSubPlacements exactly', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
+  const mains = [
+    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const subs = [
+    { name: 'SW1', x: 0.5, y: 0.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { name: 'SW2', x: 17.5, y: 13, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const opts = {
+    room, otherSources: mains, subs, freqList: [40,60,80], listenerPositions: [{x:9,y:9,z:3.5}],
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, mode: 'balanced'
+  };
+  const syncResult = P.polishSubPlacements(opts);
+  const asyncResult = await P.polishSubPlacementsAsync(opts);
+  assert.deepStrictEqual(asyncResult.placedSubs, syncResult.placedSubs);
+  assert.deepStrictEqual(asyncResult.moved, syncResult.moved);
+  assert.strictEqual(asyncResult.polishResults.length, syncResult.polishResults.length);
+});
+
 test('isCandidateValid rejects points too close to an exclude point', () => {
   const room = { w: 18, d: 13.5 };
   const excludePoints = [{ x: 9, y: 9 }];

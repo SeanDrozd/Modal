@@ -1051,30 +1051,73 @@
       currentOtherSources = currentOtherSources.concat([placedSub]);
     }
 
-    // Coordinate-descent polish: revisit each already-placed sub in turn,
-    // scored against everyone else (mains + every OTHER placed sub, excluding
-    // this one's own current position from both the hard exclusion check and
-    // the nullAvoidance mode's spread penalty -- both are driven from the same
-    // excludePoints list passed into scanGridCandidates, so omitting this sub
-    // here is what stops it from excluding/penalizing itself against its own
-    // pre-polish position). roundResults (above) is left untouched; polish
-    // results go in their own array so the "one roundResult per sub placed"
-    // invariant callers/tests rely on keeps holding exactly as before.
+    // Coordinate-descent polish -- see polishSubPlacements for the full
+    // explanation. roundResults (above) is left untouched; polish results go
+    // in their own array so the "one roundResult per sub placed" invariant
+    // callers/tests rely on keeps holding exactly as before. Every sub placed
+    // above shares the same subHeightFt by construction (it came from this
+    // same options.subHeightFt via scanGridCandidates), so passing that same
+    // value through here reproduces the exact prior inlined behavior.
+    const polish = polishSubPlacements({
+      room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode
+    });
+
+    return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
+  }
+
+  // Coordinate-descent polish, as its own reusable entry point: given a set of
+  // ALREADY-PLACED subs (however they got there -- a fresh greedy placement
+  // above, or a caller's own real current sub positions), revisits each in
+  // turn, holding every OTHER sub fixed, and re-runs the same single-sub grid
+  // search for just that one -- see optimizeMultipleSubs' comment for why
+  // greedy sequential placement alone can miss a better joint arrangement.
+  // Works on COPIES (never mutates the caller's `subs` array/objects).
+  //
+  // Each sub's OWN `z` is used as its search height for that sub's round (an
+  // optional `subHeightFt` override applies uniformly instead, when given) --
+  // this matters for a caller re-optimizing real subs that may genuinely sit
+  // at different heights, and is a strict generalization of the uniform-
+  // height case (every sub optimizeMultipleSubs places already shares one
+  // height by construction, so passing that value through as subHeightFt
+  // reproduces identical behavior for that existing use case).
+  //
+  // Returns { placedSubs, polishResults, moved }, where moved[i] is true if
+  // subs[i]'s position actually changed.
+  function polishSubPlacements(options){
+    const {
+      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
+    } = options;
+    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
+    const moved = placedSubs.map(() => false);
     if(placedSubs.length >= 2){
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
+          // "Everyone else": mains/other fixed sources plus every OTHER
+          // placed sub, excluding this one's own current position from both
+          // the hard exclusion check and the nullAvoidance mode's spread
+          // penalty -- both are driven from the same excludePoints list
+          // passed into scanGridCandidates, so omitting this sub here is
+          // what stops it from excluding/penalizing itself against its own
+          // pre-polish position.
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
           const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
           const roundResult = optimizeSubPlacement({
             room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
+            subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
-          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y) anyMoved = true;
+          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
+            anyMoved = true;
+            moved[k] = true;
+          }
           placedSubs[k].x = roundResult.best.x;
           placedSubs[k].y = roundResult.best.y;
           placedSubs[k].z = roundResult.best.z;
@@ -1082,8 +1125,53 @@
         if(!anyMoved) break; // converged; every later pass would be identical
       }
     }
+    return { placedSubs, polishResults, moved };
+  }
 
-    return { placedSubs, roundResults, polishResults };
+  // Async/chunked twin of polishSubPlacements, for the same reason
+  // optimizeSubPlacementAsync exists. onProgress is called as
+  // (fraction, k, 'polish') -- k is the index into `subs` currently being
+  // re-optimized, matching the polish-phase signal optimizeMultipleSubsAsync
+  // already uses internally.
+  async function polishSubPlacementsAsync(options){
+    const {
+      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
+      onYield, onProgress, yieldEvery, precomputedModes
+    } = options;
+    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const modes = precomputedModes || enumerateModes(physicsCtx);
+    const placedSubs = subs.map(s => Object.assign({}, s));
+    const polishResults = [];
+    const moved = placedSubs.map(() => false);
+    if(placedSubs.length >= 2){
+      for(let pass = 0; pass < POLISH_PASSES; pass++){
+        let anyMoved = false;
+        for(let k = 0; k < placedSubs.length; k++){
+          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
+          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
+          const roundResult = await optimizeSubPlacementAsync({
+            room, otherSources: others, freqList, listenerPositions,
+            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
+            subHeightFt: subHeightFt ?? placedSubs[k].z,
+            excludePoints, minSeparationFt: separation, mode,
+            precomputedModes: modes, onYield, yieldEvery,
+            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
+          });
+          polishResults.push(roundResult);
+          if(roundResult.best === null) continue;
+          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
+            anyMoved = true;
+            moved[k] = true;
+          }
+          placedSubs[k].x = roundResult.best.x;
+          placedSubs[k].y = roundResult.best.y;
+          placedSubs[k].z = roundResult.best.z;
+        }
+        if(!anyMoved) break;
+      }
+    }
+    return { placedSubs, polishResults, moved };
   }
 
   // Async/chunked twin of optimizeMultipleSubs, for the same reason
@@ -1127,39 +1215,20 @@
       currentOtherSources = currentOtherSources.concat([placedSub]);
     }
 
-    // Coordinate-descent polish -- see optimizeMultipleSubs' identical block
-    // for the full explanation. onProgress gets a third argument, 'polish',
-    // only during these rounds; the greedy rounds' calls above are unchanged
-    // (still just (fraction, i)), so the existing onProgress contract for
-    // callers that only look at the first two arguments keeps working as-is.
-    // roundIndex here means "which sub index is being re-optimized", not
-    // "which greedy round".
-    const polishResults = [];
-    if(placedSubs.length >= 2){
-      for(let pass = 0; pass < POLISH_PASSES; pass++){
-        let anyMoved = false;
-        for(let k = 0; k < placedSubs.length; k++){
-          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
-          const roundResult = await optimizeSubPlacementAsync({
-            room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
-            excludePoints, minSeparationFt: separation, mode,
-            precomputedModes: modes, onYield, yieldEvery,
-            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
-          });
-          polishResults.push(roundResult);
-          if(roundResult.best === null) continue;
-          if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y) anyMoved = true;
-          placedSubs[k].x = roundResult.best.x;
-          placedSubs[k].y = roundResult.best.y;
-          placedSubs[k].z = roundResult.best.z;
-        }
-        if(!anyMoved) break;
-      }
-    }
+    // Coordinate-descent polish -- see polishSubPlacementsAsync for the full
+    // explanation. onProgress gets a third argument, 'polish', only during
+    // these rounds; the greedy rounds' calls above are unchanged (still just
+    // (fraction, i)), so the existing onProgress contract for callers that
+    // only look at the first two arguments keeps working as-is. `modes`
+    // (already computed above) is passed through as precomputedModes to avoid
+    // enumerating it a second time.
+    const polish = await polishSubPlacementsAsync({
+      room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode,
+      precomputedModes: modes, onYield, yieldEvery, onProgress
+    });
 
-    return { placedSubs, roundResults, polishResults };
+    return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
   }
 
   return {
@@ -1197,6 +1266,8 @@
     optimizeSubPlacement,
     optimizeSubPlacementAsync,
     optimizeMultipleSubs,
-    optimizeMultipleSubsAsync
+    optimizeMultipleSubsAsync,
+    polishSubPlacements,
+    polishSubPlacementsAsync
   };
 });
