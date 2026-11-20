@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Modal: subwoofer placement and room modes</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23e3a23f' stroke-linecap='round'%3E%3Crect width='32' height='32' rx='7' fill='%231c1814' stroke='none'/%3E%3Cpath d='M3 16Q9.5 3 16 16T29 16' stroke-width='3'/%3E%3Cpath d='M3 16Q9.5 29 16 16T29 16' stroke-width='3' opacity='.45'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="modal.css">
@@ -35,8 +36,9 @@ function applyAppearanceAttrs(mode, theme){
     <span class="tagline">Subwoofer placement and room mode modeling</span>
   </div>
   <div class="header-actions">
-    <button id="undoBtn" class="small" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
-    <button id="redoBtn" class="small" disabled title="Redo (Ctrl+Y)">&#8631; Redo</button>
+    <button id="undoBtn" class="small" disabled title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;<span class="btn-label"> Undo</span></button>
+    <button id="redoBtn" class="small" disabled title="Redo (Ctrl+Y)" aria-label="Redo">&#8631;<span class="btn-label"> Redo</span></button>
+    <button id="sheetToggleBtn" class="small" aria-expanded="true" aria-controls="sidebar">Hide controls</button>
     <div class="segmented" id="appearanceModeControl" role="group" aria-label="Appearance">
       <button data-appearance="auto" title="Follow the browser's light/dark setting">Auto</button>
       <button data-appearance="light">Light</button>
@@ -49,6 +51,7 @@ function applyAppearanceAttrs(mode, theme){
       <button class="theme-swatch" data-theme="signal" title="Signal theme" aria-label="Signal theme"></button>
     </div>
   </div>
+  <div id="smallScreenNotice">Modal is designed for tablets and larger screens. It runs here, but the controls will be cramped.</div>
 </header>
 
 <div id="sidebar">
@@ -101,118 +104,6 @@ function applyAppearanceAttrs(mode, theme){
     </div>
   </div>
 
-  <div class="section" id="listenerRowsSection">
-    <div class="section-title">
-      <span class="section-title-label"><span class="chevron">&#9662;</span>Listening Positions</span>
-      <button id="addListenerRowBtn" class="small">+ Add row</button>
-    </div>
-    <div class="section-body">
-      <div id="listenerRowsList"></div>
-      <div class="hint">A "row" is a group of seats (a couch, a row of recliners), rank is just this list's order (drag/reorder with the arrows below): the top row matters most, and it fades from there. Within a row, the center seat matters most, tapering toward the ends. Position is set by dragging each row's marker on the map.</div>
-    </div>
-  </div>
-
-  <div class="section" id="sourcesSection">
-    <div class="section-title">
-      <span class="section-title-label"><span class="chevron">&#9662;</span>Sources</span>
-      <div style="display:flex; gap:6px; align-items:center;">
-        <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
-          <input type="checkbox" id="sourcesMasterToggle" checked style="margin:0;"> All
-        </label>
-        <button id="addMainBtn" class="small">+ Add Main</button>
-        <button id="addSubBtn" class="small">+ Add Sub</button>
-      </div>
-    </div>
-    <div class="section-body">
-      <div class="row" style="margin-bottom:8px;">
-        <label>Rolloff (all sources)</label>
-        <div style="display:flex; gap:6px; flex:1;">
-          <select id="bulkRolloffSelect" style="flex:1;">
-            <option value="6">6 dB/oct</option>
-            <option value="12">12 dB/oct</option>
-            <option value="18">18 dB/oct</option>
-            <option value="24" selected>24 dB/oct</option>
-          </select>
-          <button id="applyRolloffAllBtn" class="small">Apply to all</button>
-        </div>
-      </div>
-      <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope (below) to this value in one click. Each source can still be adjusted individually afterward.</div>
-      <div class="row" style="margin-bottom:8px;"><label>Auto time-align</label>
-        <input type="checkbox" id="autoTimeAlignToggle" checked style="width:auto; flex:0;">
-      </div>
-      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source, recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
-      <div id="srcList"></div>
-      <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position. Check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
-    </div>
-  </div>
-
-  <div class="section" id="freqResponseSection">
-    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Frequency response</span></div>
-    <div class="section-body">
-      <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:var(--bg); border-radius:6px;"></canvas>
-      <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
-      <div id="freqResponseLegend" class="hint"></div>
-      <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
-      <div class="row" style="margin-top:8px;"><label>Color range (dB)</label>
-        <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
-        <span style="color:var(--text-dim);font-size:12.5px;">to</span>
-        <input type="number" id="dbMax" step="1" value="90" style="width:52px;">
-        <button id="autofitDbRangeBtn" class="small" title="Set the range to fit the current heatmap and chart data, with 5dB of headroom">Autofit</button>
-      </div>
-      <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color. Also sets this chart's own dB axis. If the heatmap looks solid one color, or the chart looks like a flat line, click Autofit.</div>
-      <div class="row" style="margin-top:8px;"><label>Heatmap colors</label>
-        <select id="colormapSelect" style="width:auto; flex:1;"></select>
-      </div>
-      <div class="hint" id="colormapHint"></div>
-    </div>
-  </div>
-
-  <div class="section" id="optimizerSection">
-    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Sub placement optimizer</span></div>
-    <div class="section-body">
-      <div class="row"><label>Draw on map</label>
-        <div style="display:flex; gap:6px;">
-          <button id="drawOffLimitBtn" class="small">+ Off-limits</button>
-          <button id="drawAllowedBtn" class="small">+ Allowed</button>
-          <button id="drawPreferredBtn" class="small">+ Preferred</button>
-        </div>
-      </div>
-      <div class="hint" id="zoneDrawHint">Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.</div>
-      <div id="zoneList"></div>
-      <div class="row" style="margin-top:8px;"><label>Optimize for</label>
-        <select id="optimizerMode" style="width:auto; flex:1;">
-          <option value="balanced">Loud &amp; flat (default)</option>
-          <option value="nullAvoidance">Null avoidance (room correction)</option>
-        </select>
-      </div>
-      <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available: it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
-      <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
-        <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
-        <span style="color:var(--text-dim);font-size:12.5px;">to</span>
-        <input type="number" id="optFreqHigh" min="10" max="500" step="1" value="120" style="width:52px;">
-      </div>
-      <div class="row"><label>Grid step</label>
-        <span id="optGridStepField"></span>
-      </div>
-      <div class="row"><label>Sub height</label>
-        <span id="optSubHeightField"></span>
-      </div>
-      <div class="row"><label># of subs</label>
-        <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
-      </div>
-      <button id="runOptimizerBtn" class="full primary" style="margin-top:6px;">Find best sub position</button>
-      <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
-      <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
-      <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
-      <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
-        <label style="font-size:12.5px;">Show score heatmap</label>
-        <input type="checkbox" id="showHeatmapToggle" checked>
-        <button id="clearOptimizerBtn" class="small" style="margin-left:auto;">Clear result</button>
-      </div>
-      <button id="acceptOptimizerBtn" class="full" style="display:none; margin-top:6px;">Add suggested sub(s) as sources</button>
-    </div>
-  </div>
-
   <div class="section collapsed" id="wallsSection">
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Walls</span></div>
     <div class="section-body">
@@ -255,9 +146,128 @@ function applyAppearanceAttrs(mode, theme){
     </div>
   </div>
 
-  <div class="section collapsed" id="reflectionsSection">
-    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Rendering</span></div>
+  <div class="section" id="sourcesSection">
+    <div class="section-title">
+      <span class="section-title-label"><span class="chevron">&#9662;</span>Speakers &amp; subs</span>
+      <label style="font-size:12.5px; color:var(--text-dim); display:flex; align-items:center; gap:4px; font-weight:400; text-transform:none; letter-spacing:normal;">
+        <input type="checkbox" id="sourcesMasterToggle" checked style="margin:0;"> All
+      </label>
+    </div>
     <div class="section-body">
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button id="addMainBtn" class="small" style="flex:1;">+ Add Main</button>
+        <button id="addSubBtn" class="small" style="flex:1;">+ Add Sub</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;"><label>Auto time-align</label>
+        <input type="checkbox" id="autoTimeAlignToggle" checked style="width:auto; flex:0;">
+      </div>
+      <div class="hint" style="margin-bottom:10px;">When on, every source's delay (below) is automatically kept time-aligned, so its direct sound arrives at the listening position together with the farthest source, recalculated whenever a source or listening position moves. A manually-set delay sticks until the next such change, useful for briefly detuning and watching the frequency response chart, but it won't persist past that. Turn it off to set every delay by hand and have it stay put. Assumes you have a way to actually apply per-source delay in real life, such as an AVR's speaker-distance trim or DSP; see the README for the practical caveats.</div>
+      <div id="srcList"></div>
+      <div class="hint">The dashed triangle on the map connects whichever two sources are marked "Front L/R" below to the listening position. Check that box on exactly two sources (typically your main stereo pair) to see it, regardless of how many other sources (subs, etc.) are also present.</div>
+    </div>
+  </div>
+
+  <div class="section" id="listenerRowsSection">
+    <div class="section-title">
+      <span class="section-title-label"><span class="chevron">&#9662;</span>Seats</span>
+      <button id="addListenerRowBtn" class="small">+ Add row</button>
+    </div>
+    <div class="section-body">
+      <div id="listenerRowsList"></div>
+      <div class="hint">A "row" is a group of seats (a couch, a row of recliners), rank is just this list's order (drag/reorder with the arrows below): the top row matters most, and it fades from there. Within a row, the center seat matters most, tapering toward the ends. Position is set by dragging each row's marker on the map.</div>
+    </div>
+  </div>
+
+  <div class="section" id="freqResponseSection">
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Frequency response</span></div>
+    <div class="section-body">
+      <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:var(--bg); border-radius:6px;"></canvas>
+      <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
+      <div id="freqResponseLegend" class="hint"></div>
+      <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
+      <div class="row" style="margin-top:8px;"><label>dB range</label>
+        <input type="number" id="dbMin" step="1" value="30" style="width:52px;">
+        <span style="color:var(--text-dim);font-size:12.5px;">to</span>
+        <input type="number" id="dbMax" step="1" value="90" style="width:52px;">
+        <button id="autofitDbRangeBtn" class="small" title="Set the range to fit the current heatmap and chart data, with 5dB of headroom">Autofit</button>
+      </div>
+      <div class="hint">Narrower ranges show subtle differences more clearly; wider ranges keep deep nulls distinguishable from each other instead of all clipping to the same color. Also sets this chart's own dB axis. If the heatmap looks solid one color, or the chart looks like a flat line, click Autofit.</div>
+    </div>
+  </div>
+
+  <div class="section" id="zonesSection">
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Sub placement zones</span></div>
+    <div class="section-body">
+      <div style="display:flex; gap:6px; margin-bottom:6px;">
+        <button id="drawOffLimitBtn" class="small" style="flex:1;">+ Off-limits</button>
+        <button id="drawAllowedBtn" class="small" style="flex:1;">+ Allowed</button>
+        <button id="drawPreferredBtn" class="small" style="flex:1;">+ Preferred</button>
+      </div>
+      <div class="hint" id="zoneDrawHint">Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.</div>
+      <div id="zoneList"></div>
+    </div>
+  </div>
+
+  <div class="section" id="optimizerSection">
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Optimizer</span></div>
+    <div class="section-body">
+      <div class="row"><label>Optimize for</label>
+        <select id="optimizerMode" style="width:auto; flex:1;">
+          <option value="balanced">Loud &amp; flat (default)</option>
+          <option value="nullAvoidance">Null avoidance (room correction)</option>
+        </select>
+      </div>
+      <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available: it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
+      <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
+        <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
+        <span style="color:var(--text-dim);font-size:12.5px;">to</span>
+        <input type="number" id="optFreqHigh" min="10" max="500" step="1" value="120" style="width:52px;">
+      </div>
+      <div class="row"><label>Sub height</label>
+        <span id="optSubHeightField"></span>
+      </div>
+      <div class="row"><label># of subs</label>
+        <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
+      </div>
+      <button id="runOptimizerBtn" class="full primary" style="margin-top:6px;">Find best sub position</button>
+      <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
+      <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
+      <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
+      <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
+        <label style="font-size:12.5px;">Show score heatmap</label>
+        <input type="checkbox" id="showHeatmapToggle" checked>
+        <button id="clearOptimizerBtn" class="small" style="margin-left:auto;">Clear result</button>
+      </div>
+      <button id="acceptOptimizerBtn" class="full" style="display:none; margin-top:6px;">Add suggested sub(s) as sources</button>
+    </div>
+  </div>
+
+  <!-- "Expert" keeps the id of the old "Rendering" section it grew out of, so
+       a returning visitor's saved collapsed/expanded state still applies. -->
+  <div class="section collapsed" id="reflectionsSection">
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Expert</span></div>
+    <div class="section-body">
+      <div class="hint" style="margin:0 0 10px;">Settings most rooms never need changed.</div>
+      <div class="row" style="margin-bottom:8px;">
+        <label>Rolloff (all sources)</label>
+        <div style="display:flex; gap:6px; flex:1;">
+          <select id="bulkRolloffSelect" style="flex:1;">
+            <option value="6">6 dB/oct</option>
+            <option value="12">12 dB/oct</option>
+            <option value="18">18 dB/oct</option>
+            <option value="24" selected>24 dB/oct</option>
+          </select>
+          <button id="applyRolloffAllBtn" class="small">Apply to all</button>
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Sets every source's own rolloff slope to this value in one click. Each source can still be adjusted individually afterward, under Speakers &amp; subs.</div>
+      <div class="row"><label>Optimizer grid step</label>
+        <span id="optGridStepField"></span>
+      </div>
+      <div class="row"><label>Heatmap colors</label>
+        <select id="colormapSelect" style="width:auto; flex:1;"></select>
+      </div>
+      <div class="hint" id="colormapHint" style="margin-bottom:10px;"></div>
       <div class="row-stacked">
         <div class="row-stacked-head"><label>Grid resolution</label><span class="val" id="resolutionScaleVal">1.0x</span></div>
         <input type="range" id="resolutionScale" min="0.5" max="3" step="0.25" value="1">
@@ -2282,7 +2292,9 @@ function applyAppearanceAttrs(mode, theme){
     ctx.fillText(text, tx, ty);
   }
 
-  const ZONE_HANDLE_PX = 12; // corner/edge grab-handle visual size and hit radius
+  // Corner/edge grab-handle visual size and hit radius, drawn larger on a
+  // touch-first device so the handles are visible under a fingertip.
+  const ZONE_HANDLE_PX = window.matchMedia('(pointer: coarse)').matches ? 20 : 12;
 
   // Fill color, dash pattern, and icon+label are all kind-specific and
   // redundant with each other (see the color-blindness note above
@@ -2531,10 +2543,13 @@ function applyAppearanceAttrs(mode, theme){
     const t60 = estimatedT60(room, freq, physicsCtx());
     const fs = schroederFrequency(room, t60);
     const el = document.getElementById('schroederInfo');
+    // The explanation is wrapped in .chip-detail so the compact tablet layout
+    // (modal.css) can drop it and keep just the number, leaving the height
+    // for the map.
     el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
-      `(estimated from room volume and your configured wall/floor/ceiling materials at ${Math.round(freq)} Hz, ` +
+      `<span class="chip-detail">(estimated from room volume and your configured wall/floor/ceiling materials at ${Math.round(freq)} Hz, ` +
       `T60 &asymp; ${t60.toFixed(2)}s). Below this, distinct room modes dominate; above it, ` +
-      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.`;
+      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.</span>`;
   }
 
   function updateModalInfo(){
@@ -3084,13 +3099,29 @@ function applyAppearanceAttrs(mode, theme){
     saveSessionSettings();
   }
   const sweepEndMarkerEl = document.getElementById('sweepEndMarker');
-  sweepEndMarkerEl.addEventListener('mousedown', (e) => { e.preventDefault(); beginSweepMarkerDrag(e.clientX); });
-  window.addEventListener('mousemove', (e) => { if(sweepMarkerDragging) updateSweepMarkerDrag(e.clientX); });
-  window.addEventListener('mouseup', endSweepMarkerDrag);
-  sweepEndMarkerEl.addEventListener('touchstart', (e) => { e.preventDefault(); beginSweepMarkerDrag(e.touches[0].clientX); }, {passive:false});
-  window.addEventListener('touchmove', (e) => { if(sweepMarkerDragging){ e.preventDefault(); updateSweepMarkerDrag(e.touches[0].clientX); } }, {passive:false});
-  window.addEventListener('touchend', endSweepMarkerDrag);
-  window.addEventListener('resize', positionSweepEndMarker);
+  // Same pointer-capture pattern as the map's own drags (see "Dragging" below).
+  sweepEndMarkerEl.addEventListener('pointerdown', (e) => {
+    if(!e.isPrimary || e.button !== 0) return;
+    e.preventDefault();
+    sweepEndMarkerEl.setPointerCapture(e.pointerId);
+    beginSweepMarkerDrag(e.clientX);
+  });
+  sweepEndMarkerEl.addEventListener('pointermove', (e) => updateSweepMarkerDrag(e.clientX));
+  sweepEndMarkerEl.addEventListener('pointerup', endSweepMarkerDrag);
+  sweepEndMarkerEl.addEventListener('pointercancel', endSweepMarkerDrag);
+  // A resize or a tablet rotation changes the layout: the marker needs
+  // repositioning, and the frequency response chart sizes its backing store
+  // to its on-screen size on each draw.
+  window.addEventListener('resize', () => { positionSweepEndMarker(); scheduleDraw(); });
+  // Portrait-tablet layout only (the button is hidden otherwise, see
+  // modal.css): collapses the bottom sheet so the map gets the full height.
+  document.getElementById('sheetToggleBtn').addEventListener('click', function(){
+    const collapsed = document.body.classList.toggle('sheet-collapsed');
+    this.textContent = collapsed ? 'Show controls' : 'Hide controls';
+    this.setAttribute('aria-expanded', String(!collapsed));
+    positionSweepEndMarker();
+    scheduleDraw();
+  });
   document.getElementById('floorMaterial').addEventListener('change', function(){
     if(this.value === 'custom') return; // "Custom" is a status display, not a selectable preset action
     floorAbsorption = FLOOR_MATERIALS[this.value];
@@ -3386,7 +3417,16 @@ function applyAppearanceAttrs(mode, theme){
     const plotW = canvas.width - margin*2, plotH = canvas.height - margin*2;
     const scale = Math.min(plotW / room.w, plotH / room.d);
     const offX = margin + (plotW - room.w*scale)/2, offY = margin + (plotH - room.d*scale)/2;
-    return { x: (cx-offX)/scale, y: (cy-offY)/scale, scale };
+    return { x: (cx-offX)/scale, y: (cy-offY)/scale, scale, cssScale: scale / scaleX };
+  }
+
+  // A fingertip needs a bigger target than a mouse cursor. For a touch
+  // pointer, widen a hit radius (given in feet) to at least 22 CSS px (a
+  // 44px target) at the map's current on-screen size, since the same
+  // distance in feet covers far fewer pixels in a large room on a tablet.
+  // `cssScale` is CSS px per foot, from getRoomCoords.
+  function hitRadiusFt(evt, mouseRadiusFt, cssScale){
+    return evt.pointerType === 'touch' ? Math.max(mouseRadiusFt, 22 / cssScale) : mouseRadiusFt;
   }
 
   // Backing array for each "rectangle on the map" kind, shared by the
@@ -3410,8 +3450,7 @@ function applyAppearanceAttrs(mode, theme){
     }
     return null;
   }
-  function findZoneHandleAt(x, y, scale){
-    const tolFt = ZONE_HANDLE_PX / scale;
+  function findZoneHandleAt(x, y, tolFt){
     const all = [
       ...offLimitZones.map(z=>({...z,kind:'offlimit'})),
       ...allowedZones.map(z=>({...z,kind:'allowed'})),
@@ -3430,9 +3469,10 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   function hitTest(evt){
-    const {x,y} = getRoomCoords(evt);
+    const {x,y,cssScale} = getRoomCoords(evt);
+    const radiusFt = hitRadiusFt(evt, 0.8, cssScale);
     for(const s of sources){
-      if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < 0.8) return s.id;
+      if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < radiusFt) return s.id;
     }
     // Only a row's own center point is hit-testable/draggable -- individual
     // seats are derived (RoomPhysics.rowSeatPositions), not independently
@@ -3440,13 +3480,13 @@ function applyAppearanceAttrs(mode, theme){
     // zones, so a matched id is unambiguous -- moveTarget below checks
     // `sources` first, then `listenerRows`, same as any other id-keyed list.
     for(const r of listenerRows){
-      if(Math.sqrt((x-r.x)**2+(y-r.y)**2) < 0.8) return r.id;
+      if(Math.sqrt((x-r.x)**2+(y-r.y)**2) < radiusFt) return r.id;
     }
     return null;
   }
 
   function zoneMouseDown(evt){
-    const {x,y,scale} = getRoomCoords(evt);
+    const {x,y,scale,cssScale} = getRoomCoords(evt);
 
     // 1. drawing a brand-new zone
     if(zoneDrawMode){
@@ -3463,7 +3503,7 @@ function applyAppearanceAttrs(mode, theme){
     }
 
     // 2. resizing via a corner handle on an existing zone
-    const handleHit = findZoneHandleAt(x, y, scale);
+    const handleHit = findZoneHandleAt(x, y, hitRadiusFt(evt, ZONE_HANDLE_PX / scale, cssScale));
     if(handleHit){
       zoneEditTarget = { kind: handleHit.kind, id: handleHit.id, mode: 'resize', handle: handleHit.handle };
       return true;
@@ -3546,41 +3586,43 @@ function applyAppearanceAttrs(mode, theme){
     autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
     scheduleDraw();
   }
-  canvas.addEventListener('mousedown', (e) => {
-    // While actively drawing a new zone, that intent always wins regardless of
-    // what's underneath the click.
-    if(zoneDrawMode){ if(zoneMouseDown(e)){ canvas.classList.add('dragging'); } return; }
-    // Otherwise, points (sources/listener) take priority over zones —
-    // a zone is a large background region, so clicking a point that happens to
-    // sit inside one should grab the point, not the zone underneath it.
-    const hit = hitTest(e);
-    if(hit!=null){ dragTarget = hit; canvas.classList.add('dragging'); return; }
-    if(zoneMouseDown(e)){ canvas.classList.add('dragging'); }
+  // Pointer Events give mouse, touch and pen one code path. Capturing the
+  // pointer on the canvas keeps move/up events coming even when the drag
+  // leaves the canvas, which is what the window-level mouse listeners this
+  // replaced were for. The canvas has `touch-action: none` (modal.css) so a
+  // touch drag moves the thing under the finger instead of panning the page.
+  canvas.addEventListener('pointerdown', (e) => {
+    // One drag at a time (`dragTarget`/`zoneEditTarget` each track a single
+    // thing), so ignore extra fingers and non-primary mouse buttons.
+    if(!e.isPrimary || e.button !== 0) return;
+    let started;
+    if(zoneDrawMode){
+      // While actively drawing a new zone, that intent always wins regardless
+      // of what's underneath the pointer.
+      started = zoneMouseDown(e);
+    } else {
+      // Otherwise, points (sources/listener) take priority over zones:
+      // a zone is a large background region, so pressing a point that happens
+      // to sit inside one should grab the point, not the zone underneath it.
+      const hit = hitTest(e);
+      if(hit != null){ dragTarget = hit; started = true; }
+      else started = zoneMouseDown(e);
+    }
+    if(!started) return;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    canvas.classList.add('dragging');
   });
-  window.addEventListener('mousemove', (e) => {
+  canvas.addEventListener('pointermove', (e) => {
     if(zoneMouseMove(e)) return;
-    if(dragTarget!=null) moveTarget(e);
+    if(dragTarget != null) moveTarget(e);
   });
-  window.addEventListener('mouseup', () => {
-    if(zoneMouseUp()){ canvas.classList.remove('dragging'); return; }
-    dragTarget = null;
+  function endCanvasDrag(){
+    if(!zoneMouseUp()) dragTarget = null;
     canvas.classList.remove('dragging');
-  });
-  canvas.addEventListener('touchstart', (e) => {
-    const t=e.touches[0];
-    if(zoneDrawMode){ if(zoneMouseDown(t)){ e.preventDefault(); } return; }
-    const hit=hitTest(t);
-    if(hit!=null){ dragTarget=hit; e.preventDefault(); return; }
-    if(zoneMouseDown(t)){ e.preventDefault(); }
-  }, {passive:false});
-  canvas.addEventListener('touchmove', (e) => {
-    if(zoneEditTarget){ e.preventDefault(); zoneMouseMove(e.touches[0]); return; }
-    if(dragTarget!=null){ e.preventDefault(); moveTarget(e.touches[0]); }
-  }, {passive:false});
-  canvas.addEventListener('touchend', () => {
-    if(zoneMouseUp()) return;
-    dragTarget = null;
-  });
+  }
+  canvas.addEventListener('pointerup', endCanvasDrag);
+  canvas.addEventListener('pointercancel', endCanvasDrag);
 
   // ---- Init ----
   async function init(){

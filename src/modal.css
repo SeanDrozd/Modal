@@ -99,6 +99,7 @@ body {
   grid-template-columns: 340px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh; /* excludes a tablet browser's collapsing toolbars; the line above is the fallback */
   overflow: hidden;
 }
 #sidebar {
@@ -125,6 +126,7 @@ body {
 h1 { font-size: 19px; font-weight: 650; letter-spacing: 0.01em; margin: 0; }
 .brand .tagline { font-size: 13px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+#sheetToggleBtn, #smallScreenNotice { display: none; } /* shown only by the narrow-screen rules at the end of this file */
 .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .segmented button { border: none; border-radius: 0; padding: 4px 10px; font-size: 12.5px; color: var(--text-dim); }
 .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
@@ -146,6 +148,7 @@ h1 { font-size: 19px; font-weight: 650; letter-spacing: 0.01em; margin: 0; }
 }
 .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; gap: 8px; }
 .row label { font-size: 13.5px; color: var(--text); flex-shrink: 0; }
+.row select { min-width: 0; } /* same flex min-content issue as the range inputs below: lets a select with long option text shrink to the row instead of overflowing the sidebar */
 .row .val { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; min-width: 50px; text-align: right; }
 /* Label+value on their own line, control (slider/select) on a full-width
    line below -- used for rows whose label+control+value can't all fit on
@@ -224,6 +227,7 @@ button.small { padding: 4px 8px; font-size: 12.5px; }
   background: var(--panel); border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow);
 }
 canvas { max-width: 100%; max-height: 100%; cursor: grab; }
+#cv, #sweepEndMarker { touch-action: none; } /* a touch drag here moves the thing under the finger; it must not also pan or zoom the page */
 canvas.dragging { cursor: grabbing; }
 #cvGL { pointer-events: none; } /* overlay canvas (cv) handles all interaction; cvGL is purely visual */
 /* Bottom info panel (below the canvas): frequency control + live readouts,
@@ -293,3 +297,60 @@ canvas.dragging { cursor: grabbing; }
 .status-msg.ok { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); }
 .status-msg.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
 #saveAsRow.show { display: flex !important; }
+
+/* ---- Tablet layout ----
+   Tablets are a supported target from 768px wide in either orientation;
+   phones are not (see #smallScreenNotice). Desktop rules above stay the
+   default, and each block below only overrides what its width needs. */
+
+/* Landscape tablets and small laptop windows: same two-column layout with a
+   narrower sidebar, and no tagline so the header controls fit. The panel
+   under the map is compacted to one short row of readouts (no explanatory
+   text, no drag hint), because at this size every line it takes comes
+   straight out of the map's height. */
+@media (max-width: 1100px) {
+  body { grid-template-columns: 320px minmax(0, 1fr); }
+  #sidebar { width: 320px; min-width: 320px; }
+  .brand .tagline { display: none; }
+  #main { padding: 12px; }
+  #bottomPanel .stats-row { flex-wrap: nowrap; gap: 8px; margin-top: 8px; }
+  #bottomPanel .stats-row > * { min-width: 0; }
+  .stat-chip { font-size: 12.5px; padding: 6px 8px; line-height: 1.4; }
+  .chip-detail, #info { display: none; }
+  #legend { margin-top: 8px; }
+}
+
+/* Portrait tablets: the map gets the full width and the sidebar becomes a
+   bottom sheet under it, which #sheetToggleBtn hides to give the map the
+   full height. Sidebar content is held to a readable column instead of
+   stretching each label and its control to opposite edges of the screen. */
+@media (max-width: 900px) {
+  body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+  #main { grid-row: 2; }
+  #sidebar {
+    grid-row: 3; width: auto; min-width: 0; height: 38dvh;
+    border-right: none; border-top: 1px solid var(--border); box-shadow: var(--shadow);
+  }
+  #sidebar > * { max-width: 520px; margin-left: auto; margin-right: auto; }
+  body.sheet-collapsed #sidebar { display: none; }
+  #sheetToggleBtn { display: inline-block; }
+  #appHeader { flex-wrap: wrap; }
+  .btn-label { display: none; }
+}
+
+@media (max-width: 767px) {
+  #smallScreenNotice { display: block; flex-basis: 100%; font-size: 12.5px; color: var(--text-dim); }
+}
+
+/* Touch-first devices: 44px minimum targets. */
+@media (pointer: coarse) {
+  button, select, input[type="number"], input[type="text"], input[type="range"] { min-height: 44px; }
+  .icon-btn { min-width: 44px; }
+  input[type="checkbox"] { width: 24px; height: 24px; }
+  .section-title .chevron { width: 44px; height: 44px; line-height: 44px; margin: 0 0 0 -14px; text-align: center; }
+  .theme-swatch { width: 36px; height: 36px; min-height: 0; }
+  #themeSwatches { gap: 8px; }
+  /* The marker stays 10px to look at; this widens what a finger can grab,
+     upward and sideways only, so it still never covers the slider's thumb. */
+  #sweepEndMarker::before { content: ''; position: absolute; inset: -20px -17px 0 -17px; }
+}
