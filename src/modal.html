@@ -1031,15 +1031,21 @@ function applyAppearanceAttrs(mode, theme){
   document.getElementById('cancelSaveBtn').addEventListener('click', () => {
     document.getElementById('saveAsRow').classList.remove('show');
   });
-  async function doSaveAs(){
-    const input = document.getElementById('newPresetName');
-    const name = input.value.trim();
-    if(!name){ showStatus('Enter a name first', false); return; }
+  // Saves the current room as a named preset and selects it. Resolves to
+  // whether the save worked.
+  async function savePresetAs(name){
     presets[name] = makeConfig();
     currentPresetName = name;
     presets['__meta__'] = { lastSelected: name };
     const ok = await savePresetsToStorage();
     refreshPresetSelect();
+    return ok;
+  }
+  async function doSaveAs(){
+    const input = document.getElementById('newPresetName');
+    const name = input.value.trim();
+    if(!name){ showStatus('Enter a name first', false); return; }
+    const ok = await savePresetAs(name);
     document.getElementById('saveAsRow').classList.remove('show');
     showStatus(ok ? `Saved "${name}"` : 'Save failed', ok);
   }
@@ -1836,8 +1842,10 @@ function applyAppearanceAttrs(mode, theme){
   // (called with just (fraction), so roundIndex/phase come through as undefined --
   // numSubs===1 already ignores roundIndex, and phase undefined already means
   // "Optimizing", so this reads correctly with no special-casing).
+  let optimizerProgressListener = null; // (fraction, subIndex, numSubs, phase) => void, set by the setup guide while it runs a search
   function optimizerStatusUpdater(status, numSubs){
     return (fraction, roundIndex, phase) => {
+      if(optimizerProgressListener) optimizerProgressListener(fraction, roundIndex ?? 0, numSubs, phase);
       const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
       const verb = phase === 'polish' ? 'Refining' : 'Optimizing';
       status.textContent = fraction === 0
@@ -2564,6 +2572,12 @@ function applyAppearanceAttrs(mode, theme){
     ctx.save();
     for(const b of points){
       const px = offX + b.x*scale, py = offY + b.y*scale;
+      // A refined existing sub: a line from where it is now to the suggestion.
+      const current = optimizerResult.applyInPlace && sources.find(s => s.id === b.id);
+      if(current && (current.x !== b.x || current.y !== b.y)){
+        ctx.beginPath(); ctx.moveTo(offX + current.x*scale, offY + current.y*scale); ctx.lineTo(px, py);
+        strokeGuideLine('#ffffff', 3, [10, 6]);
+      }
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = 2;
@@ -2593,10 +2607,9 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   function drawWallDists(x, y, px, py, offX, offY, scale, color){
-    const distToLeft = x, distToRight = room.w - x;
-    const nearVert = distToLeft <= distToRight ? { d: distToLeft, wallX: 0 } : { d: distToRight, wallX: room.w };
-    const distToFront = y, distToBack = room.d - y;
-    const nearHoriz = distToFront <= distToBack ? { d: distToFront, wallY: 0 } : { d: distToBack, wallY: room.d };
+    const near = RoomPhysics.nearestWallDistances({ x, y }, room);
+    const nearVert = { d: near.side.distFt, wallX: near.side.wall === 'left' ? 0 : room.w };
+    const nearHoriz = { d: near.end.distFt, wallY: near.end.wall === 'front' ? 0 : room.d };
 
     const vwx = offX + nearVert.wallX*scale;
     const hwy = offY + nearHoriz.wallY*scale;
@@ -2998,6 +3011,11 @@ function applyAppearanceAttrs(mode, theme){
   //     optimizer's pending suggestion (optimizerResult.placedSubs) added to
   //     the source list -- null when no suggestion is currently pending.
   let freqResponseData = null;
+  function sourcesWithSuggestion(activeSources){
+    return optimizerResult.applyInPlace
+      ? activeSources.map(s => optimizerResult.placedSubs.find(p => p.id === s.id) || s)
+      : activeSources.concat(optimizerResult.placedSubs);
+  }
   function computeFreqResponseData(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
     if(activeSources.length === 0){
@@ -3034,9 +3052,7 @@ function applyAppearanceAttrs(mode, theme){
       // just refined, so REPLACE each by matching id rather than concatenating
       // -- concatenating would double-count each one at both its old and new
       // position. Otherwise (adding brand-new subs): concatenate, as before.
-      const afterSources = optimizerResult.applyInPlace
-        ? activeSources.map(s => optimizerResult.placedSubs.find(p => p.id === s.id) || s)
-        : activeSources.concat(optimizerResult.placedSubs);
+      const afterSources = sourcesWithSuggestion(activeSources);
       afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
     }
 
@@ -3561,10 +3577,12 @@ function applyAppearanceAttrs(mode, theme){
   for(const id of ['optFreqLow','optFreqHigh','optNumSubs']){
     document.getElementById(id).addEventListener('change', saveSessionSettings);
   }
-  document.getElementById('optimizerMode').addEventListener('change', function(){
-    optimizerMode = this.value;
+  function setOptimizerMode(mode){
+    optimizerMode = mode;
+    document.getElementById('optimizerMode').value = mode;
     saveSessionSettings();
-  });
+  }
+  document.getElementById('optimizerMode').addEventListener('change', function(){ setOptimizerMode(this.value); });
   document.getElementById('verifyGpuBtn').addEventListener('click', function(){
     const out = document.getElementById('verifyResult');
     out.textContent = 'Running...';
@@ -3641,44 +3659,36 @@ function applyAppearanceAttrs(mode, theme){
     document.getElementById('runOptimizerBtn').disabled = disabled;
     document.getElementById('reoptimizeExistingBtn').disabled = disabled;
   }
-  document.getElementById('runOptimizerBtn').addEventListener('click', async function(){
-    const status = document.getElementById('optimizerStatus');
-    status.textContent = 'Optimizing...';
+  // Runs one of the two optimizer workflows: refine the existing subs in
+  // place (`reoptimize`) or search for positions for new ones. Shared by the
+  // sidebar buttons and the setup guide. Once it resolves, optimizerResult
+  // holds the suggestion, if the search found one.
+  async function startOptimizer(reoptimize){
+    document.getElementById('optimizerStatus').textContent = 'Optimizing...';
     setOptimizerButtonsDisabled(true);
-    document.getElementById('acceptOptimizerBtn').style.display = 'none';
+    const acceptBtn = document.getElementById('acceptOptimizerBtn');
+    acceptBtn.style.display = 'none';
     try {
-      await runSubOptimizer();
+      await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
-        document.getElementById('acceptOptimizerBtn').textContent = 'Add suggested sub(s) as sources';
-        document.getElementById('acceptOptimizerBtn').style.display = 'block';
+        acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
+        acceptBtn.style.display = 'block';
       }
     } finally {
       setOptimizerButtonsDisabled(false);
     }
-  });
-  document.getElementById('reoptimizeExistingBtn').addEventListener('click', async function(){
-    const status = document.getElementById('optimizerStatus');
-    status.textContent = 'Optimizing...';
-    setOptimizerButtonsDisabled(true);
-    document.getElementById('acceptOptimizerBtn').style.display = 'none';
-    try {
-      await runReoptimizeExistingSubs();
-      if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
-        document.getElementById('acceptOptimizerBtn').textContent = 'Apply refined positions';
-        document.getElementById('acceptOptimizerBtn').style.display = 'block';
-      }
-    } finally {
-      setOptimizerButtonsDisabled(false);
-    }
-  });
-  document.getElementById('clearOptimizerBtn').addEventListener('click', () => {
+  }
+  document.getElementById('runOptimizerBtn').addEventListener('click', () => startOptimizer(false));
+  document.getElementById('reoptimizeExistingBtn').addEventListener('click', () => startOptimizer(true));
+  function clearOptimizerResult(){
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
     document.getElementById('acceptOptimizerBtn').style.display = 'none';
     draw();
-  });
-  document.getElementById('acceptOptimizerBtn').addEventListener('click', () => {
+  }
+  document.getElementById('clearOptimizerBtn').addEventListener('click', clearOptimizerResult);
+  function applyOptimizerResult(){
     if(!optimizerResult || !optimizerResult.placedSubs) return;
     if(optimizerResult.applyInPlace){
       // These ARE the existing subs, just refined -- find each by id and
@@ -3695,13 +3705,10 @@ function applyAppearanceAttrs(mode, theme){
       }
     }
     autoTimeAlign();
-    optimizerResult = null;
-    document.getElementById('optimizerStatus').textContent = '';
-    document.getElementById('optimizerResultRow').style.display = 'none';
-    document.getElementById('acceptOptimizerBtn').style.display = 'none';
     renderSrcList();
-    draw();
-  });
+    clearOptimizerResult();
+  }
+  document.getElementById('acceptOptimizerBtn').addEventListener('click', applyOptimizerResult);
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
 
   // ---- Dragging ----
@@ -4000,6 +4007,40 @@ function applyAppearanceAttrs(mode, theme){
     }
     return stored;
   }
+  // What the pending optimizer suggestion would change, in the terms the
+  // setup guide reports: the main seat's response across the optimizer's
+  // band now and with the suggestion (RoomPhysics.responseSummary), how the
+  // two compare, and the seat-to-seat variation. `before` and `comparison`
+  // are null when there is no sub yet, since there is nothing to compare
+  // with. Null with no suggestion pending.
+  function optimizerOutcome(){
+    if(!optimizerResult || !optimizerResult.placedSubs || optimizerResult.placedSubs.length === 0) return null;
+    // A refinement that had no position to try (obstacles cover the floor) leaves every sub in place; that is no result.
+    if(optimizerResult.applyInPlace && !optimizerResult.best) return null;
+    const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
+    const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
+    const freqs = logSpacedFreqs(freqLow, freqHigh, 48);
+    const active = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
+    const seats = allSeatPositions(), primary = primaryRow();
+    // The row's own center is measured as an extra point; see computeFreqResponseData.
+    const centers = seats.concat([{ x: primary.x, y: primary.y, z: primary.z }]);
+    const measure = (srcs) => {
+      const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, srcs, physicsCtx(), { radiusFt: 2, numPoints: 20 });
+      const db = perCenterDb[centers.length - 1];
+      return { db, summary: RoomPhysics.responseSummary(db, freqs), seatToSeatDb: RoomPhysics.seatToSeatVariationDb(perCenterDb.slice(0, seats.length)) };
+    };
+    const after = measure(sourcesWithSuggestion(active));
+    const before = active.some(isSubSource) ? measure(active) : null;
+    return {
+      freqs, before, after, seats: seats.length,
+      comparison: before ? RoomPhysics.compareResponses(before.summary, after.summary) : null,
+      // from: where a refined existing sub stands now; null for a new sub.
+      subs: optimizerResult.placedSubs.map(p => {
+        const current = optimizerResult.applyInPlace && sources.find(s => s.id === p.id);
+        return { name: p.name, x: p.x, y: p.y, from: current ? { x: current.x, y: current.y } : null };
+      })
+    };
+  }
   // ---- Setup guide API ----
   // The whole surface src/guide.js works through. The guide owns its steps,
   // copy and DOM, and reads or changes the app only through these, so it
@@ -4056,6 +4097,48 @@ function applyAppearanceAttrs(mode, theme){
     getZoneDrawMode: () => zoneDrawMode,
     toggleZoneDraw: setZoneDrawMode,
     floorCoverageWarning,
+    autofitColorRange,
+    // positions: how many grid points a search evaluates.
+    getOptimizerSettings: () => ({
+      mode: optimizerMode,
+      freqLow: parseFloat(document.getElementById('optFreqLow').value) || 20,
+      freqHigh: parseFloat(document.getElementById('optFreqHigh').value) || 120,
+      gridStepFt: optGridStepFt, subHeightFt: optSubHeightFt,
+      positions: RoomPhysics.countGridCells(room, optGridStepFt),
+      seats: allSeatPositions().length
+    }),
+    setOptimizerMode,
+    // Refines the existing subs, or with none searches for `newSubs` new
+    // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
+    // search runs. Resolves when it is done; see optimizerOutcome.
+    async runOptimizer(newSubs, onProgress){
+      const reoptimize = sources.some(isSubSource);
+      if(!reoptimize) document.getElementById('optNumSubs').value = newSubs;
+      optimizerProgressListener = onProgress;
+      try { await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
+    },
+    optimizerOutcome,
+    optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
+    wallDistances: (pos) => RoomPhysics.nearestWallDistances(pos, room),
+    applyOptimizerResult,
+    clearOptimizerResult,
+    // The green-to-red map of how every candidate position scored.
+    getScoreHeatmap: () => document.getElementById('showHeatmapToggle').checked,
+    setScoreHeatmap(on){ document.getElementById('showHeatmapToggle').checked = on; draw(); },
+    // Each sub with its nearest side and end wall and its straight-line
+    // distance to the main seat.
+    getSubPlan: () => sources.filter(isSubSource).map(s => {
+      const seat = primaryRow();
+      return { name: s.name, walls: RoomPhysics.nearestWallDistances(s, room), seatDistanceFt: Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) };
+    }),
+    savePreset: savePresetAs,
+    // Draws the page in the light palette while printing, then puts the
+    // on-screen appearance back.
+    setPrintAppearance(on){
+      applyAppearanceAttrs(on ? 'light' : appearanceMode, colorTheme);
+      readThemeColors();
+      draw();
+    },
     getMapView: () => mapView,
     setMapView,
     // Client (viewport) coordinates of a point given in room feet.

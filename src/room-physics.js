@@ -818,6 +818,76 @@
     };
   }
 
+  // ---- Plain-language results ----
+  // What a response curve amounts to for a listener. responseDb[i] is the
+  // level at freqs[i]. The null and peak are given relative to the curve's
+  // own mean level, since absolute dB has no fixed reference here (see
+  // scoreSubPosition); spreadDb is the plus-or-minus swing, half the gap
+  // between the highest and lowest points.
+  function responseSummary(responseDb, freqs){
+    let sum = 0, minI = 0, maxI = 0;
+    for(let i = 0; i < responseDb.length; i++){
+      sum += responseDb[i];
+      if(responseDb[i] < responseDb[minI]) minI = i;
+      if(responseDb[i] > responseDb[maxI]) maxI = i;
+    }
+    const meanDb = sum / responseDb.length;
+    return {
+      meanDb,
+      spreadDb: (responseDb[maxI] - responseDb[minI]) / 2,
+      deepestNullDb: responseDb[minI] - meanDb, deepestNullHz: freqs[minI],
+      biggestPeakDb: responseDb[maxI] - meanDb, biggestPeakHz: freqs[maxI]
+    };
+  }
+  // How much the level differs from seat to seat, as a plus-or-minus figure:
+  // half the gap between the loudest and quietest seat at each frequency,
+  // averaged over the frequencies. perSeatDb[seat][freqIndex]. Zero for a
+  // single seat.
+  function seatToSeatVariationDb(perSeatDb){
+    if(perSeatDb.length < 2) return 0;
+    const numFreqs = perSeatDb[0].length;
+    let sum = 0;
+    for(let j = 0; j < numFreqs; j++){
+      let min = Infinity, max = -Infinity;
+      for(const seat of perSeatDb){ if(seat[j] < min) min = seat[j]; if(seat[j] > max) max = seat[j]; }
+      sum += (max - min) / 2;
+    }
+    return sum / numFreqs;
+  }
+  // Gains at or above these count as a major or a modest change. spreadDb is
+  // a plus-or-minus figure, so its thresholds are half the others'.
+  const COMPARE_MAJOR = { levelDb: 6, spreadDb: 3, nullDb: 6 };
+  const COMPARE_MODEST = { levelDb: 2, spreadDb: 1, nullDb: 2 };
+  // Compares two responseSummary results. Each gain is positive when `after`
+  // is better: louder on average, a smaller swing, a shallower deepest null.
+  // verdict: 'major' or 'modest' by the largest gain, 'mixed' when one
+  // measure improved and another got worse by at least the modest threshold,
+  // 'similar' when nothing moved that far either way.
+  function compareResponses(before, after){
+    const gains = {
+      levelDb: after.meanDb - before.meanDb,
+      spreadDb: before.spreadDb - after.spreadDb,
+      nullDb: after.deepestNullDb - before.deepestNullDb
+    };
+    const keys = Object.keys(gains);
+    const better = keys.some(k => gains[k] >= COMPARE_MODEST[k]);
+    const worse = keys.some(k => gains[k] <= -COMPARE_MODEST[k]);
+    const verdict = better && worse ? 'mixed'
+      : keys.some(k => gains[k] >= COMPARE_MAJOR[k]) ? 'major'
+      : better ? 'modest' : 'similar';
+    return { levelGainDb: gains.levelDb, spreadGainDb: gains.spreadDb, nullGainDb: gains.nullDb, verdict };
+  }
+  // The nearer side wall and the nearer end wall to a point, with the
+  // distance to each: { side: { wall: 'left' | 'right', distFt }, end:
+  // { wall: 'front' | 'back', distFt } }. The front wall is y = 0 and the
+  // left wall x = 0; a point exactly midway reports left and front.
+  function nearestWallDistances(pos, room){
+    return {
+      side: pos.x <= room.w - pos.x ? { wall: 'left', distFt: pos.x } : { wall: 'right', distFt: room.w - pos.x },
+      end: pos.y <= room.d - pos.y ? { wall: 'front', distFt: pos.y } : { wall: 'back', distFt: room.d - pos.y }
+    };
+  }
+
   // ---- Default speaker placement ----
   // Azimuth of each standard channel as seen from the listener, in degrees:
   // 0 is straight ahead (toward the front wall, -y) and positive is to the
@@ -1336,6 +1406,10 @@
     preferredZoneBonusDb,
     SPEAKER_AZIMUTH_DEG,
     standardSpeakerPositions,
+    responseSummary,
+    seatToSeatVariationDb,
+    compareResponses,
+    nearestWallDistances,
     rowFootprintRect,
     isPointInRect,
     freeFloorFraction,

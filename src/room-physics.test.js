@@ -930,6 +930,62 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
 });
 
+console.log('\n-- responseSummary / seatToSeatVariationDb / compareResponses --');
+
+test('responseSummary reports the swing, deepest null and biggest peak relative to the mean', () => {
+  const r = P.responseSummary([70, 76, 58, 72, 74], [20, 30, 45, 70, 100]);
+  approx(r.meanDb, 70, 1e-9);
+  approx(r.spreadDb, 9, 1e-9); // (76 - 58) / 2
+  approx(r.deepestNullDb, -12, 1e-9); assert.strictEqual(r.deepestNullHz, 45);
+  approx(r.biggestPeakDb, 6, 1e-9); assert.strictEqual(r.biggestPeakHz, 30);
+});
+
+test('responseSummary of a flat response has no swing, null or peak', () => {
+  const r = P.responseSummary([65, 65, 65], [20, 40, 80]);
+  approx(r.spreadDb, 0, 1e-9); approx(r.deepestNullDb, 0, 1e-9); approx(r.biggestPeakDb, 0, 1e-9);
+});
+
+test('seatToSeatVariationDb averages half the loudest-to-quietest gap across frequencies', () => {
+  // gaps of 4, 10 and 0 dB at the three frequencies: half-gaps 2, 5, 0, mean 7/3
+  approx(P.seatToSeatVariationDb([[70, 60, 65], [74, 70, 65], [72, 65, 65]]), 7 / 3, 1e-9);
+});
+
+test('seatToSeatVariationDb is zero for a single seat', () => {
+  assert.strictEqual(P.seatToSeatVariationDb([[70, 60, 65]]), 0);
+});
+
+test('compareResponses gives each gain as positive when the second response is better', () => {
+  const before = P.responseSummary([70, 76, 52, 72, 70], [20, 30, 45, 70, 100]); // mean 68, swing 12, null -16
+  const after = P.responseSummary([72, 74, 68, 72, 74], [20, 30, 45, 70, 100]);  // mean 72, swing 3, null -4
+  const c = P.compareResponses(before, after);
+  approx(c.levelGainDb, 4, 1e-9); approx(c.spreadGainDb, 9, 1e-9); approx(c.nullGainDb, 12, 1e-9);
+  assert.strictEqual(c.verdict, 'major');
+});
+
+test('compareResponses grades modest, similar and mixed changes', () => {
+  const s = (meanDb, spreadDb, deepestNullDb) => ({ meanDb, spreadDb, deepestNullDb });
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(70, 6.5, -9)).verdict, 'modest');   // swing 1.5 better, null 3 shallower
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(70.5, 7.6, -11.5)).verdict, 'similar');
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(70, 8, -12)).verdict, 'similar');
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(77, 8, -16)).verdict, 'mixed');     // 7 dB louder, null 4 dB deeper
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(70, 8, -6)).verdict, 'major');      // null 6 dB shallower
+  assert.strictEqual(P.compareResponses(s(70, 8, -12), s(70, 10, -15)).verdict, 'similar');  // only worse: not an improvement of any size
+});
+
+console.log('\n-- nearestWallDistances --');
+
+test('nearestWallDistances picks the nearer side wall and the nearer end wall', () => {
+  assert.deepStrictEqual(P.nearestWallDistances({ x: 2.25, y: 1 }, baseRoom), { side: { wall: 'left', distFt: 2.25 }, end: { wall: 'front', distFt: 1 } });
+  const far = P.nearestWallDistances({ x: 16, y: 12 }, baseRoom);
+  assert.strictEqual(far.side.wall, 'right'); approx(far.side.distFt, 2, 1e-9);
+  assert.strictEqual(far.end.wall, 'back'); approx(far.end.distFt, 1.5, 1e-9);
+});
+
+test('nearestWallDistances reports left and front for a point exactly midway', () => {
+  const mid = P.nearestWallDistances({ x: baseRoom.w / 2, y: baseRoom.d / 2 }, baseRoom);
+  assert.strictEqual(mid.side.wall, 'left'); assert.strictEqual(mid.end.wall, 'front');
+});
+
 console.log('\n-- rowFootprintRect --');
 
 test('rowFootprintRect is one seat spacing wide per seat and 3 ft deep, centered on the row', () => {
