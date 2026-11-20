@@ -930,6 +930,37 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
 });
 
+console.log('\n-- rowFootprintRect --');
+
+test('rowFootprintRect is one seat spacing wide per seat and 3 ft deep, centered on the row', () => {
+  const r = P.rowFootprintRect({ x: 9, y: 9, facing: 0, seats: 3, spacingFt: 2 }, baseRoom);
+  approx(r.x, 6, 1e-9); approx(r.y, 7.5, 1e-9); approx(r.width, 6, 1e-9); approx(r.height, 3, 1e-9);
+});
+
+test('rowFootprintRect covers every seat of the row', () => {
+  const row = { x: 8, y: 7, z: 3.5, facing: 0, seats: 5, spacingFt: 2.5 };
+  const r = P.rowFootprintRect(row, baseRoom);
+  for(const seat of P.rowSeatPositions(row)){
+    assert.ok(seat.x > r.x && seat.x < r.x + r.width && seat.y > r.y && seat.y < r.y + r.height);
+  }
+});
+
+test('rowFootprintRect swaps width and depth for a row facing a side wall', () => {
+  const r = P.rowFootprintRect({ x: 9, y: 7, facing: 90, seats: 3, spacingFt: 2 }, baseRoom);
+  approx(r.x, 7.5, 1e-9); approx(r.y, 4, 1e-9); approx(r.width, 3, 1e-9); approx(r.height, 6, 1e-9);
+});
+
+test('rowFootprintRect is the bounding box of the footprint for a row at an angle', () => {
+  const r = P.rowFootprintRect({ x: 9, y: 7, facing: 45, seats: 3, spacingFt: 2 }, baseRoom);
+  const half = (3 + 1.5) / Math.SQRT2; // half length 3 and half depth 1.5, both at 45 degrees
+  approx(r.width, 2 * half, 1e-9); approx(r.height, 2 * half, 1e-9); approx(r.x, 9 - half, 1e-9); approx(r.y, 7 - half, 1e-9);
+});
+
+test('rowFootprintRect is clipped to the room and uses the given depth', () => {
+  const r = P.rowFootprintRect({ x: 1, y: baseRoom.d - 0.5, facing: 0, seats: 2, spacingFt: 2 }, baseRoom, 4);
+  approx(r.x, 0, 1e-9); approx(r.width, 3, 1e-9); approx(r.y, baseRoom.d - 2.5, 1e-9); approx(r.height, 2.5, 1e-9);
+});
+
 console.log('\n-- standardSpeakerPositions --');
 
 test('standardSpeakerPositions puts the fronts 30 degrees either side of the seat, inset from the front wall', () => {

@@ -273,9 +273,9 @@ canvas.dragging { cursor: grabbing; }
   display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 10px;
   font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap;
 }
-#furniturePalette { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 6px; }
-#furniturePalette button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px; font-size: 11.5px; }
-#furniturePalette svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#furniturePalette, .guide-palette { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 6px; }
+#furniturePalette button, .guide-palette button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px; font-size: 11.5px; }
+#furniturePalette svg, .guide-palette svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 #pressureLegend { display: inline-flex; align-items: center; gap: 4px; }
 #pressureLegend[hidden] { display: none; }
 .legend-key { display: inline-flex; align-items: center; gap: 5px; }
@@ -326,6 +326,7 @@ canvas.dragging { cursor: grabbing; }
 #guidePanel { display: none; }
 body.guide-active #guidePanel { display: block; }
 body.guide-active #sidebar > :not(#guidePanel) { display: none; }
+body.guide-active .brand .tagline { display: none; } /* the step rail takes its room in the header */
 /* The setup steps work on the plain floor plan, so the frequency controls, readouts and view switch stay out of the way until the guide is closed. */
 body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-row, body.guide-active #info, body.guide-active #mapViewControl, body.guide-active #pressureLegend { display: none; }
 #guidePanel h2 { font-size: 21px; font-weight: 650; line-height: 1.25; margin: 0 0 10px; outline: none; }
@@ -350,6 +351,24 @@ body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-
 .guide-speaker { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 2px; margin-bottom: 8px; }
 .guide-speaker.selected { border-color: var(--accent); }
 .guide-speaker-name { font-weight: 650; margin-bottom: 8px; min-width: 44px; }
+.guide-counts { display: flex; margin-bottom: 12px; }
+.guide-counts button { flex: 1 1 auto; padding: 8px 6px; font-size: 14px; white-space: nowrap; }
+#guidePanel .guide-hint { font-size: 12.5px; color: var(--text-dim); margin: 6px 0 12px; }
+.guide-stepper { display: inline-flex; align-items: center; gap: 4px; }
+.guide-stepper button { width: 32px; padding: 4px 0; font-size: 15px; }
+.guide-stepper output { min-width: 28px; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
+.guide-more { margin: 4px 0 8px; font-size: 13px; }
+.guide-more summary { cursor: pointer; color: var(--text-dim); padding: 4px 0; }
+.guide-more[open] summary { margin-bottom: 6px; }
+.guide-facing { display: inline-flex; align-items: center; gap: 6px; }
+.guide-facing input { width: 110px; }
+.guide-facing output { min-width: 34px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+.guide-speaker .guide-skip { margin: 0 0 8px; }
+#guidePanel .guide-offer { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text); }
+.guide-offer button { flex-shrink: 0; white-space: nowrap; }
+.guide-zone { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 4px 4px 10px; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; font-size: 13.5px; }
+.guide-zone .dim { color: var(--text-dim); }
+#guidePanel [data-draw][aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 /* Stays at the bottom edge of the sidebar (inside its 16px padding) so
    Back and Next are reachable however long the step's content is. */
 .guide-footer { position: sticky; bottom: -16px; margin-top: 12px; padding: 12px 0 16px; background: var(--panel); border-top: 1px solid var(--border); }
@@ -425,6 +444,8 @@ body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-
 @media (pointer: coarse) {
   button, select, input[type="number"], input[type="text"], input[type="range"] { min-height: 44px; }
   .icon-btn { min-width: 44px; }
+  .guide-stepper button { width: 44px; }
+  .guide-more summary { padding: 14px 0; }
   input[type="checkbox"] { width: 24px; height: 24px; }
   .section-title .chevron { width: 44px; height: 44px; line-height: 44px; margin: 0 0 0 -14px; text-align: center; }
   .theme-swatch { width: 36px; height: 36px; min-height: 0; }

@@ -613,11 +613,14 @@ function applyAppearanceAttrs(mode, theme){
     draw();
   }
 
+  // Where a first layout sits in a room: the seat centered and two thirds of
+  // the way back, with the mains at their standard spots around it. The
+  // defaults below are this for the default room, and the setup guide keeps
+  // an untouched layout there while the room is resized (see
+  // setRoomDimKeepingStarterLayout).
+  function starterSeat(r){ return { x: r.w / 2, y: r.d * 2 / 3 }; }
   function defaultSources(){
-    return [
-      { id: nextId++, name: 'FL', x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 },
-      { id: nextId++, name: 'FR', x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true, rolloffDbPerOct: 24 }
-    ];
+    return RoomPhysics.standardSpeakerPositions(room, starterSeat(room), ['FL', 'FR']).map(p => newMainSource(p.name, p.x, p.y));
   }
 
   // A single rank-1 row, one seat, at the same position/facing the app's old
@@ -625,7 +628,7 @@ function applyAppearanceAttrs(mode, theme){
   // to defaults) looks and behaves identically to before this feature existed.
   function defaultListenerRows(){
     return [
-      { id: nextId++, name: 'Row 1', x: 9, y: 9, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }
+      { id: nextId++, name: 'Row 1', ...starterSeat(room), z: 3.5, facing: 0, seats: 1, spacingFt: 2 }
     ];
   }
 
@@ -633,11 +636,12 @@ function applyAppearanceAttrs(mode, theme){
   // center of the room (most subs go near walls/corners in practice, not in
   // the middle of the floor), sized as a fraction of room dimensions so it
   // scales reasonably across different room sizes.
+  const DEFAULT_ZONE_NAME = 'Center (default)';
   function defaultOffLimitZones(r){
     const zoneW = r.w * 0.5, zoneD = r.d * 0.5;
     return [{
       id: nextId++,
-      name: 'Center (default)',
+      name: DEFAULT_ZONE_NAME,
       x: (r.w - zoneW) / 2,
       y: (r.d - zoneD) / 2,
       width: zoneW,
@@ -1255,11 +1259,7 @@ function applyAppearanceAttrs(mode, theme){
         scheduleDraw();
       });
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        if(listenerRows.length <= 1){ showStatus('Keep at least one listening position', false); return; }
-        listenerRows = listenerRows.filter(r => r.id !== row.id);
-        autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
-        renderListenerRowsList();
-        draw();
+        if(!removeListenerRow(row.id)) showStatus('Keep at least one listening position', false);
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
         if(moveArrayItem(listenerRows, idx, -1)){
@@ -1275,10 +1275,8 @@ function applyAppearanceAttrs(mode, theme){
       });
       const seatsInput = block.querySelector('[data-field="seats"]');
       seatsInput.addEventListener('change', function(){
-        row.seats = Math.max(1, Math.min(LISTENER_ROW_MAX_SEATS, parseInt(this.value, 10) || 1));
-        this.value = row.seats;
+        this.value = setRowSeats(row, parseInt(this.value, 10));
         block.querySelector('[data-role="spacingRow"]').style.display = row.seats > 1 ? 'flex' : 'none';
-        draw();
       });
       block.querySelector('[data-field="spacingFt"]').addEventListener('change', function(){
         row.spacingFt = Math.max(0.5, Math.min(6, parseFloat(this.value) || 2));
@@ -1458,7 +1456,8 @@ function applyAppearanceAttrs(mode, theme){
   // Drops a new piece at the room's center at its typical size (shrunk to
   // fit a small room), each one stepped half a foot further than the last
   // so several added in a row don't land exactly on top of each other.
-  function addFurniture(type){
+  // `at` ({ name, x, y, width, height }) places a named piece exactly instead.
+  function addFurniture(type, at){
     const { label, w, d } = FURNITURE_TYPES[type];
     const width = Math.min(w, room.w), height = Math.min(d, room.d);
     const step = (offLimitZones.filter(z => z.furnitureType).length % 6) * 0.5;
@@ -1466,7 +1465,8 @@ function applyAppearanceAttrs(mode, theme){
       id: nextId++, name: label, furnitureType: type,
       x: Math.min(room.w - width, (room.w - width)/2 + step),
       y: Math.min(room.d - height, (room.d - height)/2 + step),
-      width, height
+      width, height,
+      ...at
     });
     renderZoneList();
     draw();
@@ -1485,24 +1485,38 @@ function applyAppearanceAttrs(mode, theme){
 
   // Below this much free floor, say so: the optimizer has little left to search.
   const LOW_FREE_FLOOR_FRACTION = 0.25;
+  // The warning's text, or null while enough of the floor is free.
+  function floorCoverageWarning(){
+    const free = RoomPhysics.freeFloorFraction(room, offLimitZones);
+    return free < LOW_FREE_FLOOR_FRACTION ? `Obstacles cover ${Math.round((1 - free) * 100)}% of the floor. The optimizer only searches the remaining area.` : null;
+  }
   function updateFloorCoverageWarning(){
     const el = document.getElementById('floorCoverageWarning');
-    const free = RoomPhysics.freeFloorFraction(room, offLimitZones);
-    el.style.display = free < LOW_FREE_FLOOR_FRACTION ? 'block' : 'none';
-    el.textContent = `Obstacles cover ${Math.round((1 - free) * 100)}% of the floor. The optimizer only searches the remaining area.`;
+    const text = floorCoverageWarning();
+    el.style.display = text ? 'block' : 'none';
+    el.textContent = text || '';
   }
 
-  function renderZoneList(){
-    updateFloorCoverageWarning();
-    const list = document.getElementById('zoneList');
-    list.innerHTML = '';
-    const allZones = [
+  // Every zone of all three kinds, each tagged with its kind.
+  function allZones(){
+    return [
       ...offLimitZones.map(z => ({ ...z, kind: 'offlimit' })),
       ...allowedZones.map(z => ({ ...z, kind: 'allowed' })),
       ...preferredZones.map(z => ({ ...z, kind: 'preferred' }))
     ];
-    if(allZones.length === 0) return;
-    for(const z of allZones){
+  }
+  function removeZone(kind, id){
+    if(kind === 'offlimit') offLimitZones = offLimitZones.filter(x => x.id !== id);
+    else if(kind === 'allowed') allowedZones = allowedZones.filter(x => x.id !== id);
+    else preferredZones = preferredZones.filter(x => x.id !== id);
+    renderZoneList();
+    draw();
+  }
+  function renderZoneList(){
+    updateFloorCoverageWarning();
+    const list = document.getElementById('zoneList');
+    list.innerHTML = '';
+    for(const z of allZones()){
       const { color, label } = FURNITURE_TYPES[z.furnitureType] ? { color: 'var(--text-dim)', label: 'Furniture' } : ZONE_KIND_INFO[z.kind];
       const row = document.createElement('div');
       row.className = 'src-block';
@@ -1517,13 +1531,7 @@ function applyAppearanceAttrs(mode, theme){
         </div>
       `;
       list.appendChild(row);
-      row.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        if(z.kind === 'offlimit') offLimitZones = offLimitZones.filter(x => x.id !== z.id);
-        else if(z.kind === 'allowed') allowedZones = allowedZones.filter(x => x.id !== z.id);
-        else preferredZones = preferredZones.filter(x => x.id !== z.id);
-        renderZoneList();
-        draw();
-      });
+      row.querySelector('[data-action="remove"]').addEventListener('click', () => removeZone(z.kind, z.id));
     }
   }
 
@@ -1618,9 +1626,9 @@ function applyAppearanceAttrs(mode, theme){
     return spots;
   }
 
-  document.getElementById('addSubBtn').addEventListener('click', () => {
-    const n = sources.filter(isSubSource).length;
-    const newSrc = {
+  function newSubSource(){
+    const n = sources.filter(isSubSource).length; // stagger along the back wall
+    return {
       id: nextId++,
       name: nextSubName(),
       x: Math.min(room.w-1, 2 + n*1.5),
@@ -1632,14 +1640,28 @@ function applyAppearanceAttrs(mode, theme){
       isMain: false,
       rolloffDbPerOct: 24
     };
-    sources.push(newSrc);
+  }
+  document.getElementById('addSubBtn').addEventListener('click', () => {
+    sources.push(newSubSource());
     autoTimeAlign();
     renderSrcList();
     draw();
   });
+  // Adds subs, or removes the most recently added ones, until there are `count`.
+  function setSubCount(count){
+    const subs = sources.filter(isSubSource);
+    const dropped = new Set(subs.slice(count).map(s => s.id));
+    sources = sources.filter(s => !dropped.has(s.id));
+    for(let i = subs.length; i < count; i++) sources.push(newSubSource());
+    autoTimeAlign();
+    renderSrcList();
+    draw();
+  }
 
-  document.getElementById('addListenerRowBtn').addEventListener('click', () => {
-    if(listenerRows.length >= LISTENER_ROW_MAX_ROWS){ showStatus(`Keep at most ${LISTENER_ROW_MAX_ROWS} listening positions`, false); return; }
+  // The row edits below are shared by the sidebar's list and the setup guide.
+  // Each returns false when a limit stops it.
+  function addListenerRow(){
+    if(listenerRows.length >= LISTENER_ROW_MAX_ROWS) return false;
     const n = listenerRows.length;
     listenerRows.push({
       id: nextId++,
@@ -1650,6 +1672,24 @@ function applyAppearanceAttrs(mode, theme){
     });
     renderListenerRowsList();
     draw();
+    return true;
+  }
+  function removeListenerRow(id){
+    if(listenerRows.length <= 1) return false;
+    listenerRows = listenerRows.filter(r => r.id !== id);
+    autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
+    renderListenerRowsList();
+    draw();
+    return true;
+  }
+  // Sets a row's seat count, clamped to 1..LISTENER_ROW_MAX_SEATS, and returns what was stored.
+  function setRowSeats(row, seats){
+    row.seats = Math.max(1, Math.min(LISTENER_ROW_MAX_SEATS, seats || 1));
+    draw();
+    return row.seats;
+  }
+  document.getElementById('addListenerRowBtn').addEventListener('click', () => {
+    if(!addListenerRow()) showStatus(`Keep at most ${LISTENER_ROW_MAX_ROWS} listening positions`, false);
   });
 
   document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
@@ -2445,7 +2485,7 @@ function applyAppearanceAttrs(mode, theme){
         ctx.lineJoin = 'round'; ctx.lineCap = 'round';
         ctx.stroke(new Path2D(furniture.icon));
         ctx.restore();
-        drawNameChip(furniture.label, px + 4, py + 15, '#e8ecf1');
+        drawNameChip(z.name, px + 4, py + 15, '#e8ecf1');
       } else {
         const { fill, dash, label } = ZONE_DRAW_INFO[z.kind];
 
@@ -3931,6 +3971,35 @@ function applyAppearanceAttrs(mode, theme){
     lastSnapshotJSON = currentSnapshotJSON();
     updateUndoRedoButtons();
   }
+  // The mains that still stand exactly at the standard spot for their channel
+  // (RoomPhysics.standardSpeakerPositions for the current room and seat).
+  function mainsAtStandardSpots(){
+    const mains = sources.filter(s => !isSubSource(s));
+    const spots = RoomPhysics.standardSpeakerPositions(room, primaryRow(), mains.map(s => s.name));
+    return mains.filter(s => spots.some(p => p.name === s.name && Math.abs(p.x - s.x) < 0.01 && Math.abs(p.y - s.y) < 0.01));
+  }
+  // The guide's room step: a starter layout nobody has touched (the seat at
+  // starterSeat, every main at its standard spot) follows the room as it is
+  // resized, so it stays centered. Anything that has been moved stays put.
+  function setRoomDimKeepingStarterLayout(dim, ft){
+    const row = primaryRow(), start = starterSeat(room);
+    const seatUntouched = listenerRows.length === 1 && Math.abs(row.x - start.x) < 0.01 && Math.abs(row.y - start.y) < 0.01;
+    const mains = sources.filter(s => !isSubSource(s));
+    const mainsUntouched = seatUntouched && mainsAtStandardSpots().length === mains.length;
+    const stored = setRoomDim(dim, ft);
+    if(seatUntouched && dim !== 'h'){
+      Object.assign(row, starterSeat(room));
+      if(mainsUntouched){
+        for(const p of RoomPhysics.standardSpeakerPositions(room, row, mains.map(s => s.name))){
+          Object.assign(mains.find(s => s.name === p.name), { x: p.x, y: p.y });
+        }
+      }
+      autoTimeAlign();
+      renderSrcList();
+      draw();
+    }
+    return stored;
+  }
   // ---- Setup guide API ----
   // The whole surface src/guide.js works through. The guide owns its steps,
   // copy and DOM, and reads or changes the app only through these, so it
@@ -3939,7 +4008,7 @@ function applyAppearanceAttrs(mode, theme){
     roomLimits: { minFt: ROOM_MIN_FT, maxWidthDepthFt: ROOM_MAX_WD_FT, maxHeightFt: ROOM_MAX_H_FT },
     mainChannelNames: MAIN_CHANNEL_NAMES,
     getRoom: () => ({ ...room }),
-    setRoomDim,
+    setRoomDim: setRoomDimKeepingStarterLayout,
     getLengthUnit: () => lengthUnit,
     setLengthUnit,
     formatLength,
@@ -3951,9 +4020,42 @@ function applyAppearanceAttrs(mode, theme){
       wireLengthField(container, 'value', onChangeFt);
       return (newFt) => writeLengthFieldValue(container.querySelector('.length-field'), newFt);
     },
-    getMains: () => sources.filter(s => !isSubSource(s)).map(s => ({ id: s.id, name: s.name, x: s.x, y: s.y })),
+    // atDefault: still at the standard spot for its channel (see mainsAtStandardSpots).
+    getMains(){
+      const untouched = new Set(mainsAtStandardSpots());
+      return sources.filter(s => !isSubSource(s)).map(s => ({ id: s.id, name: s.name, x: s.x, y: s.y, atDefault: untouched.has(s) }));
+    },
     setMainLayout,
+    getSubs: () => sources.filter(isSubSource).map(s => ({ id: s.id, name: s.name, x: s.x, y: s.y })),
+    setSubCount,
+    // Moves a speaker, sub or seat row (by id).
     moveSource: moveToRoomPoint,
+    rowLimits: { maxRows: LISTENER_ROW_MAX_ROWS, maxSeats: LISTENER_ROW_MAX_SEATS },
+    // footprint: the floor the row's seating takes up. hasObstacle: an
+    // off-limits zone already covers the row.
+    getRows: () => listenerRows.map(r => ({
+      id: r.id, name: r.name, x: r.x, y: r.y, seats: r.seats, facing: r.facing,
+      footprint: RoomPhysics.rowFootprintRect(r, room),
+      hasObstacle: offLimitZones.some(z => r.x >= z.x && r.x <= z.x + z.width && r.y >= z.y && r.y <= z.y + z.height)
+    })),
+    addRow: addListenerRow,
+    removeRow: removeListenerRow,
+    // These two redraw the sidebar's own row list, which edits rows in place.
+    setRowSeats(id, seats){ setRowSeats(listenerRows.find(r => r.id === id), seats); renderListenerRowsList(); },
+    setRowFacing(id, deg){ listenerRows.find(r => r.id === id).facing = deg; renderListenerRowsList(); draw(); },
+    furnitureTypes: Object.entries(FURNITURE_TYPES).map(([type, { label, icon }]) => ({ type, label, icon })),
+    addFurniture,
+    getZones: () => allZones().map(z => ({ id: z.id, kind: z.kind, name: z.name, isFurniture: !!FURNITURE_TYPES[z.furnitureType], width: z.width, height: z.height })),
+    removeZone,
+    // The starting "Center (default)" zone is an assumption the person has
+    // not made, so the guide starts without it.
+    removeDefaultZone(){
+      const zone = offLimitZones.find(z => z.name === DEFAULT_ZONE_NAME);
+      if(zone) removeZone('offlimit', zone.id);
+    },
+    getZoneDrawMode: () => zoneDrawMode,
+    toggleZoneDraw: setZoneDrawMode,
+    floorCoverageWarning,
     getMapView: () => mapView,
     setMapView,
     // Client (viewport) coordinates of a point given in room feet.
