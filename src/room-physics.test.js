@@ -930,6 +930,58 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
 });
 
+console.log('\n-- standardSpeakerPositions --');
+
+test('standardSpeakerPositions puts the fronts 30 degrees either side of the seat, inset from the front wall', () => {
+  const pos = P.standardSpeakerPositions(baseRoom, { x: 9, y: 9 }, ['FL', 'FR', 'C']);
+  assert.deepStrictEqual(pos.map(p => p.name), ['FL', 'FR', 'C']);
+  // 7.5 ft forward to the 1.5 ft inset line, so 7.5 * tan(30 deg) = 4.33 ft to each side
+  approx(pos[0].x, 9 - 7.5 * Math.tan(Math.PI / 6), 1e-9); approx(pos[0].y, 1.5, 1e-9);
+  approx(pos[1].x, 9 + 7.5 * Math.tan(Math.PI / 6), 1e-9); approx(pos[1].y, 1.5, 1e-9);
+  approx(pos[2].x, 9, 1e-9); approx(pos[2].y, 1.5, 1e-9);
+});
+
+test('standardSpeakerPositions keeps every channel at its azimuth from the seat', () => {
+  const seat = { x: 7, y: 8 };
+  const names = Object.keys(P.SPEAKER_AZIMUTH_DEG);
+  assert.strictEqual(names.length, 9);
+  for(const p of P.standardSpeakerPositions(baseRoom, seat, names)){
+    // 0 degrees is toward the front wall (-y), positive to the listener's right (+x)
+    const az = Math.atan2(p.x - seat.x, -(p.y - seat.y)) * 180 / Math.PI;
+    approx(az, P.SPEAKER_AZIMUTH_DEG[p.name], 1e-9, p.name);
+  }
+});
+
+test('standardSpeakerPositions puts side surrounds on the side walls and backs on the back wall', () => {
+  const byName = Object.fromEntries(P.standardSpeakerPositions(baseRoom, { x: 9, y: 9 }, ['SL', 'SR', 'SBL', 'SBR']).map(p => [p.name, p]));
+  approx(byName.SL.x, 1.5, 1e-9); approx(byName.SR.x, 16.5, 1e-9);
+  approx(byName.SBL.y, 12, 1e-9); approx(byName.SBR.y, 12, 1e-9);
+  // a centered seat gives mirrored pairs
+  approx(byName.SL.x + byName.SR.x, 18, 1e-9); approx(byName.SL.y, byName.SR.y, 1e-9);
+  approx(byName.SBL.x + byName.SBR.x, 18, 1e-9);
+});
+
+test('standardSpeakerPositions stays inside the inset rectangle for any room and seat, including a seat against a wall', () => {
+  const names = Object.keys(P.SPEAKER_AZIMUTH_DEG);
+  for(const room of [{ w: 6, d: 6 }, { w: 30, d: 10 }, { w: 11, d: 27 }, baseRoom]){
+    for(const seat of [{ x: room.w / 2, y: room.d * 0.66 }, { x: 0.2, y: 0.2 }, { x: room.w, y: room.d }, { x: room.w * 0.3, y: room.d * 0.2 }]){
+      for(const inset of [1.5, 0.5]){
+        const pos = P.standardSpeakerPositions(room, seat, names, inset);
+        assert.strictEqual(pos.length, 9);
+        for(const p of pos){
+          assert.ok(p.x >= inset - 1e-9 && p.x <= room.w - inset + 1e-9 && p.y >= inset - 1e-9 && p.y <= room.d - inset + 1e-9,
+            `${p.name} at ${p.x},${p.y} in ${room.w}x${room.d} seat ${seat.x},${seat.y} inset ${inset}`);
+        }
+      }
+    }
+  }
+});
+
+test('standardSpeakerPositions skips names it has no azimuth for and keeps the order given', () => {
+  const pos = P.standardSpeakerPositions(baseRoom, { x: 9, y: 9 }, ['SR', 'Main 1', 'FL']);
+  assert.deepStrictEqual(pos.map(p => p.name), ['SR', 'FL']);
+});
+
 console.log('\n-- optimizeSubPlacement --');
 
 test('optimizer finds a best candidate and respects off-limits zones', () => {
