@@ -273,6 +273,9 @@ canvas.dragging { cursor: grabbing; }
   display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 10px;
   font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap;
 }
+#furniturePalette { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 6px; }
+#furniturePalette button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px; font-size: 11.5px; }
+#furniturePalette svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 #pressureLegend { display: inline-flex; align-items: center; gap: 4px; }
 #pressureLegend[hidden] { display: none; }
 .legend-key { display: inline-flex; align-items: center; gap: 5px; }

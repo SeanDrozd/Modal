@@ -887,6 +887,49 @@ test('isCandidateValid with NO allowed zones allows anywhere in-room (not off-li
   assert.strictEqual(P.isCandidateValid(9, 9, room, [], []), true);
 });
 
+console.log('\n-- freeFloorFraction --');
+
+test('freeFloorFraction is 1 with no zones and 0 with the floor fully covered', () => {
+  assert.strictEqual(P.freeFloorFraction(baseRoom, []), 1);
+  approx(P.freeFloorFraction(baseRoom, [{ x: 0, y: 0, width: 18, height: 13.5 }]), 0, 1e-12);
+});
+
+test('freeFloorFraction subtracts a single zone by its area', () => {
+  // 9 x 6.75 in an 18 x 13.5 room is exactly a quarter of the floor
+  approx(P.freeFloorFraction(baseRoom, [{ x: 4.5, y: 3.375, width: 9, height: 6.75 }]), 0.75, 1e-12);
+});
+
+test('freeFloorFraction counts overlapping zones once (union, not sum)', () => {
+  // two 4x4 squares overlapping in a 2x2 patch cover 16 + 16 - 4 = 28 sq ft of 243
+  const zones = [{ x: 1, y: 1, width: 4, height: 4 }, { x: 3, y: 3, width: 4, height: 4 }];
+  approx(P.freeFloorFraction(baseRoom, zones), 1 - 28 / 243, 1e-12);
+  // a zone entirely inside another adds nothing
+  approx(P.freeFloorFraction(baseRoom, [zones[0], { x: 2, y: 2, width: 1, height: 1 }]), 1 - 16 / 243, 1e-12);
+  // the same zone twice is still one zone's worth
+  approx(P.freeFloorFraction(baseRoom, [zones[0], zones[0]]), 1 - 16 / 243, 1e-12);
+});
+
+test('freeFloorFraction ignores the part of a zone outside the room', () => {
+  // only the 2 x 3 corner of this zone is inside the room
+  approx(P.freeFloorFraction(baseRoom, [{ x: 16, y: 10.5, width: 10, height: 10 }]), 1 - 6 / 243, 1e-12);
+  // a zone wholly outside the room covers nothing
+  assert.strictEqual(P.freeFloorFraction(baseRoom, [{ x: 20, y: 0, width: 3, height: 3 }]), 1);
+});
+
+test('freeFloorFraction agrees with a brute-force point count on scattered zones', () => {
+  const zones = [
+    { x: 0.5, y: 0.5, width: 6, height: 2 }, { x: 4, y: 1, width: 3, height: 7 },
+    { x: 10, y: 8, width: 7.5, height: 5 }, { x: 12, y: 2, width: 2, height: 9 }, { x: -1, y: 11, width: 4, height: 4 }
+  ];
+  const n = 400;
+  let free = 0;
+  for(let i = 0; i < n; i++) for(let j = 0; j < n; j++){
+    const px = (i + 0.5) / n * baseRoom.w, py = (j + 0.5) / n * baseRoom.d;
+    if(!zones.some(z => P.isPointInRect(px, py, z))) free++;
+  }
+  approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
+});
+
 console.log('\n-- optimizeSubPlacement --');
 
 test('optimizer finds a best candidate and respects off-limits zones', () => {

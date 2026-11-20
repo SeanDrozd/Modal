@@ -815,6 +815,34 @@
            py >= rect.y && py <= rect.y + rect.height;
   }
 
+  // Fraction (0..1) of the room's floor not covered by any of `zones`
+  // ({ x, y, width, height } rects in feet, e.g. the off-limits zones).
+  // Overlapping zones count once and anything outside the room is ignored:
+  // the covered area is the union of the rects clipped to the room, summed
+  // over the grid cells their edges cut the floor into (coordinate
+  // compression), each cell being either wholly inside some rect or wholly
+  // outside all of them.
+  function freeFloorFraction(room, zones){
+    const rects = [];
+    for(const z of zones){
+      const x0 = Math.max(0, z.x), x1 = Math.min(room.w, z.x + z.width);
+      const y0 = Math.max(0, z.y), y1 = Math.min(room.d, z.y + z.height);
+      if(x1 > x0 && y1 > y0) rects.push({ x0, x1, y0, y1 });
+    }
+    const xs = [...new Set(rects.flatMap(r => [r.x0, r.x1]))].sort((a, b) => a - b);
+    const ys = [...new Set(rects.flatMap(r => [r.y0, r.y1]))].sort((a, b) => a - b);
+    let covered = 0;
+    for(let i = 0; i < xs.length - 1; i++){
+      for(let j = 0; j < ys.length - 1; j++){
+        const cx = (xs[i] + xs[i+1]) / 2, cy = (ys[j] + ys[j+1]) / 2;
+        if(rects.some(r => cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1)){
+          covered += (xs[i+1] - xs[i]) * (ys[j+1] - ys[j]);
+        }
+      }
+    }
+    return 1 - covered / (room.w * room.d);
+  }
+
   function isCandidateValid(px, py, room, offLimitZones, allowedZones, excludePoints, minSeparationFt){
     if(px < 0 || px > room.w || py < 0 || py > room.d) return false;
     for(const zone of (offLimitZones || [])){
@@ -1260,6 +1288,7 @@
     PREFERRED_ZONE_BONUS_DB,
     preferredZoneBonusDb,
     isPointInRect,
+    freeFloorFraction,
     isCandidateValid,
     scanGridCandidates,
     countGridCells,
