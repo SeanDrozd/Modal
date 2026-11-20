@@ -318,13 +318,22 @@ function applyAppearanceAttrs(mode, theme){
       <div id="earDiffInfo" class="stat-chip"></div>
     </div>
     <div id="legend">
-      <span>Pressure:</span>
-      <span id="legendDbMin">-24 dB</span>
-      <span class="swatch" id="gradSwatch"></span>
-      <span id="legendDbMax">+12 dB</span>
-      <span style="margin-left:14px;">● source &nbsp; ✕ listening position</span>
+      <div class="segmented" id="mapViewControl" role="group" aria-label="Map view">
+        <button data-map-view="plan" title="Plain floor plan, for laying out the room">Floor plan</button>
+        <button data-map-view="pressure" title="Sound pressure level across the room at the selected frequency">Pressure map</button>
+      </div>
+      <span id="pressureLegend">
+        <span>Null</span>
+        <span id="legendDbMin">-24 dB</span>
+        <span class="swatch" id="gradSwatch"></span>
+        <span id="legendDbMax">+12 dB</span>
+        <span>Peak</span>
+      </span>
+      <span class="legend-key"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="1.5" width="8" height="13" rx="2"/><circle cx="8" cy="5" r="1.2"/><circle cx="8" cy="10" r="2.4"/></svg>speaker</span>
+      <span class="legend-key"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2"/><circle cx="8" cy="8" r="3.8"/></svg>sub</span>
+      <span class="legend-key"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="10" height="10" rx="2.5"/><rect x="2" y="10.5" width="12" height="3.5" rx="1.5"/></svg>seat</span>
     </div>
-    <div id="info">Drag any source or the listening position. Sources outside their frequency range fade out (per-source rolloff slope, 24 dB/oct by default) rather than cutting hard.</div>
+    <div id="info">Drag any speaker, sub or seat row. Sources outside their frequency range fade out (per-source rolloff slope, 24 dB/oct by default) rather than cutting hard.</div>
   </div>
 </div>
 
@@ -335,6 +344,12 @@ function applyAppearanceAttrs(mode, theme){
 (function(){
   const STORE_KEY = 'room-viz-presets-v1';
   const SRC_COLORS = ['#4fb0e8','#e8824f','#9b6fe8','#4fe89a','#e8d24f','#e85c9b','#5ce8d2','#e85c5c'];
+  // Seats and their guide lines, and the dark outline/chip color that keeps
+  // every map marker legible over any heatmap color or floor tint.
+  const LISTENER_COLOR = '#f5d547';
+  const MAP_INK = '#0b0e12';
+  // A source counts as a sub when its passband tops out at or below 150 Hz.
+  function isSubSource(s){ return s.freqHigh <= 150; }
   // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
   // channel abbreviations and layout order (5.1 -> 7.1 -> 9.1, the last two
   // being the "wide" pair some 9-channel receivers add): front left/right,
@@ -866,7 +881,7 @@ function applyAppearanceAttrs(mode, theme){
   const themeColors = {};
   function readThemeColors(){
     const cs = getComputedStyle(document.documentElement);
-    for(const name of ['bg', 'border', 'border-strong', 'text-dim', 'series-1', 'series-2', 'marker']){
+    for(const name of ['bg', 'border', 'border-strong', 'text', 'text-dim', 'accent', 'floor', 'wall', 'series-1', 'series-2', 'marker']){
       themeColors[name] = cs.getPropertyValue('--' + name).trim();
     }
   }
@@ -882,7 +897,7 @@ function applyAppearanceAttrs(mode, theme){
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
         resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed, sweepEndFreq,
-        lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections, appearanceMode, colorTheme,
+        lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections, appearanceMode, colorTheme, mapView,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
         optNumSubs: document.getElementById('optNumSubs').value
@@ -946,6 +961,7 @@ function applyAppearanceAttrs(mode, theme){
     }
     if(APPEARANCE_MODES.includes(session.appearanceMode)) appearanceMode = session.appearanceMode;
     if(COLOR_THEMES.includes(session.colorTheme)) colorTheme = session.colorTheme;
+    if(MAP_VIEWS.includes(session.mapView)) mapView = session.mapView;
     // Collapsed-section state is a display preference, same category as the
     // rest of this store -- only overrides the HTML's own collapsed-by-
     // default markup if a saved session actually specifies it, so a
@@ -1170,10 +1186,10 @@ function applyAppearanceAttrs(mode, theme){
 
   // "Re-optimize existing subs" only makes sense with at least one active
   // sub-like source already in the room -- same classifier addSubBtn already
-  // uses to stagger new spawn positions (freqHigh <= 150). Called every time
+  // uses to stagger new spawn positions (isSubSource). Called every time
   // renderSrcList() runs, so it stays in sync with add/remove/enable-toggle.
   function updateReoptimizeExistingVisibility(){
-    const hasExistingSubs = sources.some(s => s.enabled !== false && s.freqHigh <= 150);
+    const hasExistingSubs = sources.some(s => s.enabled !== false && isSubSource(s));
     document.getElementById('reoptimizeExistingBtn').style.display = hasExistingSubs ? 'block' : 'none';
     document.getElementById('reoptimizeExistingHint').style.display = hasExistingSubs ? 'block' : 'none';
   }
@@ -1519,7 +1535,7 @@ function applyAppearanceAttrs(mode, theme){
   });
 
   document.getElementById('addSubBtn').addEventListener('click', () => {
-    const n = sources.filter(s => s.freqHigh <= 150).length;
+    const n = sources.filter(isSubSource).length;
     const newSrc = {
       id: nextId++,
       name: nextSubName(),
@@ -1801,8 +1817,8 @@ function applyAppearanceAttrs(mode, theme){
     // other active-sources computation in this file (e.g. runSubOptimizer's
     // activeMains) -- otherwise this workflow would keep optimizing against
     // sources the rest of the app currently treats as muted.
-    const existingSubs = sourcesEnabled ? sources.filter(s => s.enabled !== false && s.freqHigh <= 150) : [];
-    const otherSources = sourcesEnabled ? sources.filter(s => s.enabled !== false && s.freqHigh > 150) : [];
+    const existingSubs = sourcesEnabled ? sources.filter(s => s.enabled !== false && isSubSource(s)) : [];
+    const otherSources = sourcesEnabled ? sources.filter(s => s.enabled !== false && !isSubSource(s)) : [];
     if(existingSubs.length === 0){
       status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
       return;
@@ -1858,10 +1874,23 @@ function applyAppearanceAttrs(mode, theme){
   // a square canvas holding a non-square room wastes a lot of pixels as
   // empty letterboxing above/below or left/right of the actual room rect.
   const RENDER_LONG_EDGE = 1400;
+  // Canvas px kept clear on every side of the room rect, for the wall names
+  // and the dimension lines (see drawRoomFrame). The room rect itself, not
+  // the whole canvas, is what matches the room's aspect ratio.
+  const MAP_MARGIN = 96;
   function canvasDimsForRoom(w, d){
     const aspect = w / d;
-    if(aspect >= 1) return { sizeW: RENDER_LONG_EDGE, sizeH: Math.round(RENDER_LONG_EDGE / aspect) };
-    return { sizeW: Math.round(RENDER_LONG_EDGE * aspect), sizeH: RENDER_LONG_EDGE };
+    const inner = RENDER_LONG_EDGE - MAP_MARGIN*2;
+    if(aspect >= 1) return { sizeW: RENDER_LONG_EDGE, sizeH: Math.round(inner / aspect) + MAP_MARGIN*2 };
+    return { sizeW: Math.round(inner * aspect) + MAP_MARGIN*2, sizeH: RENDER_LONG_EDGE };
+  }
+  // Where the room rect sits in a sizeW x sizeH canvas: canvas px per foot
+  // and the room's top-left corner. The one definition of that mapping,
+  // shared by drawing, pointer hit-testing and the GPU verification.
+  function mapLayout(sizeW, sizeH){
+    const plotW = sizeW - MAP_MARGIN*2, plotH = sizeH - MAP_MARGIN*2;
+    const scale = Math.min(plotW / room.w, plotH / room.d);
+    return { scale, offX: MAP_MARGIN + (plotW - room.w*scale)/2, offY: MAP_MARGIN + (plotH - room.d*scale)/2 };
   }
   // The modal method has no "order" tradeoff (see RoomPhysics.enumerateModes) --
   // per-point cost is a fixed sum over the room's mode list regardless of grid
@@ -1877,7 +1906,16 @@ function applyAppearanceAttrs(mode, theme){
   // convention (see room-physics.js's enumerateModes doc comment) -- typical
   // field values for a modest room/source setup land roughly 45-80dB.
   let dbMin = 30, dbMax = 90;
-  let colormapId = 'thermal'; // also a display preference -- see FieldRenderer.COLORMAPS
+  let colormapId = 'coolwarm'; // also a display preference -- see FieldRenderer.COLORMAPS
+  // What fills the room on the map: the pressure field at the selected
+  // frequency, or a plain tinted floor ('plan') for laying the room out
+  // without the field competing for attention. A display preference too.
+  const MAP_VIEWS = ['pressure', 'plan'];
+  let mapView = 'pressure';
+  function applyMapView(){
+    document.querySelectorAll('#mapViewControl button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mapView === mapView)));
+    document.getElementById('pressureLegend').hidden = mapView !== 'pressure';
+  }
   let renderMode = 'gpu'; // 'cpu' (canvas2d, always available) | 'gpu' (webgl, default; falls back to cpu if unavailable)
 
   // ---- Frequency sweep animation ----
@@ -1931,7 +1969,7 @@ function applyAppearanceAttrs(mode, theme){
   // field itself. In GPU mode the field is drawn into `cvGL` underneath, so
   // `cv` needs a transparent background so cvGL shows through.
   function setCanvasStackVisibility(){
-    canvasGL.style.display = (renderMode === 'gpu' && gpuAvailable) ? 'block' : 'none';
+    canvasGL.style.display = (mapView === 'pressure' && renderMode === 'gpu' && gpuAvailable) ? 'block' : 'none';
   }
   setCanvasStackVisibility();
 
@@ -1984,12 +2022,7 @@ function applyAppearanceAttrs(mode, theme){
     const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
     const { sizeW, sizeH } = canvasDimsForRoom(w, d);
-    const margin = 40;
-    const plotW = sizeW - margin*2;
-    const plotH = sizeH - margin*2;
-    const scale = Math.min(plotW / w, plotH / d);
-    const offX = margin + (plotW - w*scale)/2;
-    const offY = margin + (plotH - d*scale)/2;
+    const { scale, offX, offY } = mapLayout(sizeW, sizeH);
     const precomputed = precomputeField();
     const pz = primaryRow().z;
 
@@ -2144,7 +2177,6 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   function draw(){
-    const effectiveMode = (renderMode === 'gpu' && gpuAvailable) ? 'gpu' : 'cpu';
     setCanvasStackVisibility();
 
     const RES = Math.round(RES_BASE * resolutionScale);
@@ -2155,22 +2187,25 @@ function applyAppearanceAttrs(mode, theme){
       canvas.width = sizeW;
       canvas.height = sizeH;
     }
-    const margin = 40;
-    const plotW = sizeW - margin*2;
-    const plotH = sizeH - margin*2;
-    const scale = Math.min(plotW / w, plotH / d);
-    const offX = margin + (plotW - w*scale)/2;
-    const offY = margin + (plotH - d*scale)/2;
+    const { scale, offX, offY } = mapLayout(sizeW, sizeH);
 
-    const precomputed = precomputeField();
-    const pz = primaryRow().z;
+    if(mapView === 'plan'){
+      // Floor-plan view: no pressure field, just a theme-tinted floor with a
+      // soft shadow under it, so the layout reads as a plain room drawing.
+      ctx.clearRect(0, 0, sizeW, sizeH);
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 28;
+      ctx.shadowOffsetY = 8;
+      ctx.fillStyle = themeColors['floor'];
+      ctx.fillRect(offX, offY, w*scale, d*scale);
+      ctx.restore();
+    } else {
+      const renderPath = renderPaths[(renderMode === 'gpu' && gpuAvailable) ? 'gpu' : 'cpu'];
+      renderPath({ RES, w, d, precomputed: precomputeField(), pz: primaryRow().z, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
+    }
 
-    const renderPath = renderPaths[effectiveMode];
-    renderPath({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
-
-    ctx.strokeStyle = themeColors['border-strong'];
-    ctx.lineWidth = 2;
-    ctx.strokeRect(offX, offY, w*scale, d*scale);
+    drawRoomFrame(offX, offY, scale, w, d);
 
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
@@ -2183,17 +2218,13 @@ function applyAppearanceAttrs(mode, theme){
     // listener, regardless of how many other sources (subs, etc.) also exist
     // -- previously this fired off "exactly 2 sources total", which silently
     // stopped drawing the instant a sub was added.
-    const pts = sources.map((s,i) => ({ x: s.x, y: s.y, px: offX+s.x*scale, py: offY+s.y*scale, color: SRC_COLORS[i%SRC_COLORS.length], name: s.name, enabled: sourcesEnabled && s.enabled !== false, isMain: !!s.isMain }));
+    const pts = sources.map((s,i) => ({ x: s.x, y: s.y, px: offX+s.x*scale, py: offY+s.y*scale, color: SRC_COLORS[i%SRC_COLORS.length], name: s.name, enabled: sourcesEnabled && s.enabled !== false, isMain: !!s.isMain, isSub: isSubSource(s) }));
     const mainPts = pts.filter(p => p.isMain && p.enabled);
     if(mainPts.length === 2){
-      ctx.strokeStyle = 'rgba(245,213,71,0.55)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4,4]);
       ctx.beginPath();
       ctx.moveTo(mainPts[0].px, mainPts[0].py); ctx.lineTo(mainPts[1].px, mainPts[1].py);
       ctx.lineTo(lx, ly); ctx.lineTo(mainPts[0].px, mainPts[0].py);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      strokeGuideLine('rgba(245,213,71,0.55)', 1.5, [4,4]);
       function distFt(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
       labelMid(mainPts[0].px,mainPts[0].py,mainPts[1].px,mainPts[1].py, formatLength(distFt(mainPts[0],mainPts[1])), 16);
       labelMid(mainPts[0].px,mainPts[0].py,lx,ly, formatLength(distFt(mainPts[0],{x:primaryRow().x,y:primaryRow().y})), -16);
@@ -2208,35 +2239,13 @@ function applyAppearanceAttrs(mode, theme){
       drawWallDists(row.x, row.y, rlx, rly, offX, offY, scale, '#f5d547');
     }
 
-    for(const p of pts) drawPoint(p.x, p.y, offX, offY, scale, p.color, labelFor(p.name), p.enabled);
+    for(const p of pts) drawPoint(p.x, p.y, offX, offY, scale, p.color, labelFor(p.name), p.enabled, p.isSub);
 
-    // Every row's marker: the center point as an "X" cross (matching the old
-    // single-listener marker style exactly for rank 1), non-center seats
-    // (when seats>1) as small dots, and the row's own name -- lower-ranked
-    // rows fade out (RoomPhysics.rowRankWeight, floored so a rank-4 row is
-    // still legible, not invisible) as a visual cue for "matters less."
+    // Every row's seats and name. Lower-ranked rows fade out
+    // (RoomPhysics.rowRankWeight, floored so a rank-4 row is still legible,
+    // not invisible) as a visual cue for "matters less."
     listenerRows.forEach((row, rank) => {
-      const alpha = Math.max(0.35, RoomPhysics.rowRankWeight(rank));
-      const seats = RoomPhysics.rowSeatPositions(row);
-      for(const seat of seats){
-        if(seat.offsetIndex === 0) continue; // the center seat is drawn as the row's own "X" cross below
-        const spx = offX + seat.x*scale, spy = offY + seat.y*scale;
-        ctx.fillStyle = `rgba(245,213,71,${alpha*0.7})`;
-        ctx.beginPath();
-        ctx.arc(spx, spy, 5, 0, Math.PI*2);
-        ctx.fill();
-      }
-      const rlx = offX + row.x*scale, rly = offY + row.y*scale;
-      ctx.strokeStyle = `rgba(245,213,71,${alpha})`;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(rlx-14, rly-14); ctx.lineTo(rlx+14, rly+14);
-      ctx.moveTo(rlx+14, rly-14); ctx.lineTo(rlx-14, rly+14);
-      ctx.stroke();
-      ctx.fillStyle = `rgba(245,213,71,${alpha})`;
-      ctx.font = '600 11px system-ui, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText(row.name, rlx + 18, rly - 16);
+      drawSeatRow(row, Math.max(0.35, RoomPhysics.rowRankWeight(rank)), offX, offY, scale);
     });
 
     // facing direction + ear positions, so the head orientation used for the
@@ -2271,6 +2280,20 @@ function applyAppearanceAttrs(mode, theme){
     redrawFreqResponseCanvas(); // cheap repaint every frame, so the freq marker tracks the slider live
     scheduleFreqResponseUpdate(); // debounced recompute of the curve itself (expensive)
     scheduleUndoSnapshot();
+  }
+
+  // Strokes the current path as a dashed guide line over a faint dark
+  // underlay, so the line stays visible on a light floor tint or a pale
+  // stretch of the heatmap as well as on a dark one.
+  function strokeGuideLine(color, width, dash){
+    ctx.strokeStyle = 'rgba(11,14,18,0.3)';
+    ctx.lineWidth = width + 1.5;
+    ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   function labelFor(name){
@@ -2426,12 +2449,12 @@ function applyAppearanceAttrs(mode, theme){
     const distToFront = y, distToBack = room.d - y;
     const nearHoriz = distToFront <= distToBack ? { d: distToFront, wallY: 0 } : { d: distToBack, wallY: room.d };
 
-    ctx.strokeStyle = color; ctx.globalAlpha = 0.5; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
     const vwx = offX + nearVert.wallX*scale;
-    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(vwx, py); ctx.stroke();
     const hwy = offY + nearHoriz.wallY*scale;
-    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, hwy); ctx.stroke();
-    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(vwx, py); ctx.lineTo(px, py); ctx.lineTo(px, hwy);
+    strokeGuideLine(color, 1, [3,3]);
+    ctx.globalAlpha = 1;
 
     ctx.font = 'bold 18.5px sans-serif'; ctx.fillStyle = color; ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
@@ -2450,43 +2473,52 @@ function applyAppearanceAttrs(mode, theme){
     ctx.fillText(hText, px, hLabelY);
   }
 
-  function drawPoint(x, y, offX, offY, scale, color, label, isEnabled){
-    const px = offX + x*scale, py = offY + y*scale;
-    const h = 44; // box height in px (2x the previous 22px square)
-    const halfH = h / 2;
-    const radius = 7; // corner rounding
-    const disabled = isEnabled === false;
+  // Name chip for a map marker: `color` text on a dark plate, with (x, y) at
+  // the plate's left edge and vertical middle.
+  function drawNameChip(text, x, y, color){
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(text).width;
+    ctx.fillStyle = 'rgba(11,14,18,0.9)';
+    ctx.beginPath(); ctx.roundRect(x, y - 11, tw + 12, 22, 5); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.fillText(text, x + 6, y + 1);
+  }
 
-    ctx.font = 'bold 16.5px sans-serif';
-    const textW = ctx.measureText(label).width;
-    const w = Math.max(h, textW + 18); // widen (not just square) so 3+ chars fit comfortably
-    const halfW = w / 2;
+  // A source's marker: a speaker cabinet (tweeter over woofer) or a sub (one
+  // large driver), filled with the source's own color, plus its channel name
+  // on a chip. The glyph's center is the source's position. The chip goes on
+  // the side away from the nearest front/back wall, where drawWallDists has
+  // not drawn a distance line.
+  function drawPoint(x, y, offX, offY, scale, color, label, isEnabled, isSub){
+    const px = offX + x*scale, py = offY + y*scale;
+    const w = isSub ? 44 : 32, h = 44;
+    const disabled = isEnabled === false;
 
     ctx.save();
     if(disabled) ctx.globalAlpha = 0.35; // dim disabled sources, matching the panel disabled treatment
 
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(px - halfW + radius, py - halfH);
-    ctx.lineTo(px + halfW - radius, py - halfH);
-    ctx.quadraticCurveTo(px + halfW, py - halfH, px + halfW, py - halfH + radius);
-    ctx.lineTo(px + halfW, py + halfH - radius);
-    ctx.quadraticCurveTo(px + halfW, py + halfH, px + halfW - radius, py + halfH);
-    ctx.lineTo(px - halfW + radius, py + halfH);
-    ctx.quadraticCurveTo(px - halfW, py + halfH, px - halfW, py + halfH - radius);
-    ctx.lineTo(px - halfW, py - halfH + radius);
-    ctx.quadraticCurveTo(px - halfW, py - halfH, px - halfW + radius, py - halfH);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = disabled ? '#e85c5c' : '#0b0e12';
+    ctx.strokeStyle = disabled ? '#e85c5c' : MAP_INK;
     ctx.lineWidth = 2.5;
     if(disabled) ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.roundRect(px - w/2, py - h/2, w, h, 7);
+    ctx.fill();
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.fillStyle = '#0b0e12';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(label, px, py + 1);
+    // drivers, as [dy, radius] from the glyph's center
+    ctx.strokeStyle = MAP_INK;
+    ctx.lineWidth = 2;
+    for(const [dy, r] of (isSub ? [[0, 14]] : [[-11, 4], [6, 9]])){
+      ctx.fillStyle = 'rgba(11,14,18,0.3)';
+      ctx.beginPath(); ctx.arc(px, py + dy, r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = MAP_INK;
+      ctx.beginPath(); ctx.arc(px, py + dy, r/3, 0, Math.PI*2);
+      ctx.fill();
+    }
 
     if(disabled){
       // strike-through, so "off" reads clearly even at a glance / small size
@@ -2494,10 +2526,114 @@ function applyAppearanceAttrs(mode, theme){
       ctx.strokeStyle = '#e85c5c';
       ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.moveTo(px - halfW + 4, py + halfH - 4);
-      ctx.lineTo(px + halfW - 4, py - halfH + 4);
+      ctx.moveTo(px - w/2 + 4, py + h/2 - 4);
+      ctx.lineTo(px + w/2 - 4, py - h/2 + 4);
       ctx.stroke();
+      ctx.globalAlpha = 0.35;
     }
+
+    ctx.font = 'bold 16px sans-serif';
+    const chipW = ctx.measureText(label).width + 12;
+    const chipBelow = y <= room.d - y;
+    drawNameChip(label, px - chipW/2, chipBelow ? py + h/2 + 16 : py - h/2 - 16, color);
+    ctx.restore();
+  }
+
+  // A listening row: one seat per position (a cushion with its backrest on
+  // the side away from where the row faces), a dot on the row's own center
+  // point (the spot that is dragged and measured), and the row's name.
+  function drawSeatRow(row, alpha, offX, offY, scale){
+    const SEAT_PX = 34;
+    const facingRad = (row.facing ?? 0) * Math.PI / 180;
+    const cx = offX + row.x*scale, cy = offY + row.y*scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = LISTENER_COLOR;
+    ctx.strokeStyle = MAP_INK;
+    ctx.lineWidth = 2.5;
+    for(const seat of RoomPhysics.rowSeatPositions(row)){
+      ctx.save();
+      ctx.translate(offX + seat.x*scale, offY + seat.y*scale);
+      ctx.rotate(facingRad); // local -y is the facing direction, so the backrest sits at +y
+      ctx.beginPath(); ctx.roundRect(-SEAT_PX/2, -SEAT_PX/2, SEAT_PX, SEAT_PX, 8);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath(); ctx.roundRect(-SEAT_PX/2 - 3, SEAT_PX/2 - 5, SEAT_PX + 6, 11, 5);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.fillStyle = MAP_INK;
+    ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, Math.PI*2);
+    ctx.fill();
+    drawNameChip(row.name, cx + 24, cy - 34, LISTENER_COLOR);
+    ctx.restore();
+  }
+
+  // Walls, wall names and the room's two dimension lines, drawn in the
+  // MAP_MARGIN band around the room rect. The front wall (the top of the map,
+  // y = 0) gets the accent color: it is the orientation cue for everything
+  // else on the map.
+  function drawRoomFrame(offX, offY, scale, w, d){
+    const WALL_PX = 7, LABEL_GAP = 32, DIM_GAP = 68;
+    const rw = w*scale, rd = d*scale;
+    ctx.save();
+
+    // Stroked along a path half a wall-width outside the room rect, so the
+    // wall's inner face is the room boundary and none of the floor is covered.
+    ctx.lineWidth = WALL_PX;
+    ctx.strokeStyle = themeColors['wall'];
+    ctx.strokeRect(offX - WALL_PX/2, offY - WALL_PX/2, rw + WALL_PX, rd + WALL_PX);
+    ctx.strokeStyle = themeColors['accent'];
+    ctx.beginPath();
+    ctx.moveTo(offX - WALL_PX, offY - WALL_PX/2);
+    ctx.lineTo(offX + rw + WALL_PX, offY - WALL_PX/2);
+    ctx.stroke();
+
+    // Wall names, each centered on its wall and reading along it.
+    ctx.font = '600 20px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const wallNameAt = (name, x, y, angle) => {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = themeColors[name === 'front' ? 'accent' : 'text-dim'];
+      ctx.fillText(WALL_LABELS[name].toUpperCase(), 0, 0);
+      ctx.restore();
+    };
+    wallNameAt('front', offX + rw/2, offY - LABEL_GAP, 0);
+    wallNameAt('back', offX + rw/2, offY + rd + LABEL_GAP, 0);
+    wallNameAt('left', offX - LABEL_GAP, offY + rd/2, -Math.PI/2);
+    wallNameAt('right', offX + rw + LABEL_GAP, offY + rd/2, Math.PI/2);
+
+    // Dimension lines, architectural style: a line parallel to the wall with
+    // a tick at each end, extension lines back toward the room's corners,
+    // and the measurement in a gap at the middle. Drawn in a frame whose x
+    // axis runs along the wall from (x0, y0); `wallSide` is the sign of the
+    // local y direction that points back at the wall.
+    const dimensionLine = (x0, y0, angle, lengthPx, wallSide, text) => {
+      ctx.save();
+      ctx.translate(x0, y0);
+      ctx.rotate(angle);
+      ctx.font = '600 20px system-ui, sans-serif';
+      const gap = ctx.measureText(text).width + 20;
+      ctx.strokeStyle = themeColors['text-dim'];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo((lengthPx - gap)/2, 0);
+      ctx.moveTo((lengthPx + gap)/2, 0); ctx.lineTo(lengthPx, 0);
+      for(const x of [0, lengthPx]){
+        ctx.moveTo(x, wallSide * (DIM_GAP - WALL_PX - 10)); ctx.lineTo(x, -wallSide * 8);
+        ctx.moveTo(x - 6, 6); ctx.lineTo(x + 6, -6);
+      }
+      ctx.stroke();
+      ctx.fillStyle = themeColors['text'];
+      ctx.fillText(text, lengthPx/2, 1);
+      ctx.restore();
+    };
+    dimensionLine(offX, offY + rd + DIM_GAP, 0, rw, -1, formatLength(w));
+    dimensionLine(offX - DIM_GAP, offY + rd, -Math.PI/2, rd, 1, formatLength(d));
+
     ctx.restore();
   }
 
@@ -3168,6 +3304,14 @@ function applyAppearanceAttrs(mode, theme){
     saveSessionSettings();
     draw();
   });
+  document.getElementById('mapViewControl').addEventListener('click', function(e){
+    const btn = e.target.closest('button');
+    if(!btn) return;
+    mapView = btn.dataset.mapView;
+    applyMapView();
+    saveSessionSettings();
+    draw();
+  });
   // In Auto, follow the browser/OS setting live if it flips while the page is open.
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
     if(appearanceMode !== 'auto') return;
@@ -3229,6 +3373,7 @@ function applyAppearanceAttrs(mode, theme){
   });
   document.getElementById('autofitDbRangeBtn').addEventListener('click', autofitColorRange);
   const COLORMAP_HINTS = {
+    coolwarm: 'Blue for quiet, red for loud, with a muted grey between them. A smooth ramp with no rainbow banding, so a band of color means a real change in level.',
     thermal: 'A hand-picked dark-blue-to-orange ramp. Monotonic-ish in brightness so it avoids the false banding a rainbow can introduce.',
     spectrum: 'A continuous violet-to-red hue sweep across the full visible spectrum. More distinguishable steps than thermal, at the cost of the perceptual artifacts full-spectrum colormaps are known for.',
     viridis: 'Perceptually uniform and readable under the common forms of color blindness (deuteranopia, protanopia, tritanopia).'
@@ -3413,10 +3558,7 @@ function applyAppearanceAttrs(mode, theme){
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
     const cx = (evt.clientX - rect.left) * scaleX, cy = (evt.clientY - rect.top) * scaleY;
-    const margin = 40;
-    const plotW = canvas.width - margin*2, plotH = canvas.height - margin*2;
-    const scale = Math.min(plotW / room.w, plotH / room.d);
-    const offX = margin + (plotW - room.w*scale)/2, offY = margin + (plotH - room.d*scale)/2;
+    const { scale, offX, offY } = mapLayout(canvas.width, canvas.height);
     return { x: (cx-offX)/scale, y: (cy-offY)/scale, scale, cssScale: scale / scaleX };
   }
 
@@ -3637,6 +3779,7 @@ function applyAppearanceAttrs(mode, theme){
     }
     loadSessionSettings();
     applyAppearance();
+    applyMapView();
     document.getElementById('colormapSelect').value = colormapId;
     document.getElementById('colormapHint').textContent = COLORMAP_HINTS[colormapId] || '';
     buildGradientSwatch();
