@@ -16,6 +16,13 @@
 
   // `count` is how many of the app's standard channels the layout uses, in
   // its own order (FL, FR, C, then surrounds, backs and wides).
+  // `mode` is the optimizer mode each answer selects.
+  const ROOM_CORRECTION = [
+    { id: 'yes', label: 'Yes', mode: 'nullAvoidance' },
+    { id: 'no', label: 'No', mode: 'balanced' },
+    { id: 'unsure', label: 'Not sure', mode: 'balanced' }
+  ];
+
   const SPEAKER_LAYOUTS = [
     { count: 2, label: 'Stereo', detail: 'Left and right' },
     { count: 3, label: '3.0', detail: 'Adds a center' },
@@ -38,9 +45,13 @@
 
     // step: index into STEPS. roomShape: a ROOM_SHAPES id. plannedSubs: how
     // many subs to recommend positions for when there are none yet.
+    // roomCorrection: a ROOM_CORRECTION id, or null until answered.
+    // seatingMarked: the obstacles step has marked the rows' seating once.
     // viewBefore: the map view to put back when the guide closes.
     // seenWelcome: the welcome step is shown once, not on every later visit.
-    let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, viewBefore: null, seenWelcome: false };
+    // launchDone: the guide has been finished or left once, so the app no
+    // longer opens in it.
+    let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, roomCorrection: null, seatingMarked: false, viewBefore: null, seenWelcome: false, launchDone: false };
     try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY))); } catch(e){ /* start from the defaults above */ }
     function save(){
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch(e){ /* progress just won't survive a reload */ }
@@ -378,6 +389,16 @@
           <div class="guide-field"><label>Preferred area<span>A soft bias. A clearly better spot elsewhere still wins.</span></label><button class="small" data-draw="preferred">Draw</button></div>
           <div class="guide-field"><label>Allowed area only<span>A hard limit. Subs are only placed inside it.</span></label><button class="small" data-draw="allowed">Draw</button></div>
         </details>`;
+      // The first time through, each row's seating is marked as an obstacle,
+      // since a sub can't stand where people sit. After that it is only
+      // offered, so removing one sticks.
+      if(!state.seatingMarked){
+        state.seatingMarked = true;
+        save();
+        for(const row of app.getRows()){
+          if(!row.hasObstacle) app.addFurniture('couch', { name: `${row.name} seating`, ...row.footprint });
+        }
+      }
       const offers = body.querySelector('#guideSeatingOffers');
       const zoneList = body.querySelector('#guideZoneList');
       const warning = body.querySelector('#guideCoverageWarning');
@@ -421,14 +442,205 @@
       return refresh;
     }
 
-    // `title` puts a step on the rail; the welcome step has none.
+    // ---- Step 6: optimize ----
+    const fmtDb = (db) => `${db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`;
+    const fmtSwing = (db) => `±${db.toFixed(0)} dB`;
+    const signedDb = (db, digits) => { const shown = Number(db.toFixed(digits)); return `${shown >= 0 ? '+' : '−'}${Math.abs(shown).toFixed(digits)} dB`; }; // rounds first so a tiny negative reads +0.0
+    const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.wall} wall, ${app.formatLength(walls.end.distFt)} from the ${walls.end.wall} wall`;
+    const NOT_RELIABLE = 'Not reliable for this room shape';
+    // Current and suggested response at the main seat, as two lines on a
+    // log frequency axis.
+    function responseChart(o){
+      const W = 280, H = 90, lo = Math.log10(o.freqs[0]), hi = Math.log10(o.freqs.at(-1));
+      const all = (o.before ? o.before.db : []).concat(o.after.db);
+      const min = Math.min(...all) - 2, max = Math.max(...all) + 2;
+      const line = (db) => db.map((v, i) => `${((Math.log10(o.freqs[i]) - lo) / (hi - lo) * W).toFixed(1)},${(H - (v - min) / (max - min) * H).toFixed(1)}`).join(' ');
+      return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz">
+          ${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
+        </svg>
+        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">Suggested</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat</span></div>`;
+    }
+    const VERDICTS = {
+      major: 'Major improvement.',
+      modest: 'Modest improvement.',
+      similar: 'Little to gain. The current placement is already close to the best one found.',
+      worse: 'No improvement found. The current placement measures better than the best one the search found, so leave it as it is.'
+    };
+    function resultCard(o){
+      const change = (label, before, after) => `<div class="guide-stat"><span>${label}</span><strong>${before != null ? `${before} → ` : ''}${after}</strong></div>`;
+      const b = o.before, a = o.after;
+      const nullText = (m) => `${fmtDb(m.stats.worstMinDb - m.stats.avgMean)} at ${o.freqs[m.stats.worstMinIndex].toFixed(0)} Hz`;
+      return `
+        ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
+        ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
+        ${b ? change('Optimizer score', null, signedDb(o.comparison.gainDb, 1)) : ''}
+        ${change('Response variation', b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
+        ${change('Deepest null', b && nullText(b), nullText(a))}
+        ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
+        ${o.seats > 1 ? change('Seat-to-seat variation', b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
+        ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
+        ${responseChart(o)}
+        <ul class="guide-moves">${o.subs.map(sub => {
+          const to = wallsText(app.wallDistances(sub));
+          const stays = sub.from && sub.from.x === sub.x && sub.from.y === sub.y;
+          return `<li><strong>${esc(sub.name)}</strong>: ${stays ? 'leave it where it is' : `${sub.from ? 'move it to' : 'place it'} ${to}`}.</li>`;
+        }).join('')}</ul>
+        <div class="guide-actions">
+          <button class="primary" id="guideApplyBtn">Apply</button>
+          <button id="guideAlternativesBtn" aria-pressed="${app.getScoreHeatmap()}">Show alternatives</button>
+          <button id="guideCantUseBtn">Can't use that spot</button>
+        </div>
+        <p class="guide-hint" id="guideAlternativesHint" ${app.getScoreHeatmap() ? '' : 'hidden'}>Green areas scored best and red worst. The star marks the suggestion.</p>`;
+    }
+    function renderOptimize(body){
+      const subs = app.getSubs(), settings = app.getOptimizerSettings();
+      body.innerHTML = `
+        <h2 tabindex="-1">Find the best spot</h2>
+        <p>The map now shows sound pressure level across the room at the selected frequency. The goal is a response at your seats that stays even across the ${settings.freqLow} to ${settings.freqHigh} Hz range, without deep nulls.</p>
+        <h3>Room correction</h3>
+        <p>Do you run room correction (Audyssey, Dirac, YPAO, ARC)?</p>
+        <div class="segmented guide-counts" id="guideRoomCorrection" role="group" aria-label="Room correction">${ROOM_CORRECTION.map(c => `<button data-rc="${c.id}">${c.label}</button>`).join('')}</div>
+        <p class="guide-hint">Room correction can cut peaks but can't fill nulls, so with it, Modal prioritizes avoiding nulls.</p>
+        <details class="guide-more"><summary>Settings</summary>
+          <div class="guide-stat"><span>Frequency range</span><strong>${settings.freqLow} to ${settings.freqHigh} Hz</strong></div>
+          <div class="guide-stat"><span>Subs</span><strong>${subs.length ? `${subs.length} (yours, refined in place)` : `${state.plannedSubs} new`}</strong></div>
+          <div class="guide-stat"><span>Grid step</span><strong>${esc(app.formatLength(settings.gridStepFt))}</strong></div>
+          ${subs.length ? '' : `<div class="guide-stat"><span>Sub height</span><strong>${esc(app.formatLength(settings.subHeightFt))}</strong></div>`}
+          <p class="guide-hint">These can be changed under Optimizer and Expert in the full tool.</p>
+        </details>
+        <button class="primary guide-run" id="guideOptimizeBtn">Optimize sub placement</button>
+        <p class="guide-hint" id="guideOptimizeStatus" role="status" aria-live="polite"></p>
+        <div id="guideResult"></div>`;
+      const runBtn = body.querySelector('#guideOptimizeBtn');
+      const status = body.querySelector('#guideOptimizeStatus');
+      const result = body.querySelector('#guideResult');
+      // What the last search led to: null (nothing yet), 'none' (no valid
+      // position), 'applied', or the outcome object while a suggestion is pending.
+      let outcome = app.optimizerOutcome();
+
+      body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        state.roomCorrection = btn.dataset.rc;
+        save();
+        app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
+        refresh();
+      });
+      runBtn.addEventListener('click', async () => {
+        runBtn.disabled = true;
+        result.innerHTML = '';
+        const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
+        await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
+          status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
+        });
+        if(!body.isConnected) return; // the step was left while the search ran
+        runBtn.disabled = false;
+        outcome = app.optimizerOutcome() || 'none';
+        if(outcome === 'none') app.clearOptimizerResult();
+        app.setScoreHeatmap(false);
+        refresh();
+        // Bring the card up clear of the sticky footer, but never push its first line off the top.
+        const scroller = panel.parentElement, card = result.getBoundingClientRect();
+        const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;
+        if(hidden > 0) scroller.scrollBy(0, Math.min(hidden, card.top - scroller.getBoundingClientRect().top));
+      });
+      result.addEventListener('click', (e) => {
+        const id = e.target.closest('button') && e.target.closest('button').id;
+        if(id === 'guideApplyBtn'){
+          outcome = 'applied';
+          app.applyOptimizerResult();
+          app.autofitColorRange();
+          refresh();
+        } else if(id === 'guideAlternativesBtn'){
+          app.setScoreHeatmap(!app.getScoreHeatmap());
+          shown = null;
+          refresh();
+        } else if(id === 'guideCantUseBtn' || id === 'guideObstaclesLink'){
+          app.clearOptimizerResult();
+          goTo(STEPS.findIndex(st => st.render === renderObstacles));
+        }
+      });
+
+      let shown; // what `result` currently shows, so it is rebuilt only on a change
+      function refresh(){
+        pressOnly(body.querySelector('#guideRoomCorrection'), b => b.dataset.rc === state.roomCorrection);
+        // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.
+        if(outcome && typeof outcome === 'object' && !app.optimizerOutcomePending()) outcome = null;
+        if(shown === outcome) return;
+        shown = outcome;
+        runBtn.textContent = outcome ? 'Optimize again' : 'Optimize sub placement';
+        if(!outcome) status.textContent = '';
+        else if(outcome === 'none') status.textContent = '';
+        else if(outcome === 'applied') status.textContent = 'Applied. The map and the next step show the new positions.';
+        else status.textContent = `Evaluated ${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}.`;
+        result.innerHTML = outcome === 'none'
+          ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
+          : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
+      }
+      refresh();
+      return refresh;
+    }
+
+    // ---- Step 7: your plan ----
+    function renderPlan(body){
+      body.innerHTML = `
+        <h2 tabindex="-1">Your plan</h2>
+        <div id="guideSheet"></div>
+        <div class="guide-no-print">
+          <h3>Keep it</h3>
+          <div class="guide-field"><label for="guidePresetName">Name</label><input type="text" id="guidePresetName" value="My room" maxlength="60"></div>
+          <div class="guide-actions">
+            <button id="guideSaveBtn">Save this room</button>
+            <button id="guidePrintBtn">Print / save as PDF</button>
+          </div>
+          <p class="guide-hint" id="guideSaveStatus" role="status" aria-live="polite"></p>
+        </div>`;
+      const sheet = body.querySelector('#guideSheet');
+      body.querySelector('#guideSaveBtn').addEventListener('click', async () => {
+        const name = body.querySelector('#guidePresetName').value.trim();
+        const out = body.querySelector('#guideSaveStatus');
+        if(!name){ out.textContent = 'Enter a name first.'; return; }
+        out.textContent = await app.savePreset(name) ? `Saved as "${name}". It is under Saved rooms in the full tool.` : 'Save failed.';
+      });
+      body.querySelector('#guidePrintBtn').addEventListener('click', () => window.print());
+
+      // The sheet follows the room: a sub moved on the map changes it.
+      function refresh(){
+        const plan = app.getSubPlan();
+        const rc = state.roomCorrection;
+        const html = `
+          ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
+          ${plan.length === 0 ? `<p class="guide-warning">No subwoofer is placed yet. Go back to Optimize, run it, and apply the suggestion.</p>` : `
+          <ol class="guide-plan">
+            <li><strong>Position.</strong>
+              <ul>${plan.map(p => `<li>Put ${esc(p.name)} <strong>${esc(wallsText(p.walls))}</strong>.</li>`).join('')}</ul>
+            </li>
+            <li><strong>Sub distance.</strong>
+              ${rc === 'yes'
+                ? `<p>Re-run room correction after moving the sub and keep the sub distance it sets. These systems measure when the sound actually arrives at the mic, so the distance they set includes the sub's own processing delay (amp and DSP, and more for wireless subs). It will usually read longer than the tape-measured distance. That is expected; don't "correct" it.</p>`
+                : `<p>${rc === 'no' ? 'Without room correction' : 'If you have no room correction'}, start with the geometric distance below. It doesn't include the sub's processing delay, so verify with a measurement mic (REW, for example) if you can.</p>
+                   <p>If your AVR has room correction (Audyssey, YPAO, Dirac Live, MCACC, AccuEQ, ARC and the like), run it after moving the sub and keep the sub distance it sets. That figure includes the sub's processing delay and will usually read longer than the tape-measured distance. That is expected; don't "correct" it.</p>`}
+              <ul>${plan.map(p => `<li>${esc(p.name)}: <strong>${esc(app.formatLength(p.seatDistanceFt))}</strong> to the main seat. Geometric distance (tape-measure equivalent).</li>`).join('')}</ul>
+            </li>
+          </ol>`}`;
+        if(sheet.dataset.html !== html){ sheet.dataset.html = html; sheet.innerHTML = html; }
+      }
+      refresh();
+      return refresh;
+    }
+
+    // `title` puts a step on the rail; the welcome step has none. `field`
+    // steps show the pressure map and its frequency controls, the others
+    // the plain floor plan. `next` words the step's forward button.
     const STEPS = [
       { render: renderWelcome, next: 'Start setup' },
       { title: 'Room', render: renderRoom },
       { title: 'Speakers', render: renderSpeakers },
       { title: 'Subs', render: renderSubs },
       { title: 'Seats', render: renderSeats },
-      { title: 'Obstacles', render: renderObstacles }
+      { title: 'Obstacles', render: renderObstacles },
+      { title: 'Optimize', render: renderOptimize, field: true },
+      { title: 'Your plan', render: renderPlan, next: 'Explore in the full tool' }
     ];
 
     function renderRail(){
@@ -449,9 +661,16 @@
     }
     function goTo(step){
       state.step = Math.max(0, Math.min(STEPS.length - 1, step));
-      if(state.step > 0) state.seenWelcome = true;
+      if(state.step > 0){
+        state.seenWelcome = true;
+        app.removeDefaultZone(); // an assumption nobody made; the guide's steps start without it
+      }
       save();
       leaveStep();
+      const field = !!STEPS[state.step].field;
+      document.body.classList.toggle('guide-shows-field', field);
+      app.setMapView(field ? 'pressure' : 'plan');
+      if(field) app.autofitColorRange();
       const last = state.step === STEPS.length - 1;
       panel.innerHTML = `
         <div class="guide-body"></div>
@@ -479,12 +698,10 @@
       guideBtn.setAttribute('aria-pressed', String(active));
     }
     function open(){
-      // The placement steps read better on the plain floor plan; the view in
-      // use before is put back on the way out.
+      // Each step picks its own map view (see STEPS); the one in use before
+      // is put back on the way out.
       state.viewBefore = app.getMapView();
       setActive(true);
-      app.setMapView('plan');
-      app.removeDefaultZone();
       goTo(state.seenWelcome ? Math.max(1, state.step) : 0);
     }
     // Leaves the guide for the full tool. The step is kept, so reopening
@@ -492,7 +709,9 @@
     function close(finished){
       setActive(false);
       leaveStep();
+      document.body.classList.remove('guide-shows-field');
       panel.innerHTML = '';
+      state.launchDone = true;
       if(finished) state.step = 1;
       save();
       if(state.viewBefore) app.setMapView(state.viewBefore);
@@ -500,16 +719,23 @@
 
     const refreshActiveStep = () => { if(state.active && refreshStep) refreshStep(); };
     app.onDraw(refreshActiveStep);
-    window.addEventListener('resize', refreshActiveStep); // the coach mark follows the map when the window or tablet orientation changes
+    window.addEventListener('resize', refreshActiveStep);
+    // The setup sheet prints in the light palette whatever is on screen.
+    window.addEventListener('beforeprint', () => { if(state.active) app.setPrintAppearance(true); });
+    window.addEventListener('afterprint', () => { if(state.active) app.setPrintAppearance(false); }); // the coach mark follows the map when the window or tablet orientation changes
 
     return {
       toggle(){ if(state.active) close(false); else open(); },
-      // Called once the app has loaded: picks the guide back up at the step
-      // it was on if the page was closed or reloaded partway through.
+      // Called once the app has loaded. Picks the guide back up at the step
+      // it was on if the page was closed or reloaded partway through, and
+      // opens it for anyone who has not yet finished or left it once.
       resume(){
-        if(!state.active) return;
-        setActive(true);
-        goTo(state.step);
+        if(state.active){
+          setActive(true);
+          goTo(state.step);
+        } else if(!state.launchDone){
+          open();
+        }
       }
     };
   }

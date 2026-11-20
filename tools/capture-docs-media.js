@@ -151,6 +151,8 @@ async function expandSection(page, sectionId){
   const consoleErrors = [];
   page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
   page.on('pageerror', err => consoleErrors.push('pageerror: ' + err.message));
+  // A fresh profile opens in the setup guide; these captures are of the full tool, so mark the guide as already left.
+  await page.addInitScript(() => localStorage.setItem('modal-guide-v1', JSON.stringify({ launchDone: true })));
 
   await page.goto(APP_URL);
   await page.waitForTimeout(500);

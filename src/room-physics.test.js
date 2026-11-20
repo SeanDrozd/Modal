@@ -930,6 +930,83 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
 });
 
+console.log('\n-- scoreResponses / seatToSeatVariationDb / comparePlacements --');
+
+test('scoreResponses reports the mean, flatness and deepest dip of one response, and scores it per mode', () => {
+  const r = P.scoreResponses([[70, 76, 58, 72, 74]], [1], 'balanced');
+  approx(r.avgMean, 70, 1e-9);
+  approx(r.worstStdDev, Math.sqrt(40), 1e-9); // squared deviations 0, 36, 144, 4, 16
+  assert.strictEqual(r.worstMinDb, 58); assert.strictEqual(r.worstMinIndex, 2);
+  approx(r.score, 70 - Math.sqrt(40), 1e-9); // the dip is 12 dB under the mean, short of the 20 dB where the null penalty starts
+  approx(P.scoreResponses([[70, 76, 58, 72, 74]], [1], 'nullAvoidance').score, 58, 1e-9);
+  // a dip 30 dB under the mean costs half of the 10 dB beyond 20
+  const deep = P.scoreResponses([[80, 80, 80, 80, 80, 50]], [1], 'balanced');
+  approx(deep.score, deep.avgMean - deep.worstStdDev - (deep.avgMean - 50 - 20) * 0.5, 1e-9);
+});
+
+test('scoreResponses takes the worst listener for flatness and the deepest dip, scaled by that listener\'s weight', () => {
+  const r = P.scoreResponses([[70, 70, 70], [70, 40, 70]], [1, 0.5], 'nullAvoidance');
+  assert.strictEqual(r.worstMinDb, 40); assert.strictEqual(r.worstMinIndex, 1);
+  approx(r.score, 40 + 0.5 * 15, 1e-9); // half of the 15 dB relief for a half-weight listener
+  const b = P.scoreResponses([[70, 70, 70], [70, 40, 70]], [1, 0.5], 'balanced');
+  approx(b.avgMean, (70 * 1 + 60 * 0.5) / 1.5, 1e-9);
+  approx(b.worstStdDev, Math.sqrt(200), 1e-9);
+  // a missing weight counts as 1
+  approx(P.scoreResponses([[70, 40, 70]], [], 'nullAvoidance').score, 40, 1e-9);
+});
+
+test('scoreResponses is the formula scoreSubPosition scores with', () => {
+  const room = baseRoom, ctx = { room, wallAbsorption: 0.3, floorAbsorption: 0.15 };
+  const mains = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const freqs = [30, 45, 60, 80, 100];
+  const listeners = [{ x: 9, y: 9, z: 3.5, weight: 1 }, { x: 12, y: 10, z: 3.5, weight: 0.5 }];
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const full = P.scoreSubPosition({ x: 3, y: 12, z: 1 }, mains, room, freqs, listeners, ctx, mode);
+    const again = P.scoreResponses(full.perListenerDb, listeners.map(l => l.weight), mode);
+    assert.strictEqual(again.score, full.score);
+    assert.strictEqual(again.avgMean, full.avgMean);
+    assert.strictEqual(again.worstStdDev, full.worstStdDev);
+    assert.strictEqual(again.worstMinDb, full.worstMinDb);
+  }
+});
+
+test('seatToSeatVariationDb averages half the loudest-to-quietest gap across frequencies', () => {
+  // gaps of 4, 10 and 0 dB at the three frequencies: half-gaps 2, 5, 0, mean 7/3
+  approx(P.seatToSeatVariationDb([[70, 60, 65], [74, 70, 65], [72, 65, 65]]), 7 / 3, 1e-9);
+});
+
+test('seatToSeatVariationDb is zero for a single seat', () => {
+  assert.strictEqual(P.seatToSeatVariationDb([[70, 60, 65]]), 0);
+});
+
+test('comparePlacements grades the change in score', () => {
+  const s = (score, avgMean) => ({ score, avgMean });
+  const c = P.comparePlacements(s(60, 70), s(67.5, 73));
+  approx(c.gainDb, 7.5, 1e-9); approx(c.levelGainDb, 3, 1e-9);
+  assert.strictEqual(c.verdict, 'major');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(66, 70)).verdict, 'major');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(65.9, 70)).verdict, 'modest');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(62, 70)).verdict, 'modest');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(61.9, 75)).verdict, 'similar'); // louder, but no better by the score
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(60, 70)).verdict, 'similar');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(58.1, 70)).verdict, 'similar');
+  assert.strictEqual(P.comparePlacements(s(60, 70), s(58, 70)).verdict, 'worse');
+});
+
+console.log('\n-- nearestWallDistances --');
+
+test('nearestWallDistances picks the nearer side wall and the nearer end wall', () => {
+  assert.deepStrictEqual(P.nearestWallDistances({ x: 2.25, y: 1 }, baseRoom), { side: { wall: 'left', distFt: 2.25 }, end: { wall: 'front', distFt: 1 } });
+  const far = P.nearestWallDistances({ x: 16, y: 12 }, baseRoom);
+  assert.strictEqual(far.side.wall, 'right'); approx(far.side.distFt, 2, 1e-9);
+  assert.strictEqual(far.end.wall, 'back'); approx(far.end.distFt, 1.5, 1e-9);
+});
+
+test('nearestWallDistances reports left and front for a point exactly midway', () => {
+  const mid = P.nearestWallDistances({ x: baseRoom.w / 2, y: baseRoom.d / 2 }, baseRoom);
+  assert.strictEqual(mid.side.wall, 'left'); assert.strictEqual(mid.end.wall, 'front');
+});
+
 console.log('\n-- rowFootprintRect --');
 
 test('rowFootprintRect is one seat spacing wide per seat and 3 ft deep, centered on the row', () => {

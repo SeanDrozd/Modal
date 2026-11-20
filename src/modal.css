@@ -327,8 +327,9 @@ canvas.dragging { cursor: grabbing; }
 body.guide-active #guidePanel { display: block; }
 body.guide-active #sidebar > :not(#guidePanel) { display: none; }
 body.guide-active .brand .tagline { display: none; } /* the step rail takes its room in the header */
-/* The setup steps work on the plain floor plan, so the frequency controls, readouts and view switch stay out of the way until the guide is closed. */
-body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-row, body.guide-active #info, body.guide-active #mapViewControl, body.guide-active #pressureLegend { display: none; }
+/* Most steps work on the plain floor plan, so the frequency controls, view switch and color key only show on the steps that turn the pressure map on (body.guide-shows-field). The readouts stay out of the guide altogether. */
+body.guide-active #bottomPanel .stats-row, body.guide-active #info { display: none; }
+body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-active:not(.guide-shows-field) #mapViewControl, body.guide-active:not(.guide-shows-field) #pressureLegend { display: none; }
 #guidePanel h2 { font-size: 21px; font-weight: 650; line-height: 1.25; margin: 0 0 10px; outline: none; }
 #guidePanel h3 { font-size: 12.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); margin: 18px 0 8px; }
 #guidePanel p { font-size: 14px; line-height: 1.5; color: var(--text); margin: 0 0 10px; }
@@ -369,6 +370,38 @@ body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-
 .guide-zone { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 4px 4px 10px; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; font-size: 13.5px; }
 .guide-zone .dim { color: var(--text-dim); }
 #guidePanel [data-draw][aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.guide-run { display: block; width: 100%; padding: 9px 12px; font-size: 14px; margin-top: 4px; }
+.guide-result { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-top: 8px; }
+#guidePanel .guide-verdict { font-size: 15px; font-weight: 650; margin-bottom: 8px; }
+.guide-stat { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; padding: 3px 0; }
+.guide-stat span { color: var(--text-dim); }
+.guide-stat strong { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.guide-chart { display: block; width: 100%; margin-top: 8px; background: var(--bg); border-radius: 6px; fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.guide-chart .before { stroke: var(--text-dim); stroke-dasharray: 4 3; }
+.guide-chart .after { stroke: var(--accent); stroke-width: 2; }
+.guide-chart-key { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-dim); margin: 4px 0 8px; }
+.guide-chart-key .before::before, .guide-chart-key .after::before { content: ''; display: inline-block; width: 16px; margin-right: 5px; vertical-align: middle; border-top: 2px dashed var(--text-dim); }
+.guide-chart-key .after::before { border-top: 2px solid var(--accent); }
+.guide-moves, .guide-plan ul { margin: 0 0 8px; padding-left: 18px; font-size: 13.5px; line-height: 1.5; }
+.guide-plan { margin: 0 0 10px; padding-left: 20px; font-size: 14px; line-height: 1.5; }
+.guide-plan > li { margin-bottom: 10px; }
+#guidePanel .guide-plan p { font-size: 13.5px; margin: 4px 0 6px; }
+.guide-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide-actions button { flex: 1 1 auto; }
+#guidePanel [aria-pressed="true"]#guideAlternativesBtn { border-color: var(--accent); color: var(--accent); }
+.guide-link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; font-size: inherit; }
+#guidePresetName { flex: 1; min-width: 0; }
+
+/* Printing from the last step gives the setup sheet: the plan and the floor plan, in black on white. */
+@media print {
+  body.guide-active { display: block; height: auto; overflow: visible; background: #fff; }
+  body.guide-active #appHeader, body.guide-active #bottomPanel, body.guide-active .guide-footer, body.guide-active .guide-no-print, body.guide-active #coachMark { display: none; }
+  body.guide-active #sidebar { position: static; width: auto; min-width: 0; max-height: none; border: none; background: none; overflow: visible; padding: 0 0 12px; }
+  body.guide-active #guidePanel, body.guide-active #guidePanel * { color: #000; background: none; border-color: #999; }
+  body.guide-active #main { display: block; padding: 0; }
+  body.guide-active #canvasWrap { border: none; box-shadow: none; background: none; }
+  body.guide-active canvas { max-height: 55vh; }
+}
 /* Stays at the bottom edge of the sidebar (inside its 16px padding) so
    Back and Next are reachable however long the step's content is. */
 .guide-footer { position: sticky; bottom: -16px; margin-top: 12px; padding: 12px 0 16px; background: var(--panel); border-top: 1px solid var(--border); }
@@ -387,6 +420,11 @@ body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-
 #guideRail button[aria-current="step"] { border-color: var(--accent); color: var(--text); }
 #guideRail button[aria-current="step"] .guide-rail-num { background: var(--accent); color: var(--on-accent); }
 #guideBtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+/* Seven titled steps need a wide header; below that only the current step keeps its title. */
+@media (max-width: 1400px) {
+  #guideRail button:not([aria-current="step"]) .guide-rail-title { display: none; }
+  #guideRail button:not([aria-current="step"]) { padding-right: 5px; }
+}
 /* Callout that points at one marker on the map. It never takes pointer
    input, so the marker under it can still be dragged. */
 #coachMark {
@@ -408,8 +446,6 @@ body.guide-active #bottomPanel .freq-row, body.guide-active #bottomPanel .stats-
   body { grid-template-columns: 320px minmax(0, 1fr); }
   #sidebar { width: 320px; min-width: 320px; }
   .brand .tagline { display: none; }
-  #guideRail button:not([aria-current="step"]) .guide-rail-title { display: none; }
-  #guideRail button:not([aria-current="step"]) { padding-right: 5px; }
   #main { padding: 12px; }
   #bottomPanel .stats-row { flex-wrap: nowrap; gap: 8px; margin-top: 8px; }
   #bottomPanel .stats-row > * { min-width: 0; }
