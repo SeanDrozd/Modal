@@ -450,9 +450,10 @@
       off.width = RES; off.height = RES;
       off.getContext('2d').putImageData(imgData, 0, 0);
 
-      // CPU path owns the field canvas: opaque background fill, then the field.
-      ctx2d.fillStyle = '#0b0e12';
-      ctx2d.fillRect(0,0,sizeW,sizeH);
+      // CPU path owns the field canvas: clear it (transparent, so the page's
+      // themed background shows through the margin around the room, the same
+      // as in GPU mode), then draw the field.
+      ctx2d.clearRect(0,0,sizeW,sizeH);
       ctx2d.imageSmoothingEnabled = true;
       ctx2d.drawImage(off, 0, 0, RES, RES, offX, offY, w*scale, d*scale);
     }

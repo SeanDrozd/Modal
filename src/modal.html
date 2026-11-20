@@ -2,13 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Room Wave Interference Visualizer</title>
+<title>Modal: subwoofer placement and room modes</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23e3a23f' stroke-linecap='round'%3E%3Crect width='32' height='32' rx='7' fill='%231c1814' stroke='none'/%3E%3Cpath d='M3 16Q9.5 3 16 16T29 16' stroke-width='3'/%3E%3Cpath d='M3 16Q9.5 29 16 16T29 16' stroke-width='3' opacity='.45'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="modal.css">
+<script>
+// Sets the two <html> attributes that modal.css keys every color off (see
+// its "Design tokens" comment). Defined and first called here in <head>,
+// before the body is parsed, so a saved appearance applies on the very first
+// paint instead of flashing the default dark theme. The main script calls
+// the same function whenever the setting changes (see applyAppearance), so
+// the Auto resolution lives in exactly one place. The storage key is
+// SESSION_STORE_KEY from the main script, repeated here because that script
+// has not run yet.
+function applyAppearanceAttrs(mode, theme){
+  const root = document.documentElement;
+  root.dataset.mode = mode === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode;
+  root.dataset.theme = theme;
+}
+(function(){
+  let session = null;
+  try { session = JSON.parse(localStorage.getItem('room-viz-session-v1')); } catch(e){ /* fall through to the defaults */ }
+  applyAppearanceAttrs((session && session.appearanceMode) || 'auto', (session && session.colorTheme) || 'walnut');
+})();
+</script>
 </head>
 <body>
 
+<header id="appHeader">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5.5" width="25" height="21" rx="4.5" stroke-width="2.6"/><path d="M3.5 16Q9.75 5.5 16 16T28.5 16" stroke-width="2.4"/><path d="M3.5 16Q9.75 26.5 16 16T28.5 16" stroke-width="2.4" opacity=".45"/></svg>
+    <h1>Modal</h1>
+    <span class="tagline">Subwoofer placement and room mode modeling</span>
+  </div>
+  <div class="header-actions">
+    <button id="undoBtn" class="small" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
+    <button id="redoBtn" class="small" disabled title="Redo (Ctrl+Y)">&#8631; Redo</button>
+    <div class="segmented" id="appearanceModeControl" role="group" aria-label="Appearance">
+      <button data-appearance="auto" title="Follow the browser's light/dark setting">Auto</button>
+      <button data-appearance="light">Light</button>
+      <button data-appearance="dark">Dark</button>
+    </div>
+    <div id="themeSwatches" role="group" aria-label="Color theme">
+      <button class="theme-swatch" data-theme="walnut" title="Walnut theme" aria-label="Walnut theme"></button>
+      <button class="theme-swatch" data-theme="studio" title="Studio theme" aria-label="Studio theme"></button>
+      <button class="theme-swatch" data-theme="midnight" title="Midnight theme" aria-label="Midnight theme"></button>
+      <button class="theme-swatch" data-theme="signal" title="Signal theme" aria-label="Signal theme"></button>
+    </div>
+  </div>
+</header>
+
 <div id="sidebar">
-  <h1>Room wave interference</h1>
   <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height, via an exact rectangular-room modal solution below 300Hz (bass-focused; wall, floor, and ceiling reflections come from each surface's material, not individual bounces). Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
 
   <div class="row" style="margin-bottom:14px;">
@@ -17,11 +60,6 @@
       <option value="ft">Feet &amp; inches</option>
       <option value="m">Meters</option>
     </select>
-  </div>
-
-  <div class="row" style="margin-bottom:14px; gap:6px;">
-    <button id="undoBtn" class="small" style="flex:1;" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
-    <button id="redoBtn" class="small" style="flex:1;" disabled title="Redo (Ctrl+Y)">&#8631; Redo</button>
   </div>
 
   <div class="section">
@@ -111,7 +149,7 @@
   <div class="section" id="freqResponseSection">
     <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Frequency response</span></div>
     <div class="section-body">
-      <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:#0b0e12; border-radius:4px;"></canvas>
+      <canvas id="freqResponseCanvas" width="600" height="160" style="width:100%; height:140px; display:block; background:var(--bg); border-radius:6px;"></canvas>
       <div id="freqResponseReadout" style="margin-top:4px; font-size:12.5px; color:var(--text-dim);"></div>
       <div id="freqResponseLegend" class="hint"></div>
       <div class="hint">Spatially averaged over a small sphere around the listening position (20 points, 2ft radius), approximating a moving-mic-style measurement rather than one exact point, which can look artificially nulled or peaked. Assumes anechoically flat sources; shows only what each source's own configured range/rolloff and the room (reflections, absorption) do to the signal.</div>
@@ -162,7 +200,7 @@
       <div class="row"><label># of subs</label>
         <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
       </div>
-      <button id="runOptimizerBtn" class="full" style="margin-top:6px;">Find best sub position</button>
+      <button id="runOptimizerBtn" class="full primary" style="margin-top:6px;">Find best sub position</button>
       <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
       <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
       <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
@@ -803,12 +841,38 @@
   // eagerly on every change so they survive a plain page refresh, independent
   // of whether the user has ever saved a named room preset.
   const SESSION_STORE_KEY = 'room-viz-session-v1';
+  // Appearance (Auto/Light/Dark plus a color theme) is a viewer preference
+  // like units, so it lives in session settings, not in room presets.
+  const APPEARANCE_MODES = ['auto', 'light', 'dark'];
+  const COLOR_THEMES = ['studio', 'walnut', 'midnight', 'signal'];
+  let appearanceMode = 'auto';
+  let colorTheme = 'walnut';
+  // Canvas drawing can't reference CSS custom properties directly, so the few
+  // theme-dependent canvas colors (the room outline and the frequency
+  // response chart) are copied out of the stylesheet's tokens here. Read once
+  // now (the <head> script has already set the attributes these resolve
+  // against) so any draw before init() finishes has real values, then again
+  // on every appearance change.
+  const themeColors = {};
+  function readThemeColors(){
+    const cs = getComputedStyle(document.documentElement);
+    for(const name of ['bg', 'border', 'border-strong', 'text-dim', 'series-1', 'series-2', 'marker']){
+      themeColors[name] = cs.getPropertyValue('--' + name).trim();
+    }
+  }
+  readThemeColors();
+  function applyAppearance(){
+    applyAppearanceAttrs(appearanceMode, colorTheme);
+    readThemeColors();
+    document.querySelectorAll('#appearanceModeControl button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.appearance === appearanceMode)));
+    document.querySelectorAll('#themeSwatches button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.theme === colorTheme)));
+  }
   function saveSessionSettings(){
     try {
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
         resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed, sweepEndFreq,
-        lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections,
+        lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections, appearanceMode, colorTheme,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
         optNumSubs: document.getElementById('optNumSubs').value
@@ -870,6 +934,8 @@
       lengthUnit = session.lengthUnit;
       document.getElementById('unitsSelect').value = lengthUnit;
     }
+    if(APPEARANCE_MODES.includes(session.appearanceMode)) appearanceMode = session.appearanceMode;
+    if(COLOR_THEMES.includes(session.colorTheme)) colorTheme = session.colorTheme;
     // Collapsed-section state is a display preference, same category as the
     // rest of this store -- only overrides the HTML's own collapsed-by-
     // default markup if a saved session actually specifies it, so a
@@ -1118,7 +1184,7 @@
       block.innerHTML = `
         <div class="src-label">
           <div class="name-wrap">
-            <span class="dot" style="background:#f5d547"></span>
+            <span class="dot" style="background:var(--marker)"></span>
             <input type="text" data-field="name" value="${escapeHtml(row.name)}" style="border:none;background:transparent;padding:2px 0;font-weight:600;font-size:13.5px;width:100%;">
           </div>
           ${reorderButtonsHtml(idx, listenerRows.length)}
@@ -1386,11 +1452,11 @@
   function updateZoneDrawHint(){
     const hint = document.getElementById('zoneDrawHint');
     if(zoneDrawMode === 'offlimit'){
-      hint.innerHTML = `<span style="color:${OFFLIMIT_COLOR}">Drawing off-limits zone.</span> Click-drag on the map. Click the button again to stop.`;
+      hint.innerHTML = `<span style="color:color-mix(in srgb, ${OFFLIMIT_COLOR} 50%, var(--text))">Drawing off-limits zone.</span> Click-drag on the map. Click the button again to stop.`;
     } else if(zoneDrawMode === 'allowed'){
-      hint.innerHTML = `<span style="color:${ALLOWED_COLOR}">Drawing allowed zone.</span> Subs are restricted to inside it. Click-drag on the map. Click the button again to stop.`;
+      hint.innerHTML = `<span style="color:color-mix(in srgb, ${ALLOWED_COLOR} 50%, var(--text))">Drawing allowed zone.</span> Subs are restricted to inside it. Click-drag on the map. Click the button again to stop.`;
     } else if(zoneDrawMode === 'preferred'){
-      hint.innerHTML = `<span style="color:${PREFERRED_COLOR}">Drawing preferred zone.</span> A soft bias: a better spot outside it can still win. Click-drag on the map. Click the button again to stop.`;
+      hint.innerHTML = `<span style="color:color-mix(in srgb, ${PREFERRED_COLOR} 50%, var(--text))">Drawing preferred zone.</span> A soft bias: a better spot outside it can still win. Click-drag on the map. Click the button again to stop.`;
     } else {
       hint.textContent = "Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.";
     }
@@ -2092,7 +2158,7 @@
     const renderPath = renderPaths[effectiveMode];
     renderPath({ RES, w, d, precomputed, pz, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
 
-    ctx.strokeStyle = '#4a5568';
+    ctx.strokeStyle = themeColors['border-strong'];
     ctx.lineWidth = 2;
     ctx.strokeRect(offX, offY, w*scale, d*scale);
 
@@ -2770,11 +2836,11 @@
       canvas.height = pixelH;
     }
     c2.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c2.fillStyle = '#0b0e12';
+    c2.fillStyle = themeColors.bg;
     c2.fillRect(0, 0, w, h);
 
     if(!freqResponseData){
-      c2.fillStyle = '#c8cdd6';
+      c2.fillStyle = themeColors['text-dim'];
       c2.font = '13.5px system-ui, sans-serif';
       const msg = sourcesEnabled && sources.some(s => s.enabled !== false) ? '' : 'No active sources';
       if(msg) c2.fillText(msg, 10, h/2);
@@ -2793,8 +2859,8 @@
       return marginT + (1 - Math.min(1, Math.max(0, t))) * plotH;
     }
 
-    c2.strokeStyle = 'rgba(255,255,255,0.08)';
-    c2.fillStyle = '#c8cdd6';
+    c2.strokeStyle = themeColors.border;
+    c2.fillStyle = themeColors['text-dim'];
     c2.font = '13px system-ui, sans-serif';
     c2.lineWidth = 1;
     const freqTicks = niceFreqTicks(FREQ_RESPONSE_MIN_HZ, maxHz);
@@ -2828,6 +2894,7 @@
       const hasSpread = points.some(p => p[minField] != null && p[maxField] != null && (p[maxField] - p[minField]) > 0.01);
       if(!hasSpread) return;
       c2.fillStyle = color;
+      c2.globalAlpha = 0.15;
       c2.beginPath();
       points.forEach((p, i) => {
         if(p[maxField] == null) return;
@@ -2841,6 +2908,7 @@
       }
       c2.closePath();
       c2.fill();
+      c2.globalAlpha = 1;
     }
     function drawLine(field, color){
       c2.strokeStyle = color;
@@ -2855,16 +2923,16 @@
       c2.stroke();
     }
 
-    drawBand('bandMin', 'bandMax', 'rgba(79,176,232,0.15)');
-    drawBand('afterBandMin', 'afterBandMax', 'rgba(79,232,154,0.15)');
-    drawLine('db', '#4fb0e8');
-    drawLine('afterDb', '#4fe89a');
+    drawBand('bandMin', 'bandMax', themeColors['series-1']);
+    drawBand('afterBandMin', 'afterBandMax', themeColors['series-2']);
+    drawLine('db', themeColors['series-1']);
+    drawLine('afterDb', themeColors['series-2']);
 
     // Tracks the frequency slider live (redrawFreqResponseCanvas runs on
     // every normal draw(), not just after a debounced recompute), so this
     // moves in real time even while the curve itself is still debouncing.
     const curX = xForFreq(Math.max(FREQ_RESPONSE_MIN_HZ, Math.min(maxHz, freq)));
-    c2.strokeStyle = 'rgba(245,213,71,0.6)';
+    c2.strokeStyle = themeColors.marker;
     c2.setLineDash([3, 3]);
     c2.beginPath();
     c2.moveTo(curX, marginT);
@@ -3052,6 +3120,28 @@
     lengthUnit = this.value;
     saveSessionSettings();
     refreshAllLengthDisplays();
+  });
+  document.getElementById('appearanceModeControl').addEventListener('click', function(e){
+    const btn = e.target.closest('button');
+    if(!btn) return;
+    appearanceMode = btn.dataset.appearance;
+    applyAppearance();
+    saveSessionSettings();
+    draw();
+  });
+  document.getElementById('themeSwatches').addEventListener('click', function(e){
+    const btn = e.target.closest('button');
+    if(!btn) return;
+    colorTheme = btn.dataset.theme;
+    applyAppearance();
+    saveSessionSettings();
+    draw();
+  });
+  // In Auto, follow the browser/OS setting live if it flips while the page is open.
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+    if(appearanceMode !== 'auto') return;
+    applyAppearance();
+    draw();
   });
   document.getElementById('undoBtn').addEventListener('click', undo);
   document.getElementById('redoBtn').addEventListener('click', redo);
@@ -3504,6 +3594,7 @@
       document.getElementById('renderModeHint').textContent = 'WebGL is not available here, so only CPU rendering can be used.';
     }
     loadSessionSettings();
+    applyAppearance();
     document.getElementById('colormapSelect').value = colormapId;
     document.getElementById('colormapHint').textContent = COLORMAP_HINTS[colormapId] || '';
     buildGradientSwatch();

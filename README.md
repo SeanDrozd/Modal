@@ -55,7 +55,8 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - Multi-level undo/redo (Ctrl+Z / Ctrl+Y, or buttons) covering the same state a saved preset does; continuous edits like a drag or a held slider collapse into one undo step instead of one per intermediate frame
 - Frequency control (slider, sweep, wavelength/active-sources/Schroeder/ear-diff readouts) lives in a panel below the map, next to the visualization it controls; sidebar sections are collapsible (click the chevron) and organized into a workflow (Room → Sources → Frequency response → Optimizer, with less-frequently-touched treatment/rendering sections collapsed by default), and each section's collapsed state persists across reloads
 - Adjustable color range and grid resolution (device/performance preferences, kept separate from saved room presets); an "Autofit" button next to the color range resets it to fit whatever's currently on screen, for when a room/frequency change leaves the heatmap looking solid one color or the chart pinned flat to one edge
-- Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
+- Room presets (save/load/update, `localStorage`-backed) and separate session settings (units, appearance, render mode, resolution, color range, optimizer preferences) that persist across reloads independent of any preset
+- Appearance: Auto (follows the browser's light/dark setting), Light, or Dark, plus four color themes (Walnut by default, Studio, Midnight, Signal), all from the header. The heatmap's own colormap is separate from the theme, so a given dB reading looks the same under every theme
 
 ## How it works
 
