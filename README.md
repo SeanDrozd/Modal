@@ -27,6 +27,9 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 
 ## Features
 
+**Setup guide**
+- "Setup guide" in the header swaps the sidebar for a step-by-step panel and shows the map as a plain floor plan. The first step takes the room's shape and dimensions; an open or non-rectangular room gets a plain warning that the results won't be reliable, since the model assumes a closed rectangle. The second step takes the speaker layout (stereo through 9.x, or sub only), places those speakers at the standard angles from the seat, and has you set each one's real position by dragging it on the map or entering its distance from two walls. Closing the page partway through resumes at the same step. Steps for subs, seats, furniture and the optimizer are not in the guide yet; use the full tool for those.
+
 **Sources & listening positions**
 - "+ Add Main" and "+ Add Sub" add a source with the right crossover range already set (80Hz to 20kHz for mains, 20 to 80Hz for subs); Add Main cycles through standard channel abbreviations in layout order (FL, FR, C, SL, SR, SBL, SBR, FWL, FWR, covering 5.1 through 9.1) before falling back to a generic numbered name, and Add Sub numbers SW1, SW2, ...
 - Any number of sources (mains, subs), each with independent level, delay, frequency range (with a configurable rolloff slope outside that range, 6/12/18/24 dB/octave, 24 by default, not a hard cutoff, with a bulk "apply to all" control), and height
@@ -144,6 +147,7 @@ With more than one listening row/seat configured, the same spatially-averaged ca
 - `src/field-render.js`: turns a precomputed per-mode coefficient list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU mode data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget.
 - `src/modal.html`: the UI. DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
 - `src/modal.css`: the UI's stylesheet, loaded by `modal.html` via a plain `<link>`.
+- `src/guide.js`: the setup guide's step panel. DOM only: it reads and changes the app through the small API object `modal.html` passes to `ModalGuide.create`, and keeps nothing of its own beyond which step is open and the room-shape answer.
 - `tools/`: dev-only scripts for regenerating the screenshots/animations in `docs/` (Playwright-driven UI capture, encoded to animated WebP via `sharp`; plus a from-scratch renderer for the sphere-sampling GIF). Not part of the app; has its own `package.json`. See `tools/capture-docs-media.js` and `tools/render-sphere-demo.js`.
 
 ## Running it

@@ -35,7 +35,9 @@ function applyAppearanceAttrs(mode, theme){
     <h1>Modal</h1>
     <span class="tagline">Subwoofer placement and room mode modeling</span>
   </div>
+  <ol id="guideRail" hidden aria-label="Setup steps"></ol>
   <div class="header-actions">
+    <button id="guideBtn" class="small">Setup guide</button>
     <button id="undoBtn" class="small" disabled title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;<span class="btn-label"> Undo</span></button>
     <button id="redoBtn" class="small" disabled title="Redo (Ctrl+Y)" aria-label="Redo">&#8631;<span class="btn-label"> Redo</span></button>
     <button id="sheetToggleBtn" class="small" aria-expanded="true" aria-controls="sidebar">Hide controls</button>
@@ -55,6 +57,7 @@ function applyAppearanceAttrs(mode, theme){
 </header>
 
 <div id="sidebar">
+  <div id="guidePanel"></div>
   <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height, via an exact rectangular-room modal solution below 300Hz (bass-focused; wall, floor, and ceiling reflections come from each surface's material, not individual bounces). Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
 
   <div class="row" style="margin-bottom:14px;">
@@ -342,6 +345,7 @@ function applyAppearanceAttrs(mode, theme){
 
 <script src="room-physics.js"></script>
 <script src="field-render.js"></script>
+<script src="guide.js"></script>
 
 <script>
 (function(){
@@ -405,6 +409,7 @@ function applyAppearanceAttrs(mode, theme){
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
   let zoneDrawMode = null; // null | 'offlimit' | 'allowed' | 'preferred' -- which kind of rect the next drag creates
   let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
+  const drawListeners = []; // called after every draw(); see "Setup guide API" at the end of this script
   // Listening positions: an ordered list of "rows" (a couch, a row of
   // recliners) -- array order IS rank (index 0 = rank 1, most important; see
   // RoomPhysics.rowRankWeight). Each row's seats are generated from one
@@ -546,6 +551,7 @@ function applyAppearanceAttrs(mode, theme){
   // than a few ranked rows can account for. 30x30ft/15ft ceiling comfortably
   // covers real dedicated home theaters and large great rooms (which rarely
   // exceed ~24x15ft/12ft even in premium builds).
+  const ROOM_MIN_FT = 6;
   const ROOM_MAX_WD_FT = 30;
   const ROOM_MAX_H_FT = 15;
 
@@ -557,17 +563,26 @@ function applyAppearanceAttrs(mode, theme){
     document.getElementById('roomWField').innerHTML = lengthFieldHtml('roomW', room.w);
     document.getElementById('roomDField').innerHTML = lengthFieldHtml('roomD', room.d);
     document.getElementById('roomHField').innerHTML = lengthFieldHtml('roomH', room.h);
-    wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => {
-      room.w = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 16)); updateFloorCoverageWarning(); draw();
-    });
-    wireLengthField(document.getElementById('roomDField'), 'roomD', (ft) => {
-      room.d = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 13.5)); updateFloorCoverageWarning(); draw();
-    });
-    wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => {
-      room.h = Math.min(ROOM_MAX_H_FT, Math.max(6, ft || 8));
+    wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => setRoomDim('w', ft));
+    wireLengthField(document.getElementById('roomDField'), 'roomD', (ft) => setRoomDim('d', ft));
+    wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => setRoomDim('h', ft));
+  }
+  // Sets one room dimension ('w', 'd' or 'h') from a value in feet, clamped
+  // to the supported range, and returns what was stored. Shared by the
+  // sidebar's Room fields and the setup guide; the sidebar field is written
+  // back so it shows the stored value whichever of the two made the change.
+  const ROOM_DIM_FIELDS = { w: 'roomWField', d: 'roomDField', h: 'roomHField' };
+  function setRoomDim(dim, ft){
+    if(dim === 'h'){
+      room.h = Math.min(ROOM_MAX_H_FT, Math.max(ROOM_MIN_FT, ft || 8));
       for(const r of listenerRows){ if(r.z > room.h) r.z = room.h; }
-      draw();
-    });
+    } else {
+      room[dim] = Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5)));
+      updateFloorCoverageWarning();
+    }
+    writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
+    draw();
+    return room[dim];
   }
 
   // Optimizer grid step / sub height: session settings (like resolutionScale),
@@ -1570,14 +1585,11 @@ function applyAppearanceAttrs(mode, theme){
     return 'SW' + n;
   }
 
-  document.getElementById('addMainBtn').addEventListener('click', () => {
-    const name = nextMainName();
-    const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
-    const newSrc = {
+  function newMainSource(name, x, y){
+    return {
       id: nextId++,
       name,
-      x: Math.min(room.w-1, 2 + n*1.5),
-      y: 1.5,
+      x, y,
       z: 3,
       levelDb: 0, delayMs: 0,
       freqLow: 80, freqHigh: 20000,
@@ -1585,11 +1597,26 @@ function applyAppearanceAttrs(mode, theme){
       isMain: name === 'FL' || name === 'FR', // only the actual L/R pair drives the stereo-triangle guide
       rolloffDbPerOct: 24
     };
-    sources.push(newSrc);
+  }
+  document.getElementById('addMainBtn').addEventListener('click', () => {
+    const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
+    sources.push(newMainSource(nextMainName(), Math.min(room.w-1, 2 + n*1.5), 1.5));
     autoTimeAlign();
     renderSrcList();
     draw();
   });
+  // Replaces the main speakers with the first `count` standard channels
+  // (MAIN_CHANNEL_NAMES order), each at its usual spot for the primary seat
+  // (RoomPhysics.standardSpeakerPositions). Subs are kept. Returns the new
+  // mains' positions.
+  function setMainLayout(count){
+    const spots = RoomPhysics.standardSpeakerPositions(room, primaryRow(), MAIN_CHANNEL_NAMES.slice(0, count));
+    sources = [...spots.map(p => newMainSource(p.name, p.x, p.y)), ...sources.filter(isSubSource)];
+    autoTimeAlign();
+    renderSrcList();
+    draw();
+    return spots;
+  }
 
   document.getElementById('addSubBtn').addEventListener('click', () => {
     const n = sources.filter(isSubSource).length;
@@ -2337,6 +2364,7 @@ function applyAppearanceAttrs(mode, theme){
     redrawFreqResponseCanvas(); // cheap repaint every frame, so the freq marker tracks the slider live
     scheduleFreqResponseUpdate(); // debounced recompute of the curve itself (expensive)
     scheduleUndoSnapshot();
+    for(const fn of drawListeners) fn();
   }
 
   // Strokes the current path as a dashed guide line over a faint dark
@@ -3364,11 +3392,13 @@ function applyAppearanceAttrs(mode, theme){
     updateCeilingReadout();
     scheduleDraw();
   });
-  document.getElementById('unitsSelect').addEventListener('change', function(){
-    lengthUnit = this.value;
+  function setLengthUnit(unit){
+    lengthUnit = unit;
+    document.getElementById('unitsSelect').value = unit;
     saveSessionSettings();
     refreshAllLengthDisplays();
-  });
+  }
+  document.getElementById('unitsSelect').addEventListener('change', function(){ setLengthUnit(this.value); });
   document.getElementById('appearanceModeControl').addEventListener('click', function(e){
     const btn = e.target.closest('button');
     if(!btn) return;
@@ -3385,13 +3415,15 @@ function applyAppearanceAttrs(mode, theme){
     saveSessionSettings();
     draw();
   });
-  document.getElementById('mapViewControl').addEventListener('click', function(e){
-    const btn = e.target.closest('button');
-    if(!btn) return;
-    mapView = btn.dataset.mapView;
+  function setMapView(view){
+    mapView = view;
     applyMapView();
     saveSessionSettings();
     draw();
+  }
+  document.getElementById('mapViewControl').addEventListener('click', function(e){
+    const btn = e.target.closest('button');
+    if(btn) setMapView(btn.dataset.mapView);
   });
   // In Auto, follow the browser/OS setting live if it flips while the page is open.
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
@@ -3798,14 +3830,20 @@ function applyAppearanceAttrs(mode, theme){
     return true;
   }
 
-  function moveTarget(evt){
-    const {x,y} = getRoomCoords(evt);
+  // Moves a source or a listening row (by id) to a point in the room, kept
+  // just inside the walls. Used by map drags and by the setup guide's typed
+  // wall distances.
+  function moveToRoomPoint(id, x, y){
     const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
-    const s = sources.find(s=>s.id===dragTarget);
+    const s = sources.find(s=>s.id===id);
     if(s){ s.x = cx; s.y = cy; }
-    else { const r = listenerRows.find(r=>r.id===dragTarget); if(r){ r.x = cx; r.y = cy; } }
+    else { const r = listenerRows.find(r=>r.id===id); if(r){ r.x = cx; r.y = cy; } }
     autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
     scheduleDraw();
+  }
+  function moveTarget(evt){
+    const {x,y} = getRoomCoords(evt);
+    moveToRoomPoint(dragTarget, x, y);
   }
   // Pointer Events give mouse, touch and pen one code path. Capturing the
   // pointer on the canvas keeps move/up events coming even when the drag
@@ -3893,7 +3931,43 @@ function applyAppearanceAttrs(mode, theme){
     lastSnapshotJSON = currentSnapshotJSON();
     updateUndoRedoButtons();
   }
-  init();
+  // ---- Setup guide API ----
+  // The whole surface src/guide.js works through. The guide owns its steps,
+  // copy and DOM, and reads or changes the app only through these, so it
+  // never reaches into this closure's state.
+  const guide = ModalGuide.create({
+    roomLimits: { minFt: ROOM_MIN_FT, maxWidthDepthFt: ROOM_MAX_WD_FT, maxHeightFt: ROOM_MAX_H_FT },
+    mainChannelNames: MAIN_CHANNEL_NAMES,
+    getRoom: () => ({ ...room }),
+    setRoomDim,
+    getLengthUnit: () => lengthUnit,
+    setLengthUnit,
+    formatLength,
+    // Renders an editable length control (feet and inches, or meters) into
+    // `container` and calls onChangeFt(feet) on every edit. Returns a
+    // function that writes a new value into it.
+    lengthField(container, ft, onChangeFt){
+      container.innerHTML = lengthFieldHtml('value', ft);
+      wireLengthField(container, 'value', onChangeFt);
+      return (newFt) => writeLengthFieldValue(container.querySelector('.length-field'), newFt);
+    },
+    getMains: () => sources.filter(s => !isSubSource(s)).map(s => ({ id: s.id, name: s.name, x: s.x, y: s.y })),
+    setMainLayout,
+    moveSource: moveToRoomPoint,
+    getMapView: () => mapView,
+    setMapView,
+    // Client (viewport) coordinates of a point given in room feet.
+    roomToClient(x, y){
+      const rect = canvas.getBoundingClientRect();
+      const { scale, offX, offY } = mapLayout(canvas.width, canvas.height);
+      return { x: rect.left + (offX + x*scale) * rect.width / canvas.width, y: rect.top + (offY + y*scale) * rect.height / canvas.height };
+    },
+    // Calls fn after every redraw of the map, i.e. after any state change.
+    onDraw(fn){ drawListeners.push(fn); }
+  });
+  document.getElementById('guideBtn').addEventListener('click', () => guide.toggle());
+
+  init().then(() => guide.resume());
 })();
 </script>
 </body>

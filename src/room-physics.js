@@ -802,6 +802,37 @@
     };
   }
 
+  // ---- Default speaker placement ----
+  // Azimuth of each standard channel as seen from the listener, in degrees:
+  // 0 is straight ahead (toward the front wall, -y) and positive is to the
+  // listener's right (+x). These follow Dolby's home-theater layout
+  // guidance: fronts at 30, wides at 60, side surrounds at 100 (inside the
+  // recommended 90 to 110) and surround backs at 150 (inside 135 to 150).
+  const SPEAKER_AZIMUTH_DEG = { FL: -30, FR: 30, C: 0, SL: -100, SR: 100, SBL: -150, SBR: 150, FWL: -60, FWR: 60 };
+  // Where each named channel would normally stand for a given seat: along
+  // the line from the listener at the channel's azimuth, at the point where
+  // that line reaches a rectangle `insetFt` (default 1.5) in from the walls.
+  // A seat closer to a wall than the inset is treated as sitting on that
+  // rectangle. Returns [{ name, x, y }] in the order given; names with no
+  // entry in SPEAKER_AZIMUTH_DEG are skipped.
+  function standardSpeakerPositions(room, listener, names, insetFt){
+    const inset = insetFt ?? 1.5;
+    const x0 = inset, x1 = room.w - inset, y0 = inset, y1 = room.d - inset;
+    const lx = Math.min(x1, Math.max(x0, listener.x)), ly = Math.min(y1, Math.max(y0, listener.y));
+    const positions = [];
+    for(const name of names){
+      if(!(name in SPEAKER_AZIMUTH_DEG)) continue;
+      const az = SPEAKER_AZIMUTH_DEG[name] * Math.PI / 180;
+      const dx = Math.sin(az), dy = -Math.cos(az);
+      // distance along the ray to the first edge of the inset rectangle it meets
+      const tx = dx > 0 ? (x1 - lx) / dx : dx < 0 ? (x0 - lx) / dx : Infinity;
+      const ty = dy > 0 ? (y1 - ly) / dy : dy < 0 ? (y0 - ly) / dy : Infinity;
+      const t = Math.min(tx, ty);
+      positions.push({ name, x: lx + dx * t, y: ly + dy * t });
+    }
+    return positions;
+  }
+
   // ---- Candidate position filtering ----
   // A candidate is valid if it's inside the room, outside every off-limits zone,
   // and (if any allowed zones are defined) inside at least one allowed zone.
@@ -1287,6 +1318,8 @@
     BALANCED_FLATNESS_WEIGHT,
     PREFERRED_ZONE_BONUS_DB,
     preferredZoneBonusDb,
+    SPEAKER_AZIMUTH_DEG,
+    standardSpeakerPositions,
     isPointInRect,
     freeFloorFraction,
     isCandidateValid,

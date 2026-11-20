@@ -62,7 +62,7 @@ Default to industry-standard approaches, algorithms, and libraries over inventin
 
 # Working in this repo
 
-Modal is a browser-based room acoustics simulator: `src/room-physics.js` (pure physics/math), `src/field-render.js` (CPU/GPU rendering), `src/modal.html` (UI/DOM), `src/modal.css` (its styles), `src/room-physics.test.js` (the only test suite). No build step, no framework beyond a hand-rolled test runner. See `README.md` for what the app does; this file is about how to work on it correctly.
+Modal is a browser-based room acoustics simulator: `src/room-physics.js` (pure physics/math), `src/field-render.js` (CPU/GPU rendering), `src/modal.html` (UI/DOM), `src/modal.css` (its styles), `src/guide.js` (the setup guide's step panel, DOM only, driven through an API object from `modal.html`), `src/room-physics.test.js` (the only test suite). No build step, no framework beyond a hand-rolled test runner. See `README.md` for what the app does; this file is about how to work on it correctly.
 
 ## The architectural split (enforce this)
 
