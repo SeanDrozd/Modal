@@ -942,6 +942,27 @@ test('isCandidateValid with NO allowed zones allows anywhere in-room (not off-li
   assert.strictEqual(P.isCandidateValid(9, 9, room, [], []), true);
 });
 
+test('isCandidateValid: an exclude point with its own clearanceFt is cleared by that much, not by minSeparationFt', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const speaker = [{ x: 9, y: 9, clearanceFt: 1 }];
+  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker, 4), false, 'inside the 2x2ft box');
+  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], speaker, 4), true, 'just outside the box, well inside 4ft');
+  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker), false, 'still applies with no minSeparationFt at all');
+  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], [{ x: 9, y: 9 }], 4), false, 'a plain point keeps minSeparationFt');
+});
+
+test('isSubSource / sourceExclusionPoints: subs keep the full separation, mains get SPEAKER_CLEARANCE_FT', () => {
+  assert.strictEqual(P.isSubSource({ freqHigh: 80 }), true);
+  assert.strictEqual(P.isSubSource({ freqHigh: 150 }), true);
+  assert.strictEqual(P.isSubSource({ freqHigh: 20000 }), false);
+  assert.strictEqual(P.SPEAKER_CLEARANCE_FT, 1, 'a 2x2ft box');
+  const points = P.sourceExclusionPoints([
+    { x: 1, y: 2, freqLow: 80, freqHigh: 20000 },
+    { x: 3, y: 4, freqLow: 20, freqHigh: 80 }
+  ]);
+  assert.deepStrictEqual(points, [{ x: 1, y: 2, clearanceFt: 1 }, { x: 3, y: 4 }]);
+});
+
 console.log('\n-- freeFloorFraction --');
 
 test('freeFloorFraction is 1 with no zones and 0 with the floor fully covered', () => {
@@ -983,6 +1004,15 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
     if(!zones.some(z => P.isPointInRect(px, py, z))) free++;
   }
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
+});
+
+test('clipRectToRoom cuts a rect back to the room and drops one that lies outside it', () => {
+  const room = { w: 12, d: 10, h: 8 };
+  assert.deepStrictEqual(P.clipRectToRoom({ x: 2, y: 3, width: 4, height: 5 }, room), { x: 2, y: 3, width: 4, height: 5 }, 'inside: unchanged');
+  assert.deepStrictEqual(P.clipRectToRoom({ x: 4.5, y: 3, width: 9, height: 6.75 }, room), { x: 4.5, y: 3, width: 7.5, height: 6.75 }, 'cut at the right wall');
+  assert.deepStrictEqual(P.clipRectToRoom({ x: -1, y: 8, width: 3, height: 5 }, room), { x: 0, y: 8, width: 2, height: 2 }, 'cut at the left and back walls');
+  assert.strictEqual(P.clipRectToRoom({ x: 13, y: 2, width: 3, height: 3 }, room), null, 'wholly outside');
+  assert.strictEqual(P.clipRectToRoom({ x: 12, y: 2, width: 3, height: 3 }, room), null, 'only touching the wall');
 });
 
 console.log('\n-- scoreResponses / seatToSeatVariationDb / comparePlacements --');
@@ -1321,21 +1351,152 @@ test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre
   // only accumulate subs placed DURING this call. otherSources (mains,
   // and any subs that existed before this call) were never in it, so a
   // newly-placed sub could land right on top of one of them. Forcing the
-  // search into an allowed zone tight around an existing main makes this
-  // concrete: a 3ft square exclusion around that main should leave no valid
-  // candidate inside a 4x4ft zone centered on it.
+  // search into an allowed zone tight around an existing source makes this
+  // concrete: an existing SUB keeps the full sub-to-sub separation, so its
+  // 4ft square exclusion leaves no valid candidate inside a 4x4ft zone
+  // centered on it; a MAIN keeps a 2x2ft box, which fills a zone just
+  // inside that box.
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51 };
-  const existingMain = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
-  const allowedZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
-
-  const result = P.optimizeMultipleSubs({
-    room, otherSources: [existingMain], numSubs: 1, freqList: [40,60,80],
+  const base = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, enabled: true };
+  const existingSub = { ...base, freqLow: 20, freqHigh: 80 };
+  const existingMain = { ...base, freqLow: 80, freqHigh: 20000 };
+  const search = (otherSources, allowedZones) => P.optimizeMultipleSubs({
+    room, otherSources, numSubs: 1, freqList: [40,60,80],
     listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
     offLimitZones: [], allowedZones, gridStepFt: 0.5, subHeightFt: 1
   });
-  assert.strictEqual(result.placedSubs.length, 0,
-    `expected no valid candidate inside a zone this tight around an existing source, but placed a sub at (${result.placedSubs[0]?.x},${result.placedSubs[0]?.y})`);
+  const aroundSub = search([existingSub], [{ x: 7, y: 7, width: 4, height: 4 }]);
+  assert.strictEqual(aroundSub.placedSubs.length, 0,
+    `expected no valid candidate inside a zone this tight around an existing sub, but placed a sub at (${aroundSub.placedSubs[0]?.x},${aroundSub.placedSubs[0]?.y})`);
+  const insideMainBox = search([existingMain], [{ x: 8.1, y: 8.1, width: 1.8, height: 1.8 }]);
+  assert.strictEqual(insideMainBox.placedSubs.length, 0,
+    `expected no valid candidate inside a main speaker's 2x2ft box, but placed a sub at (${insideMainBox.placedSubs[0]?.x},${insideMainBox.placedSubs[0]?.y})`);
+});
+
+test('a main speaker only blocks a 2x2ft box, so a sub can stand right beside it', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const main = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [main], numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [{ x: 7, y: 7, width: 4, height: 4 }], gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 1, 'expected a sub to fit in a 4x4ft zone around a main speaker');
+  const sub = result.placedSubs[0];
+  assert.ok(Math.abs(sub.x - main.x) >= P.SPEAKER_CLEARANCE_FT || Math.abs(sub.y - main.y) >= P.SPEAKER_CLEARANCE_FT,
+    `expected the sub outside the main's box, got (${sub.x},${sub.y})`);
+  // 64 cells in the zone, minus the 16 inside the 2x2ft box.
+  assert.strictEqual(result.roundResults[0].allCandidates.length, 48);
+});
+
+test('REGRESSION: a small room full of speakers still has somewhere to search (12x10ft with a 7-speaker layout)', () => {
+  // Every main used to take the full sub-to-sub separation, an 8x8ft box
+  // each, which left this room with no valid candidate at all.
+  const room = { w: 12, d: 10, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const seat = { x: 6, y: 6.3, z: 3.5 };
+  const mains = P.standardSpeakerPositions(room, seat, ['FL','FR','C','SL','SR','SBL','SBR'])
+    .map(p => ({ x: p.x, y: p.y, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }));
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: mains, numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [seat], physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 1);
+  const cells = P.countGridCells(room, 0.5);
+  assert.ok(result.roundResults[0].allCandidates.length > cells * 0.7,
+    `expected most of the ${cells} cells searchable, got ${result.roundResults[0].allCandidates.length}`);
+});
+
+test('a new sub is scored as the sub that gets placed (NEW_SUB_DEFAULTS), not as a full-range source', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 70, 100, 120];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 1, freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  const best = result.roundResults[0].best;
+  const pos = { x: best.x, y: best.y, z: best.z };
+  const asPlaced = P.scoreSubPosition({ ...P.NEW_SUB_DEFAULTS, ...pos }, [], room, freqList, lp, ctx);
+  const asFullRange = P.scoreSubPosition(pos, [], room, freqList, lp, ctx);
+  approx(best.score, asPlaced.score, 1e-9, 'score of the winning candidate');
+  assert.ok(Math.abs(asPlaced.score - asFullRange.score) > 1, 'expected the 80Hz low-pass to change the score above 80Hz');
+  assert.strictEqual(result.placedSubs[0].freqHigh, P.NEW_SUB_DEFAULTS.freqHigh);
+});
+
+test('scanGridCandidates: candidateTemplate and timeAlignTo score each candidate as the sub that will stand there', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [50, 80, 110];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const main = { id: 1, x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 7, freqLow: 80, freqHigh: 20000, enabled: true };
+  const template = { id: 2, levelDb: -6, delayMs: 3, freqLow: 20, freqHigh: 100, rolloffDbPerOct: 12 };
+  const opts = {
+    room, otherSources: [main], freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 3, subHeightFt: 1, candidateTemplate: template
+  };
+  // Template only: the candidate keeps the template's own delay, the main its own.
+  for(const c of [...P.scanGridCandidates(opts)].filter(Boolean)){
+    const expected = P.scoreSubPosition({ ...template, x: c.x, y: c.y, z: c.z }, [main], room, freqList, lp, ctx);
+    approx(c.score, expected.score, 1e-9, `template score at (${c.x},${c.y})`);
+  }
+  // With timeAlignTo, both sources get the delays time alignment gives them with the candidate in place.
+  const listener = { x: 9, y: 9, z: 3.5 };
+  let differs = false;
+  for(const c of [...P.scanGridCandidates({ ...opts, timeAlignTo: listener })].filter(Boolean)){
+    const [alignedMain, alignedSub] = P.timeAlignedSources([main, { ...template, x: c.x, y: c.y, z: c.z }], listener);
+    const expected = P.scoreSubPosition(alignedSub, [alignedMain], room, freqList, lp, ctx);
+    approx(c.score, expected.score, 1e-9, `time-aligned score at (${c.x},${c.y})`);
+    const unaligned = P.scoreSubPosition({ ...template, x: c.x, y: c.y, z: c.z }, [main], room, freqList, lp, ctx);
+    if(Math.abs(unaligned.score - expected.score) > 0.1) differs = true;
+  }
+  assert.ok(differs, 'expected time alignment to change at least one candidate score');
+});
+
+test('scanGridCandidates: nullAvoidance\'s spread penalty counts other subs only, not main speakers', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 60];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const scan = (excludePoints) => [...P.scanGridCandidates({
+    room, otherSources: [], freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [{ x: 5, y: 1, width: 1, height: 1 }], gridStepFt: 0.5, subHeightFt: 1,
+    excludePoints, minSeparationFt: 3, mode: 'nullAvoidance'
+  })].filter(Boolean);
+  const alone = scan([]);
+  const nearSpeaker = scan([{ x: 2, y: 1.5, clearanceFt: P.SPEAKER_CLEARANCE_FT }]);
+  const nearSub = scan([{ x: 2, y: 1.5 }]);
+  assert.ok(alone.length > 0 && nearSpeaker.length === alone.length && nearSub.length === alone.length);
+  alone.forEach((c, i) => {
+    approx(nearSpeaker[i].score, c.score, 1e-9, 'a speaker 3ft away should not cost anything');
+    assert.ok(nearSub[i].score < c.score - 1, 'a sub 3ft away should cost a spread penalty');
+  });
+});
+
+test('polishSubPlacements scores each sub as itself: its own level and passband, time-aligned when asked', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 70, 100];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const subs = [
+    { id: 1, x: 1.5, y: 1.5, z: 1, levelDb: -6, delayMs: 0, freqLow: 20, freqHigh: 60, enabled: true },
+    { id: 2, x: 16.5, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 120, enabled: true }
+  ];
+  const result = P.polishSubPlacements({
+    room, otherSources: [], subs, freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 1.5, timeAlignTo: listener
+  });
+  // The first round searched for sub 1 with sub 2 still at its starting position.
+  const first = result.polishResults[0].best;
+  const [alignedOther, alignedCandidate] = P.timeAlignedSources([subs[1], { ...subs[0], x: first.x, y: first.y, z: first.z }], listener);
+  const expected = P.scoreSubPosition(alignedCandidate, [alignedOther], room, freqList, lp, ctx);
+  approx(first.score, expected.score, 1e-9, 'first polish round\'s best score');
+  assert.strictEqual(result.placedSubs[0].levelDb, -6);
+  assert.strictEqual(result.placedSubs[0].freqHigh, 60);
 });
 
 test('minSeparationFt is configurable and respected', () => {
@@ -1796,6 +1957,26 @@ test('returns one entry per source, in the same order, empty array for no source
   assert.deepStrictEqual(result.map(r => r.id), ['a', 'b', 'c']);
 });
 
+test('timeAlignDelays rounds to stepMs when given one, and timeAlignedSources applies the app\'s 0.1ms step', () => {
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const sources = [
+    { id: 1, x: 4.67, y: 1.5, z: 3, delayMs: 0, name: 'FL' },
+    { id: 2, x: 16, y: 12.3, z: 1, delayMs: 5, name: 'SW1' }
+  ];
+  const exact = P.timeAlignDelays(sources, listener);
+  const rounded = P.timeAlignDelays(sources, listener, P.TIME_ALIGN_STEP_MS);
+  assert.strictEqual(P.TIME_ALIGN_STEP_MS, 0.1);
+  exact.forEach((e, i) => {
+    assert.strictEqual(rounded[i].id, e.id);
+    assert.strictEqual(rounded[i].delayMs, Math.round(e.delayMs * 10) / 10);
+  });
+  assert.ok(exact.some((e, i) => e.delayMs !== rounded[i].delayMs), 'expected at least one delay to actually round');
+  const aligned = P.timeAlignedSources(sources, listener);
+  assert.deepStrictEqual(aligned.map(s => s.delayMs), rounded.map(r => r.delayMs));
+  assert.strictEqual(aligned[1].name, 'SW1', 'other fields are kept');
+  assert.strictEqual(sources[1].delayMs, 5, 'the input is not mutated');
+});
+
 console.log('\n-- earPositions / fieldDbAtEars --');
 
 test('ears are offset by the correct total spacing (~0.17m / ~0.558ft)', () => {
@@ -2200,6 +2381,34 @@ testAsync('optimizeSubPlacementAsync applies the same preferred-zone bonus as op
   const syncResult = P.optimizeSubPlacement(opts);
   const asyncResult = await P.optimizeSubPlacementAsync(opts);
   assert.deepStrictEqual(asyncResult.best, syncResult.best, 'async best should exactly match sync best with a preferred zone applied');
+});
+
+testAsync('async twins match the sync optimizers with timeAlignTo, speaker clearance and per-sub templates', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const mains = [
+    { id: 1, x: 4.67, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { id: 2, x: 13.33, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const opts = {
+    room, otherSources: mains, numSubs: 2, freqList: [40, 70, 100], listenerPositions: [listener], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1.5, subHeightFt: 1, mode: 'nullAvoidance', timeAlignTo: listener
+  };
+  const syncResult = P.optimizeMultipleSubs(opts);
+  const asyncResult = await P.optimizeMultipleSubsAsync(opts);
+  assert.deepStrictEqual(asyncResult.placedSubs, syncResult.placedSubs);
+  assert.deepStrictEqual(asyncResult.roundResults.map(r => r.best), syncResult.roundResults.map(r => r.best));
+
+  const subs = [
+    { id: 3, x: 1.5, y: 12, z: 1, levelDb: -3, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 4, x: 16.5, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 100, enabled: true }
+  ];
+  const polishOpts = { ...opts, subs, subHeightFt: undefined };
+  const syncPolish = P.polishSubPlacements(polishOpts);
+  const asyncPolish = await P.polishSubPlacementsAsync(polishOpts);
+  assert.deepStrictEqual(asyncPolish.placedSubs, syncPolish.placedSubs);
+  assert.deepStrictEqual(asyncPolish.polishResults.map(r => r.best), syncPolish.polishResults.map(r => r.best));
 });
 
 (async () => {

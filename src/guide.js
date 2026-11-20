@@ -577,7 +577,7 @@
         app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
         refresh();
       });
-      runBtn.addEventListener('click', async () => {
+      async function run(){
         runBtn.disabled = true;
         result.innerHTML = '';
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
@@ -595,7 +595,8 @@
         const scroller = panel.parentElement, card = result.getBoundingClientRect();
         const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;
         if(hidden > 0) scroller.scrollBy(0, Math.min(hidden, card.top - scroller.getBoundingClientRect().top));
-      });
+      }
+      runBtn.addEventListener('click', run);
       result.addEventListener('click', (e) => {
         const id = e.target.closest('button') && e.target.closest('button').id;
         if(id === 'guideApplyBtn'){
@@ -631,6 +632,7 @@
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();
+      if(app.optimizerRunning()) run(); // the step was left and re-entered mid-search: rejoin it instead of offering a second one
       return refresh;
     }
 

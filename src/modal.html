@@ -355,8 +355,7 @@ function applyAppearanceAttrs(mode, theme){
   // every map marker legible over any heatmap color or floor tint.
   const LISTENER_COLOR = '#f5d547';
   const MAP_INK = '#0b0e12';
-  // A source counts as a sub when its passband tops out at or below 150 Hz.
-  function isSubSource(s){ return s.freqHigh <= 150; }
+  const isSubSource = RoomPhysics.isSubSource;
   // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
   // channel abbreviations and layout order (5.1 -> 7.1 -> 9.1, the last two
   // being the "wide" pair some 9-channel receivers add): front left/right,
@@ -572,14 +571,25 @@ function applyAppearanceAttrs(mode, theme){
   // sidebar's Room fields and the setup guide; the sidebar field is written
   // back so it shows the stored value whichever of the two made the change.
   const ROOM_DIM_FIELDS = { w: 'roomWField', d: 'roomDField', h: 'roomHField' };
+  // A smaller room keeps everything in it: a speaker or seat the wall or
+  // ceiling passed moves in with it, a zone is cut back to the room, and a
+  // zone left wholly outside is removed.
   function setRoomDim(dim, ft){
     if(dim === 'h'){
       room.h = Math.min(ROOM_MAX_H_FT, Math.max(ROOM_MIN_FT, ft || 8));
-      for(const r of listenerRows){ if(r.z > room.h) r.z = room.h; }
+      for(const p of listenerRows.concat(sources)){ if(p.z > room.h) p.z = room.h; }
     } else {
       room[dim] = Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5)));
-      updateFloorCoverageWarning();
+      for(const p of listenerRows.concat(sources)) Object.assign(p, insideRoom(p.x, p.y));
+      const clip = (zones) => zones.map(z => { const r = RoomPhysics.clipRectToRoom(z, room); return r && Object.assign(z, r); }).filter(Boolean);
+      offLimitZones = clip(offLimitZones);
+      allowedZones = clip(allowedZones);
+      preferredZones = clip(preferredZones);
+      renderZoneList();
     }
+    autoTimeAlign();
+    renderSrcList();
+    renderListenerRowsList();
     writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
     draw();
     return room[dim];
@@ -822,9 +832,18 @@ function applyAppearanceAttrs(mode, theme){
     lastSnapshotJSON = nowJSON;
     updateUndoRedoButtons();
   }
+  // An edit made within the last 500 ms is still waiting on its debounced
+  // snapshot. Undo and redo record it first, so it is the step that gets
+  // undone (or, for redo, a fresh change that clears the redo branch)
+  // instead of being silently folded into the step before it.
+  function flushPendingUndoSnapshot(){
+    if(!undoSnapshotTimer) return;
+    clearTimeout(undoSnapshotTimer);
+    commitUndoSnapshotIfChanged();
+  }
   function undo(){
+    flushPendingUndoSnapshot();
     if(undoStack.length === 0) return;
-    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
     redoStack.push(currentSnapshotJSON());
     const prev = undoStack.pop();
     isRestoringHistory = true;
@@ -835,8 +854,8 @@ function applyAppearanceAttrs(mode, theme){
     updateUndoRedoButtons();
   }
   function redo(){
+    flushPendingUndoSnapshot();
     if(redoStack.length === 0) return;
-    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
     undoStack.push(currentSnapshotJSON());
     const next = redoStack.pop();
     isRestoringHistory = true;
@@ -1727,8 +1746,8 @@ function applyAppearanceAttrs(mode, theme){
   // the next move.
   // The delay automatic time-align gives each of these sources, id -> ms.
   function alignedDelays(activeSources){
-    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
-    return new Map(results.map(r => [r.id, Math.round(r.delayMs * 10) / 10])); // match the 0.1ms slider step
+    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow(), RoomPhysics.TIME_ALIGN_STEP_MS); // the 0.1 ms slider step
+    return new Map(results.map(r => [r.id, r.delayMs]));
   }
   function autoTimeAlign(){
     if(!autoTimeAlignEnabled) return;
@@ -1876,6 +1895,23 @@ function applyAppearanceAttrs(mode, theme){
     }));
   }
 
+  // A private copy of everything a search reads. The page stays live while
+  // a search runs (it yields to the browser between chunks), so the search
+  // works on this copy and an edit made meanwhile cannot change the room,
+  // sources, zones or seats under it. timeAlignTo is set when applying the
+  // result will re-run automatic time-align, so candidates are scored with
+  // the delays they will really get.
+  function optimizerScene(){
+    const scene = JSON.parse(JSON.stringify({
+      physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+      sources: sourcesEnabled ? sources.filter(s => s.enabled !== false) : [],
+      listenerPositions: buildOptimizerListenerPositions(),
+      timeAlignTo: autoTimeAlignEnabled ? primaryRow() : undefined
+    }));
+    scene.room = scene.physicsCtx.room;
+    return scene;
+  }
+
   async function runSubOptimizer(){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
@@ -1887,13 +1923,12 @@ function applyAppearanceAttrs(mode, theme){
     if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
 
     const freqList = buildOptimizerFreqList(freqLow, freqHigh);
-    const activeMains = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    const listenerPositions = buildOptimizerListenerPositions();
+    const scene = optimizerScene();
 
     const result = await RoomPhysics.optimizeMultipleSubsAsync({
-      room, otherSources: activeMains, numSubs, freqList, listenerPositions,
-      physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
-      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
+      room: scene.room, otherSources: scene.sources, numSubs, freqList, listenerPositions: scene.listenerPositions,
+      physicsCtx: scene.physicsCtx, offLimitZones: scene.offLimitZones, allowedZones: scene.allowedZones, preferredZones: scene.preferredZones,
+      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode, timeAlignTo: scene.timeAlignTo,
       onProgress: optimizerStatusUpdater(status, numSubs),
       onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
     });
@@ -1949,18 +1984,18 @@ function applyAppearanceAttrs(mode, theme){
 
     const freqList = buildOptimizerFreqList(freqLow, freqHigh);
 
-    // Gated by sourcesEnabled (the master "All" mute toggle), matching every
-    // other active-sources computation in this file (e.g. runSubOptimizer's
-    // activeMains) -- otherwise this workflow would keep optimizing against
-    // sources the rest of the app currently treats as muted.
-    const existingSubs = sourcesEnabled ? sources.filter(s => s.enabled !== false && isSubSource(s)) : [];
-    const otherSources = sourcesEnabled ? sources.filter(s => s.enabled !== false && !isSubSource(s)) : [];
+    // scene.sources is gated by sourcesEnabled (the master "All" mute
+    // toggle), matching every other active-sources computation in this
+    // file. Otherwise this workflow would keep optimizing against sources
+    // the rest of the app currently treats as muted.
+    const scene = optimizerScene();
+    const { room, offLimitZones, allowedZones, preferredZones, listenerPositions, timeAlignTo } = scene;
+    const existingSubs = scene.sources.filter(isSubSource);
+    const otherSources = scene.sources.filter(s => !isSubSource(s));
     if(existingSubs.length === 0){
       status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
       return;
     }
-
-    const listenerPositions = buildOptimizerListenerPositions();
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
     let refinedSubs, lastBest, lastAllCandidates, movedCount;
@@ -1968,8 +2003,9 @@ function applyAppearanceAttrs(mode, theme){
     if(existingSubs.length === 1){
       const result = await RoomPhysics.optimizeSubPlacementAsync({
         room, otherSources, freqList, listenerPositions,
-        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+        physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
+        excludePoints: RoomPhysics.sourceExclusionPoints(otherSources), candidateTemplate: existingSubs[0], timeAlignTo,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
       const moved = result.best !== null && (result.best.x !== existingSubs[0].x || result.best.y !== existingSubs[0].y);
@@ -1980,8 +2016,8 @@ function applyAppearanceAttrs(mode, theme){
     } else {
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
-        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
-        gridStepFt: step, mode: optimizerMode,
+        physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
+        gridStepFt: step, mode: optimizerMode, timeAlignTo,
         onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield
       });
       refinedSubs = result.placedSubs;
@@ -3670,8 +3706,14 @@ function applyAppearanceAttrs(mode, theme){
   // Runs one of the two optimizer workflows: refine the existing subs in
   // place (`reoptimize`) or search for positions for new ones. Shared by the
   // sidebar buttons and the setup guide. Once it resolves, optimizerResult
-  // holds the suggestion, if the search found one.
-  async function startOptimizer(reoptimize){
+  // holds the suggestion, if the search found one. Only one search runs at
+  // a time: a call made while one is in flight joins it.
+  let optimizerRun = null; // the promise of the search in flight, if any
+  function startOptimizer(reoptimize){
+    if(!optimizerRun) optimizerRun = runOptimizerWorkflow(reoptimize).finally(() => { optimizerRun = null; });
+    return optimizerRun;
+  }
+  async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
     setOptimizerButtonsDisabled(true);
     const acceptBtn = document.getElementById('acceptOptimizerBtn');
@@ -3885,14 +3927,16 @@ function applyAppearanceAttrs(mode, theme){
     return true;
   }
 
+  // (x, y) kept just inside the walls.
+  function insideRoom(x, y){
+    return { x: Math.max(0.2, Math.min(room.w-0.2, x)), y: Math.max(0.2, Math.min(room.d-0.2, y)) };
+  }
   // Moves a source or a listening row (by id) to a point in the room, kept
   // just inside the walls. Used by map drags and by the setup guide's typed
   // wall distances.
   function moveToRoomPoint(id, x, y){
-    const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
-    const s = sources.find(s=>s.id===id);
-    if(s){ s.x = cx; s.y = cy; }
-    else { const r = listenerRows.find(r=>r.id===id); if(r){ r.x = cx; r.y = cy; } }
+    const target = sources.find(s=>s.id===id) || listenerRows.find(r=>r.id===id);
+    if(target) Object.assign(target, insideRoom(x, y));
     autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
     scheduleDraw();
   }
@@ -4123,13 +4167,16 @@ function applyAppearanceAttrs(mode, theme){
     setOptimizerMode,
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
-    // search runs. Resolves when it is done; see optimizerOutcome.
+    // search runs. Resolves when it is done; see optimizerOutcome. Called
+    // while a search is already running, it joins that one and takes over
+    // its progress reports.
     async runOptimizer(newSubs, onProgress){
       const reoptimize = sources.some(isSubSource);
-      if(!reoptimize) document.getElementById('optNumSubs').value = newSubs;
+      if(!reoptimize && !optimizerRun) document.getElementById('optNumSubs').value = newSubs;
       optimizerProgressListener = onProgress;
       try { await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
     },
+    optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
     wallDistances: (pos) => RoomPhysics.nearestWallDistances(pos, room),
