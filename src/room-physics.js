@@ -194,7 +194,7 @@
   // coefficient (alpha, evaluated at that mode's OWN resonance frequency
   // f_n -- the same alpha convention estimatedT60 already uses):
   //
-  //   delta_n = (c / 4V) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s)
+  //   delta_n = (c / 8) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s) / (integral of psi_n^2 over the room)
   //
   // Because psi_n factors into cos(nx..)*cos(ny..)*cos(nz..), each surface's
   // integral collapses to a simple product of per-axis L/eps(n) terms -- e.g.
@@ -204,21 +204,27 @@
   //   S_x = (Ly/eps(ny)) * (Lz/eps(nz))   -- shared by left+right
   //   S_y = (Lx/eps(nx)) * (Lz/eps(nz))   -- shared by front+back
   //   S_z = (Lx/eps(nx)) * (Ly/eps(ny))   -- shared by floor+ceiling
-  // This genuinely varies per mode under UNIFORM absorption too (a pure axial
-  // mode's along-wall eps(0)=1 vs an oblique mode's eps>1 on multiple axes) --
-  // that's real physics (different mode families couple to the boundaries
-  // differently), not a bug. What SHOULD hold in the uniform-absorption case
-  // is a looser, statistical one: delta_n averaged across many modes should
-  // track alpha*S_total/(4V) (the Eyring-equivalent quantity) -- see the
-  // cross-check test tying this to estimatedT60's existing Eyring output.
+  // and the volume integral is V / (eps(nx)*eps(ny)*eps(nz)). Dividing by
+  // the volume integral, not by V alone, is what gives each mode family its
+  // own decay rate: with uniform absorption an oblique mode decays at exactly
+  // the Sabine rate alpha*S_total/(4V) (the diffuse-field limit, which is
+  // where the alpha = 8 * wall admittance relation behind the 1/8 comes
+  // from), a tangential mode somewhat slower and an axial mode slowest, the
+  // classic result for a rectangular room (Morse; Kuttruff). Per pair of
+  // walls this is alpha * eps(n along that axis) / (4 * L of that axis).
   //
   // Units: this formula is naturally a TEMPORAL damping rate (1/s, Kuttruff's
   // own convention). The complex denominator in precomputeModalField is
   // written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which needs
   // delta_n in units of 1/m (spatial) instead -- i.e. this temporal rate
-  // divided by c. The code below folds that division in directly (1/(4V)
-  // rather than c/(4V), since the c's cancel) rather than computing a
-  // temporal rate and converting it separately.
+  // divided by c. The code below folds that division in directly (the c's
+  // cancel) rather than computing a temporal rate and converting it
+  // separately.
+  //
+  // The (0,0,0) mode is included: it is the uniform pressurization of a
+  // closed room ("room gain"), which is most of the response below the first
+  // room mode. Its k_n is 0 and its mode shape is 1 everywhere, so it adds
+  // the same pressure at every point and is damped like any other mode.
   function enumerateModes(ctx, cutoffFreq){
     cutoffFreq = cutoffFreq ?? MODE_CUTOFF_HZ;
     const { room } = ctx;
@@ -235,7 +241,6 @@
     for(let nx = 0; nx <= maxNx; nx++){
       for(let ny = 0; ny <= maxNy; ny++){
         for(let nz = 0; nz <= maxNz; nz++){
-          if(nx === 0 && ny === 0 && nz === 0) continue; // not a propagating mode (DC/uniform pressure)
           const kn = Math.PI * Math.sqrt((nx/Lx)**2 + (ny/Ly)**2 + (nz/Lz)**2);
           const fn = C * kn / (2 * Math.PI);
           if(fn > cutoffFreq) continue;
@@ -247,12 +252,9 @@
           const Sy = (Lx / epsX) * (Lz / epsZ);
           const Sz = (Lx / epsX) * (Ly / epsY);
           const absorptionOf = (surfaceName) => surfaceAbsorptionAtFreq(surfaceName, fn, ctx);
-          // Kuttruff's coupled-mode damping is naturally a TEMPORAL rate (1/s):
-          // delta_n_temporal = (c/4V) * sum(...). The complex denominator below
-          // is written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which
-          // needs delta_n in units of 1/m (spatial), i.e. delta_n_temporal/c --
-          // the c cancels the leading (c/4V), leaving just 1/(4V) here.
-          const deltaN = (1 / (4 * V)) * (
+          // Spatial (1/m) form of the damping rate above: the surface integrals
+          // over the mode's own volume integral V/(epsX*epsY*epsZ), times 1/8.
+          const deltaN = (epsX * epsY * epsZ / (8 * V)) * (
             absorptionOf('left') * Sx + absorptionOf('right') * Sx +
             absorptionOf('front') * Sy + absorptionOf('back') * Sy +
             absorptionOf('floor') * Sz + absorptionOf('ceil') * Sz

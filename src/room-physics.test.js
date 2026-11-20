@@ -475,25 +475,80 @@ test("DEMONSTRATION: on-resonance peak magnitude grows as a mode's damping decre
   }
 });
 
-test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks estimatedT60\'s Eyring estimate (same order of magnitude, not exact equality)', () => {
-  // These measure genuinely different things -- one mode's own decay vs a
-  // diffuse-field room average -- so exact equality isn't expected (see
-  // enumerateModes' comment on why per-mode damping varies by mode index even
-  // under uniform absorption). This just confirms they're in the same
-  // ballpark and both derived from the same underlying wall absorption.
+test('uniform absorption: each mode family decays at its own classic fraction of the Sabine rate', () => {
+  // With the same absorption on all six surfaces, a mode's damping is
+  // alpha * sum over axes of eps(n on that axis) / (4 * L of that axis): the
+  // Sabine rate alpha*S/(4V) exactly for every oblique mode, less for a
+  // tangential mode and least for an axial one (Morse; Kuttruff).
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallAbsorption: 0.51 }; // uniform absorption on every surface
-  const modes = P.enumerateModes(ctx);
-  const mode = modes.find(m => m.fn > 100 && m.fn < 200);
-  assert.ok(mode, 'expected a mode in the 100-200Hz range for this room');
-  // delta_n here is spatial (1/m); the temporal damping rate is delta_n*c,
-  // and T60 (60dB energy decay, e^{-delta_temporal*t}) is ln(1e6)/delta_temporal.
-  const deltaTemporal = mode.deltaN * P.C;
-  const t60FromMode = Math.log(1e6) / deltaTemporal;
-  const t60Eyring = P.estimatedT60(room, mode.fn, ctx);
-  const ratio = t60FromMode / t60Eyring;
-  assert.ok(ratio > 0.3 && ratio < 3,
-    `expected same-order-of-magnitude T60 estimates: fromMode=${t60FromMode.toFixed(3)}s eyring=${t60Eyring.toFixed(3)}s ratio=${ratio.toFixed(2)}`);
+  const alpha = 0.1;
+  const modes = P.enumerateModes({ room, wallAbsorption: alpha });
+  const L = [room.w, room.d, room.h].map(ft => ft * P.FT_TO_M);
+  const sabine = (alpha / 2) * (1/L[0] + 1/L[1] + 1/L[2]); // alpha*S/(4V), in 1/m like deltaN
+  const counts = { axial: 0, tangential: 0, oblique: 0 };
+  for(const m of modes){
+    const n = [m.nx, m.ny, m.nz];
+    const nonZero = n.filter(v => v > 0).length;
+    if(nonZero === 0) continue; // the (0,0,0) mode has its own test below
+    const expected = (alpha / 4) * n.reduce((sum, v, i) => sum + (v > 0 ? 2 : 1) / L[i], 0);
+    approx(m.deltaN, expected, 1e-12, `mode (${n.join(',')})`);
+    if(nonZero === 3) approx(m.deltaN / sabine, 1, 1e-9, `oblique mode (${n.join(',')}) vs the Sabine rate`);
+    else assert.ok(m.deltaN < sabine, `expected mode (${n.join(',')}) to decay slower than the Sabine rate`);
+    counts[nonZero === 1 ? 'axial' : nonZero === 2 ? 'tangential' : 'oblique']++;
+  }
+  assert.ok(counts.axial > 0 && counts.tangential > 0 && counts.oblique > 0, `expected all three mode families, got ${JSON.stringify(counts)}`);
+  // An x-axial mode: its two end walls count double, the other four surfaces once.
+  const axialX = modes.find(m => m.nx === 1 && m.ny === 0 && m.nz === 0);
+  approx(axialX.deltaN / sabine, (2/L[0] + 1/L[1] + 1/L[2]) / (2 * (1/L[0] + 1/L[1] + 1/L[2])), 1e-9, 'x-axial mode vs the Sabine rate');
+});
+
+test('an oblique mode\'s own decay time equals the Sabine T60 for a lightly damped room', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.05 };
+  const mode = P.enumerateModes(ctx).find(m => m.nx > 0 && m.ny > 0 && m.nz > 0);
+  // delta_n is spatial (1/m); the energy decay rate is delta_n*c, and T60 is ln(1e6) over it.
+  const t60FromMode = Math.log(1e6) / (mode.deltaN * P.C);
+  const m2 = P.FT_TO_M ** 2, m3 = P.FT_TO_M ** 3;
+  const surface = 2 * (room.w*room.d + room.w*room.h + room.d*room.h) * m2;
+  const t60Sabine = 24 * Math.log(10) / P.C * (room.w*room.d*room.h * m3) / (0.05 * surface);
+  approx(t60FromMode / t60Sabine, 1, 1e-9, 'oblique-mode T60 vs Sabine');
+  // Eyring's estimate sits just under Sabine's at this absorption.
+  const ratioToEyring = t60FromMode / P.estimatedT60(room, mode.fn, ctx);
+  assert.ok(ratioToEyring > 1 && ratioToEyring < 1.05, `expected the mode's T60 just above Eyring's, got ratio ${ratioToEyring.toFixed(3)}`);
+});
+
+test('the (0,0,0) pressure-zone mode is enumerated, uniform across the room and lightly damped', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const alpha = 0.1;
+  const modes = P.enumerateModes({ room, wallAbsorption: alpha });
+  const zero = modes.filter(m => m.nx === 0 && m.ny === 0 && m.nz === 0);
+  assert.strictEqual(zero.length, 1, 'expected exactly one (0,0,0) mode');
+  const m = zero[0];
+  assert.strictEqual(m.kn, 0);
+  assert.strictEqual(m.fn, 0);
+  assert.ok(m.invLx === 0 && m.invLy === 0 && m.invLz === 0, 'expected a mode shape of 1 everywhere');
+  const L = [room.w, room.d, room.h].map(ft => ft * P.FT_TO_M);
+  approx(m.deltaN, (alpha / 4) * (1/L[0] + 1/L[1] + 1/L[2]), 1e-12, 'half the Sabine rate');
+  approx(m.An, P.C * P.C / (L[0] * L[1] * L[2]), 1e-9, 'c^2/V');
+});
+
+test('below the first room mode the pressure-zone mode dominates: the level is nearly the same everywhere and rises toward low frequency', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.1 };
+  const source = { x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 1, freqHigh: 20000 };
+  const [firstMode] = P.axialModes(room.w, 1, 300); // about 31 Hz
+  assert.ok(firstMode > 30, `expected the first mode above 30Hz, got ${firstMode}`);
+  const at = (x, y, z, f) => P.fieldDbAtPoint(x, y, z, [source], f, ctx);
+  // 10 Hz, a third of the first mode's frequency: far corner, room center and a few feet from the source.
+  const levels = [at(17, 1, 7, 10), at(9, 6.75, 4, 10), at(6, 9, 3, 10)];
+  assert.ok(Math.max(...levels) - Math.min(...levels) < 3, `expected under 3dB of variation across the room at 10Hz, got ${levels.map(v => v.toFixed(1)).join(', ')}`);
+  // The zero mode's term goes as 1/k^2: 12 dB per octave.
+  approx(at(9, 6.75, 4, 5) - at(9, 6.75, 4, 10), 12, 1.5, 'rise from 10Hz down to 5Hz at the room center');
+  // Without the mode, the room center (on the first x and y modes' nodal planes) would read far lower.
+  const without = P.enumerateModes(ctx).filter(m => m.kn > 0);
+  const { re, im } = P.computeFieldAtPoint(9, 6.75, 4, P.precomputeModalField([source], 10, ctx, without));
+  const dbWithout = 20 * Math.log10(Math.hypot(re, im));
+  assert.ok(at(9, 6.75, 4, 10) - dbWithout > 10, `expected the pressure-zone mode to add over 10dB at the room center at 10Hz, got ${(at(9, 6.75, 4, 10) - dbWithout).toFixed(1)}`);
 });
 
 console.log('\n-- isNearNull / dB sensitivity near interference nulls --');
