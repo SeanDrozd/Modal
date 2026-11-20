@@ -6,7 +6,8 @@
    same properties (see readThemeColors() in modal.html), so the map outline
    and the frequency response chart follow the theme too. The heatmap's own
    colormap is deliberately not a token: a given dB reading looks the same
-   under every theme. */
+   under every theme. --floor and --wall are the map's own pair: the floor
+   tint of the "Floor plan" view and the wall stroke around the room. */
 
 /* Mode-level tokens: the same in every theme, since they are data colors
    (chart series, the listening-position/sweep marker) or native-control
@@ -39,6 +40,7 @@
   --text: #e8ecf1; --text-dim: #94a0b0;
   --accent: #4fb0e8; --on-accent: #06121b;
   --good: #4fe89a; --bad: #f07272;
+  --floor: #232c37; --wall: #b4c0cf;
 }
 :root[data-mode="light"], [data-mode="light"] [data-theme="studio"] {
   --bg: #eef1f4; --panel: #ffffff; --panel-2: #f1f4f7;
@@ -46,6 +48,7 @@
   --text: #18202a; --text-dim: #566270;
   --accent: #0b6fae; --on-accent: #ffffff;
   --good: #0f7a45; --bad: #c23434;
+  --floor: #e3e8ee; --wall: #3a4654;
 }
 [data-theme="walnut"] {
   --bg: #12100d; --panel: #1c1814; --panel-2: #26201a;
@@ -53,6 +56,7 @@
   --text: #f0e9df; --text-dim: #ab9e8e;
   --accent: #e3a23f; --on-accent: #1c1203;
   --good: #93d07c; --bad: #f0796a;
+  --floor: #30271d; --wall: #d2c4b2;
 }
 [data-mode="light"][data-theme="walnut"], [data-mode="light"] [data-theme="walnut"] {
   --bg: #f1ebe2; --panel: #fffdf9; --panel-2: #f4eee5;
@@ -60,6 +64,7 @@
   --text: #2a2118; --text-dim: #675949;
   --accent: #8f5200; --on-accent: #ffffff;
   --good: #2c7436; --bad: #b5382b;
+  --floor: #e9d9c1; --wall: #4a3b2b;
 }
 [data-theme="midnight"] {
   --bg: #090b17; --panel: #111428; --panel-2: #191d38;
@@ -67,6 +72,7 @@
   --text: #e7e9f8; --text-dim: #989dc4;
   --accent: #a995ff; --on-accent: #110a33;
   --good: #5fe0a8; --bad: #f47a93;
+  --floor: #20254a; --wall: #bcc1e6;
 }
 [data-mode="light"][data-theme="midnight"], [data-mode="light"] [data-theme="midnight"] {
   --bg: #eceef8; --panel: #ffffff; --panel-2: #eff0fa;
@@ -74,6 +80,7 @@
   --text: #171a33; --text-dim: #555a80;
   --accent: #5a3fd0; --on-accent: #ffffff;
   --good: #0f7a56; --bad: #bf3050;
+  --floor: #e1e4f5; --wall: #363b68;
 }
 [data-theme="signal"] {
   --bg: #0e0e0e; --panel: #181818; --panel-2: #212121;
@@ -81,6 +88,7 @@
   --text: #eeeeee; --text-dim: #a0a0a0;
   --accent: #ff8a3d; --on-accent: #1f0d00;
   --good: #5fd38d; --bad: #f25f6b;
+  --floor: #2a2a2a; --wall: #c4c4c4;
 }
 [data-mode="light"][data-theme="signal"], [data-mode="light"] [data-theme="signal"] {
   --bg: #ededed; --panel: #ffffff; --panel-2: #f2f2f2;
@@ -88,6 +96,7 @@
   --text: #1c1c1c; --text-dim: #5c5c5c;
   --accent: #b84a00; --on-accent: #ffffff;
   --good: #1b7a44; --bad: #c22f3d;
+  --floor: #e2e2e2; --wall: #3d3d3d;
 }
 * { box-sizing: border-box; }
 body {
@@ -264,6 +273,10 @@ canvas.dragging { cursor: grabbing; }
   display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 10px;
   font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap;
 }
+#pressureLegend { display: inline-flex; align-items: center; gap: 4px; }
+#pressureLegend[hidden] { display: none; }
+.legend-key { display: inline-flex; align-items: center; gap: 5px; }
+.legend-key svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; }
 #legend .swatch { display: inline-block; width: 60px; height: 10px; border-radius: 2px; vertical-align: middle; margin: 0 6px; }
 #info { font-size: 12.5px; color: var(--text-dim); text-align: center; margin-top: 8px; }
 .stat-chip {

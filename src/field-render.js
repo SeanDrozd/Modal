@@ -67,7 +67,7 @@
     uniform float uDbMax;
     uniform int uCount;         // number of valid entries in the textures below
     uniform bool uDebugMode;    // true: encode raw dB into RGBA instead of colormap (for CPU/GPU verification)
-    uniform int uColormapId;    // 0=thermal (default), 1=full spectrum, 2=viridis (colorblind-safe)
+    uniform int uColormapId;    // 0=thermal, 1=full spectrum, 2=viridis (colorblind-safe), 3=cool to warm (default)
 
     // Per-mode data, packed into two float textures instead of uniform arrays
     // (see MODE_TEX_W/H in JS -- this sidesteps WebGL1's small uniform-vector
@@ -144,10 +144,34 @@
       return mix(c3, c4, (t-0.75)/0.25);
     }
 
+    // Cool to warm: Moreland's smooth diverging map (blue through a muted
+    // grey to red), sampled at 9 evenly spaced stops from his published
+    // table. Reads as "quiet to loud" without the banding of a rainbow.
+    vec3 colormapCoolwarm(float t){
+      vec3 c0 = vec3(59.0,76.0,192.0)/255.0;
+      vec3 c1 = vec3(98.0,130.0,234.0)/255.0;
+      vec3 c2 = vec3(141.0,176.0,254.0)/255.0;
+      vec3 c3 = vec3(184.0,208.0,249.0)/255.0;
+      vec3 c4 = vec3(221.0,221.0,221.0)/255.0;
+      vec3 c5 = vec3(245.0,196.0,173.0)/255.0;
+      vec3 c6 = vec3(244.0,154.0,123.0)/255.0;
+      vec3 c7 = vec3(222.0,96.0,77.0)/255.0;
+      vec3 c8 = vec3(180.0,4.0,38.0)/255.0;
+      if(t < 0.125) return mix(c0, c1, t/0.125);
+      if(t < 0.25) return mix(c1, c2, (t-0.125)/0.125);
+      if(t < 0.375) return mix(c2, c3, (t-0.25)/0.125);
+      if(t < 0.50) return mix(c3, c4, (t-0.375)/0.125);
+      if(t < 0.625) return mix(c4, c5, (t-0.50)/0.125);
+      if(t < 0.75) return mix(c5, c6, (t-0.625)/0.125);
+      if(t < 0.875) return mix(c6, c7, (t-0.75)/0.125);
+      return mix(c7, c8, (t-0.875)/0.125);
+    }
+
     vec3 colormap(float t){
       t = clamp(t, 0.0, 1.0);
       if(uColormapId == 1) return colormapSpectrum(t);
       if(uColormapId == 2) return colormapViridis(t);
+      if(uColormapId == 3) return colormapCoolwarm(t);
       return colormapThermal(t);
     }
 
@@ -214,13 +238,16 @@
   // sync than duplicating the whole field computation).
   const COLORMAP_STOPS = {
     thermal: [[0.00,[11,14,18]],[0.25,[24,64,110]],[0.375,[20,130,160]],[0.50,[40,150,150]],[0.625,[70,190,70]],[0.75,[230,200,60]],[0.875,[230,80,50]],[1.00,[200,30,30]]],
-    viridis: [[0.00,[68,1,84]],[0.25,[59,82,139]],[0.50,[33,145,140]],[0.75,[94,201,98]],[1.00,[253,231,37]]]
+    viridis: [[0.00,[68,1,84]],[0.25,[59,82,139]],[0.50,[33,145,140]],[0.75,[94,201,98]],[1.00,[253,231,37]]],
+    coolwarm: [[0.00,[59,76,192]],[0.125,[98,130,234]],[0.25,[141,176,254]],[0.375,[184,208,249]],[0.50,[221,221,221]],[0.625,[245,196,173]],[0.75,[244,154,123]],[0.875,[222,96,77]],[1.00,[180,4,38]]]
   };
 
   // Metadata for building a colormap picker UI -- id matches what colormap()
-  // accepts and what the GLSL uColormapId int maps to (0/1/2, same order).
+  // accepts and what the GLSL uColormapId int maps to (see COLORMAP_ID_TO_INT).
+  // Listed in picker order, the app's default first.
   const COLORMAPS = [
-    { id: 'thermal', label: 'Thermal (default)' },
+    { id: 'coolwarm', label: 'Cool to warm (default)' },
+    { id: 'thermal', label: 'Thermal' },
     { id: 'spectrum', label: 'Full spectrum' },
     { id: 'viridis', label: 'Colorblind-safe (Viridis)' }
   ];
@@ -262,10 +289,11 @@
     t = Math.max(0, Math.min(1, t));
     if(id === 'spectrum') return colormapSpectrum(t);
     if(id === 'viridis') return colormapFromStops(t, COLORMAP_STOPS.viridis);
+    if(id === 'coolwarm') return colormapFromStops(t, COLORMAP_STOPS.coolwarm);
     return colormapFromStops(t, COLORMAP_STOPS.thermal);
   }
 
-  const COLORMAP_ID_TO_INT = { thermal: 0, spectrum: 1, viridis: 2 };
+  const COLORMAP_ID_TO_INT = { thermal: 0, spectrum: 1, viridis: 2, coolwarm: 3 };
 
   // Inverse of the shader's encodeFloat: reconstruct the normalized [0,1] value
   // from 8-bit RGBA channels (dividing by 255 since readPixels gives 0-255 ints).

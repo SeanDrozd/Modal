@@ -33,15 +33,16 @@ const ROOM = { w: 18, d: 13.5, h: 8 };
 
 // Reads the canvas's *actual* current resolution from the page instead of
 // assuming a fixed square size -- the canvas resolution tracks the room's
-// own w:d aspect ratio (e.g. 1400x1050 for this 18x13.5 room), not a
+// own w:d aspect ratio (e.g. 1400x1098 for this 18x13.5 room), not a
 // hardcoded square, so the room<->screen mapping has to be read live.
+// `margin` mirrors MAP_MARGIN in modal.html (see mapLayout there).
 async function makeRoomToScreen(page){
   const dims = await page.evaluate(() => {
     const cv = document.getElementById('cv');
     return { sizeW: cv.width, sizeH: cv.height };
   });
   const box = await page.locator('#cv').boundingBox();
-  const margin = 40;
+  const margin = 96;
   const plotW = dims.sizeW - margin * 2;
   const plotH = dims.sizeH - margin * 2;
   const scale = Math.min(plotW / ROOM.w, plotH / ROOM.d);
