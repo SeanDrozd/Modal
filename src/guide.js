@@ -445,6 +445,7 @@
     // ---- Step 6: optimize ----
     const fmtDb = (db) => `${db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`;
     const fmtSwing = (db) => `±${db.toFixed(0)} dB`;
+    const signedDb = (db, digits) => { const shown = Number(db.toFixed(digits)); return `${shown >= 0 ? '+' : '−'}${Math.abs(shown).toFixed(digits)} dB`; }; // rounds first so a tiny negative reads +0.0
     const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.wall} wall, ${app.formatLength(walls.end.distFt)} from the ${walls.end.wall} wall`;
     const NOT_RELIABLE = 'Not reliable for this room shape';
     // Current and suggested response at the main seat, as two lines on a
@@ -462,20 +463,22 @@
     const VERDICTS = {
       major: 'Major improvement.',
       modest: 'Modest improvement.',
-      similar: 'Little to gain. The current position is already close to the best one.',
-      mixed: 'A trade-off: better by one measure, worse by another.'
+      similar: 'Little to gain. The current placement is already close to the best one found.',
+      worse: 'No improvement found. The current placement measures better than the best one the search found, so leave it as it is.'
     };
     function resultCard(o){
       const change = (label, before, after) => `<div class="guide-stat"><span>${label}</span><strong>${before != null ? `${before} → ` : ''}${after}</strong></div>`;
       const b = o.before, a = o.after;
-      const nullText = (m) => `${fmtDb(m.summary.deepestNullDb)} at ${m.summary.deepestNullHz.toFixed(0)} Hz`;
+      const nullText = (m) => `${fmtDb(m.stats.worstMinDb - m.stats.avgMean)} at ${o.freqs[m.stats.worstMinIndex].toFixed(0)} Hz`;
       return `
         ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
         ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
-        ${change('Response variation', b && fmtSwing(b.summary.spreadDb), fmtSwing(a.summary.spreadDb))}
+        ${b ? change('Optimizer score', null, signedDb(o.comparison.gainDb, 1)) : ''}
+        ${change('Response variation', b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null', b && nullText(b), nullText(a))}
-        ${b ? change('Average level', null, `${o.comparison.levelGainDb >= 0 ? '+' : '−'}${Math.abs(o.comparison.levelGainDb).toFixed(0)} dB`) : ''}
+        ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
         ${o.seats > 1 ? change('Seat-to-seat variation', b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
+        ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}
         <ul class="guide-moves">${o.subs.map(sub => {
           const to = wallsText(app.wallDistances(sub));

@@ -1725,14 +1725,18 @@ function applyAppearanceAttrs(mode, theme){
   // chart without it being permanently overridden mid-adjustment; turning
   // the checkbox off makes every delay stick indefinitely, not just until
   // the next move.
+  // The delay automatic time-align gives each of these sources, id -> ms.
+  function alignedDelays(activeSources){
+    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
+    return new Map(results.map(r => [r.id, Math.round(r.delayMs * 10) / 10])); // match the 0.1ms slider step
+  }
   function autoTimeAlign(){
     if(!autoTimeAlignEnabled) return;
     const activeSources = sources.filter(s => s.enabled !== false);
     if(activeSources.length < 2) return;
-    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
-    const byId = new Map(results.map(r => [r.id, r.delayMs]));
+    const byId = alignedDelays(activeSources);
     for(const s of sources){
-      if(byId.has(s.id)) s.delayMs = Math.round(byId.get(s.id) * 10) / 10; // match the 0.1ms slider step
+      if(byId.has(s.id)) s.delayMs = byId.get(s.id);
     }
   }
   // Lightweight refresh of just the delay slider/readout in each already-
@@ -3012,9 +3016,13 @@ function applyAppearanceAttrs(mode, theme){
   //     the source list -- null when no suggestion is currently pending.
   let freqResponseData = null;
   function sourcesWithSuggestion(activeSources){
-    return optimizerResult.applyInPlace
+    const suggested = optimizerResult.applyInPlace
       ? activeSources.map(s => optimizerResult.placedSubs.find(p => p.id === s.id) || s)
       : activeSources.concat(optimizerResult.placedSubs);
+    // Applying the suggestion re-runs automatic time-align (applyOptimizerResult), so it is shown with the delays that will give.
+    if(!autoTimeAlignEnabled || suggested.length < 2) return suggested;
+    const delays = alignedDelays(suggested);
+    return suggested.map(s => ({ ...s, delayMs: delays.get(s.id) }));
   }
   function computeFreqResponseData(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
@@ -4008,9 +4016,13 @@ function applyAppearanceAttrs(mode, theme){
     return stored;
   }
   // What the pending optimizer suggestion would change, in the terms the
-  // setup guide reports: the main seat's response across the optimizer's
-  // band now and with the suggestion (RoomPhysics.responseSummary), how the
-  // two compare, and the seat-to-seat variation. `before` and `comparison`
+  // setup guide reports. The response at every seat is measured across the
+  // optimizer's band, spatially averaged like the frequency response chart,
+  // now (`before`) and with the suggestion (`after`): `db` is the main
+  // seat's curve, `stats` the optimizer's own score of the seats' curves
+  // with the figures it is made of (RoomPhysics.scoreResponses, in the
+  // current optimizer mode), `seatToSeatDb` the seat-to-seat variation.
+  // `comparison` grades the change in that score. `before` and `comparison`
   // are null when there is no sub yet, since there is nothing to compare
   // with. Null with no suggestion pending.
   function optimizerOutcome(){
@@ -4022,18 +4034,19 @@ function applyAppearanceAttrs(mode, theme){
     const freqs = logSpacedFreqs(freqLow, freqHigh, 48);
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
     const seats = allSeatPositions(), primary = primaryRow();
+    const weights = buildOptimizerListenerPositions().map(p => p.weight); // one per seat, in allSeatPositions order
     // The row's own center is measured as an extra point; see computeFreqResponseData.
     const centers = seats.concat([{ x: primary.x, y: primary.y, z: primary.z }]);
     const measure = (srcs) => {
       const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, srcs, physicsCtx(), { radiusFt: 2, numPoints: 20 });
-      const db = perCenterDb[centers.length - 1];
-      return { db, summary: RoomPhysics.responseSummary(db, freqs), seatToSeatDb: RoomPhysics.seatToSeatVariationDb(perCenterDb.slice(0, seats.length)) };
+      const perSeatDb = perCenterDb.slice(0, seats.length);
+      return { db: perCenterDb[centers.length - 1], stats: RoomPhysics.scoreResponses(perSeatDb, weights, optimizerMode), seatToSeatDb: RoomPhysics.seatToSeatVariationDb(perSeatDb) };
     };
     const after = measure(sourcesWithSuggestion(active));
     const before = active.some(isSubSource) ? measure(active) : null;
     return {
       freqs, before, after, seats: seats.length,
-      comparison: before ? RoomPhysics.compareResponses(before.summary, after.summary) : null,
+      comparison: before ? RoomPhysics.comparePlacements(before.stats, after.stats) : null,
       // from: where a refined existing sub stands now; null for a new sub.
       subs: optimizerResult.placedSubs.map(p => {
         const current = optimizerResult.applyInPlace && sources.find(s => s.id === p.id);

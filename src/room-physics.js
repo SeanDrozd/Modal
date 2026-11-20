@@ -747,6 +747,26 @@
       });
     }
 
+    const combined = scoreResponses(perListenerDb, listenerPositions.map(lp => lp.weight), mode);
+    return {
+      score: mode === 'nullAvoidance' ? combined.score - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room) : combined.score,
+      avgMean: combined.avgMean,
+      worstStdDev: combined.worstStdDev,
+      worstMinDb: combined.worstMinDb,
+      perListenerDb,
+      listenerStats: combined.listenerStats
+    };
+  }
+
+  // Combines per-listener responses (perListenerDb[listener][freqIndex], in
+  // dB) into the optimizer's score for `mode`, HIGHER IS BETTER, along with
+  // the figures it is made of. weights[i] is listener i's importance (0..1,
+  // 1 when omitted). This is the whole of scoreSubPosition's judgement apart
+  // from its clustering penalty, split out so a placement can be judged by
+  // the same formula from responses computed some other way (a denser
+  // frequency list, spatial averaging). worstMinIndex is the frequency index
+  // of worstMinDb.
+  function scoreResponses(perListenerDb, weights, mode){
     // Per-listener stats: mean level and standard deviation (flatness) across
     // frequency, plus that listener's own importance weight (defaults to 1).
     const listenerStats = perListenerDb.map((dbRow, i) => {
@@ -754,8 +774,9 @@
       const variance = dbRow.reduce((a,b) => a + (b-mean)*(b-mean), 0) / dbRow.length;
       const stdDev = Math.sqrt(variance);
       const minDb = Math.min(...dbRow);
-      const weight = listenerPositions[i].weight ?? 1;
-      return { mean, stdDev, minDb, weight };
+      const minIndex = dbRow.indexOf(minDb);
+      const weight = weights[i] ?? 1;
+      return { mean, stdDev, minDb, minIndex, weight };
     });
 
     // Combine across listeners: WEIGHTED average mean level (a low-weight
@@ -778,7 +799,7 @@
     // -Infinity/+Infinity/weight-1 defaults Math.max/min(...[]) produced before.
     let worstStdDevEntry = listenerStats.length ? listenerStats[0] : { stdDev: -Infinity, weight: 1 };
     for(const s of listenerStats){ if(s.stdDev > worstStdDevEntry.stdDev) worstStdDevEntry = s; }
-    let worstMinDbEntry = listenerStats.length ? listenerStats[0] : { minDb: Infinity, weight: 1 };
+    let worstMinDbEntry = listenerStats.length ? listenerStats[0] : { minDb: Infinity, minIndex: -1, weight: 1 };
     for(const s of listenerStats){ if(s.minDb < worstMinDbEntry.minDb) worstMinDbEntry = s; }
     const worstStdDev = worstStdDevEntry.stdDev;
     const worstMinDb = worstMinDbEntry.minDb;
@@ -787,8 +808,9 @@
     // a loud position with a severe null at one frequency is a worse real-world
     // outcome than a slightly quieter but consistently flat one. In
     // 'nullAvoidance' mode, only the worst null anywhere matters (minus a soft
-    // penalty for clustering near already-placed subs) -- see the function
-    // comment above for why average level and peaks are excluded otherwise.
+    // penalty for clustering near already-placed subs, which scoreSubPosition
+    // subtracts itself). See scoreSubPosition's comment for why average level
+    // and peaks are excluded otherwise.
     //
     // The null penalty engages once the worst listener's minimum dips 20dB+
     // BELOW THE SCENE'S OWN AVERAGE LEVEL (avgMean), not below a hardcoded
@@ -805,7 +827,7 @@
     // given the analogous relief additively instead -- a low-weight listener's
     // null is partially forgiven (up to RELIEF_DB) rather than discounted.
     const score = mode === 'nullAvoidance'
-      ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room)
+      ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB
       : avgMean - (worstStdDev * BALANCED_FLATNESS_WEIGHT * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight;
 
     return {
@@ -813,32 +835,12 @@
       avgMean,
       worstStdDev,
       worstMinDb,
-      perListenerDb,
+      worstMinIndex: worstMinDbEntry.minIndex,
       listenerStats
     };
   }
 
   // ---- Plain-language results ----
-  // What a response curve amounts to for a listener. responseDb[i] is the
-  // level at freqs[i]. The null and peak are given relative to the curve's
-  // own mean level, since absolute dB has no fixed reference here (see
-  // scoreSubPosition); spreadDb is the plus-or-minus swing, half the gap
-  // between the highest and lowest points.
-  function responseSummary(responseDb, freqs){
-    let sum = 0, minI = 0, maxI = 0;
-    for(let i = 0; i < responseDb.length; i++){
-      sum += responseDb[i];
-      if(responseDb[i] < responseDb[minI]) minI = i;
-      if(responseDb[i] > responseDb[maxI]) maxI = i;
-    }
-    const meanDb = sum / responseDb.length;
-    return {
-      meanDb,
-      spreadDb: (responseDb[maxI] - responseDb[minI]) / 2,
-      deepestNullDb: responseDb[minI] - meanDb, deepestNullHz: freqs[minI],
-      biggestPeakDb: responseDb[maxI] - meanDb, biggestPeakHz: freqs[maxI]
-    };
-  }
   // How much the level differs from seat to seat, as a plus-or-minus figure:
   // half the gap between the loudest and quietest seat at each frequency,
   // averaged over the frequencies. perSeatDb[seat][freqIndex]. Zero for a
@@ -854,28 +856,22 @@
     }
     return sum / numFreqs;
   }
-  // Gains at or above these count as a major or a modest change. spreadDb is
-  // a plus-or-minus figure, so its thresholds are half the others'.
-  const COMPARE_MAJOR = { levelDb: 6, spreadDb: 3, nullDb: 6 };
-  const COMPARE_MODEST = { levelDb: 2, spreadDb: 1, nullDb: 2 };
-  // Compares two responseSummary results. Each gain is positive when `after`
-  // is better: louder on average, a smaller swing, a shallower deepest null.
-  // verdict: 'major' or 'modest' by the largest gain, 'mixed' when one
-  // measure improved and another got worse by at least the modest threshold,
-  // 'similar' when nothing moved that far either way.
-  function compareResponses(before, after){
-    const gains = {
-      levelDb: after.meanDb - before.meanDb,
-      spreadDb: before.spreadDb - after.spreadDb,
-      nullDb: after.deepestNullDb - before.deepestNullDb
+  // What moving from one placement to another amounts to, from the two
+  // placements' scoreResponses results (same listeners, frequencies and
+  // mode). gainDb is the change in score, so it is positive when `after` is
+  // the better placement by the optimizer's own measure. verdict: 'major' at
+  // PLACEMENT_GAIN_DB.major or more, 'modest' at .modest or more, 'worse'
+  // when `after` scores lower by .modest or more, otherwise 'similar'.
+  const PLACEMENT_GAIN_DB = { major: 6, modest: 2 };
+  function comparePlacements(before, after){
+    const gainDb = after.score - before.score;
+    return {
+      gainDb,
+      levelGainDb: after.avgMean - before.avgMean,
+      verdict: gainDb >= PLACEMENT_GAIN_DB.major ? 'major'
+        : gainDb >= PLACEMENT_GAIN_DB.modest ? 'modest'
+        : gainDb <= -PLACEMENT_GAIN_DB.modest ? 'worse' : 'similar'
     };
-    const keys = Object.keys(gains);
-    const better = keys.some(k => gains[k] >= COMPARE_MODEST[k]);
-    const worse = keys.some(k => gains[k] <= -COMPARE_MODEST[k]);
-    const verdict = better && worse ? 'mixed'
-      : keys.some(k => gains[k] >= COMPARE_MAJOR[k]) ? 'major'
-      : better ? 'modest' : 'similar';
-    return { levelGainDb: gains.levelDb, spreadGainDb: gains.spreadDb, nullGainDb: gains.nullDb, verdict };
   }
   // The nearer side wall and the nearer end wall to a point, with the
   // distance to each: { side: { wall: 'left' | 'right', distFt }, end:
@@ -1406,9 +1402,9 @@
     preferredZoneBonusDb,
     SPEAKER_AZIMUTH_DEG,
     standardSpeakerPositions,
-    responseSummary,
+    scoreResponses,
     seatToSeatVariationDb,
-    compareResponses,
+    comparePlacements,
     nearestWallDistances,
     rowFootprintRect,
     isPointInRect,
