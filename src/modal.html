@@ -196,14 +196,17 @@ function applyAppearanceAttrs(mode, theme){
   </div>
 
   <div class="section" id="zonesSection">
-    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Sub placement zones</span></div>
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Furniture &amp; zones</span></div>
     <div class="section-body">
+      <div class="hint" style="margin-top:0; margin-bottom:6px;">Add furniture, doorways and walkways where a sub can't go. Furniture is not included in the acoustic calculation. It only excludes sub positions.</div>
+      <div id="furniturePalette"></div>
       <div style="display:flex; gap:6px; margin-bottom:6px;">
         <button id="drawOffLimitBtn" class="small" style="flex:1;">+ Off-limits</button>
         <button id="drawAllowedBtn" class="small" style="flex:1;">+ Allowed</button>
         <button id="drawPreferredBtn" class="small" style="flex:1;">+ Preferred</button>
       </div>
       <div class="hint" id="zoneDrawHint">Click a button, then click-drag on the map to draw a zone. Drag a zone's edge/corner to resize, drag its middle to move.</div>
+      <div class="hint" id="floorCoverageWarning" style="display:none; color:var(--bad);"></div>
       <div id="zoneList"></div>
     </div>
   </div>
@@ -555,10 +558,10 @@ function applyAppearanceAttrs(mode, theme){
     document.getElementById('roomDField').innerHTML = lengthFieldHtml('roomD', room.d);
     document.getElementById('roomHField').innerHTML = lengthFieldHtml('roomH', room.h);
     wireLengthField(document.getElementById('roomWField'), 'roomW', (ft) => {
-      room.w = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 16)); draw();
+      room.w = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 16)); updateFloorCoverageWarning(); draw();
     });
     wireLengthField(document.getElementById('roomDField'), 'roomD', (ft) => {
-      room.d = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 13.5)); draw();
+      room.d = Math.min(ROOM_MAX_WD_FT, Math.max(6, ft || 13.5)); updateFloorCoverageWarning(); draw();
     });
     wireLengthField(document.getElementById('roomHField'), 'roomH', (ft) => {
       room.h = Math.min(ROOM_MAX_H_FT, Math.max(6, ft || 8));
@@ -1421,7 +1424,61 @@ function applyAppearanceAttrs(mode, theme){
     preferred: { color: PREFERRED_COLOR, label: 'Preferred' }
   };
 
+  // Furniture and other physical obstacles are off-limits zones that carry a
+  // `furnitureType`. They are not part of the acoustic model: like any
+  // off-limits zone they only keep the optimizer from putting a sub there.
+  // `icon` is SVG path data on a 24x24 grid, shared by the palette buttons
+  // and the map (via Path2D); w and d are the footprint in feet that a new
+  // one is dropped in at.
+  const FURNITURE_TYPES = {
+    couch: { label: 'Couch', w: 7, d: 3, icon: 'M3 7h18v11H3z M3 10h18 M6.5 10v8 M17.5 10v8 M12 10v8' },
+    tvStand: { label: 'TV stand', w: 5, d: 1.5, icon: 'M2 12h20v6H2z M5 8h14v1.5H5z' },
+    bed: { label: 'Bed', w: 5, d: 6.5, icon: 'M5 3h14v18H5z M7 5.5h4v3.5H7z M13 5.5h4v3.5h-4z M5 11.5h14' },
+    desk: { label: 'Desk', w: 5, d: 2.5, icon: 'M3 6h18v8H3z M9.5 18a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0' },
+    shelf: { label: 'Shelf', w: 3, d: 1, icon: 'M2 9h20v6H2z M7 9v6 M12 9v6 M17 9v6' },
+    table: { label: 'Table', w: 4, d: 2.5, icon: 'M6 7h12v10H6z M9 4h6 M9 20h6 M3 10v4 M21 10v4' },
+    doorway: { label: 'Doorway', w: 3, d: 3, icon: 'M3 20h3 M6 20V8 M6 8a12 12 0 0 1 12 12 M18 20h3' },
+    walkway: { label: 'Walkway', w: 3, d: 6, icon: 'M4 12h16 M8 8l-4 4 4 4 M16 8l4 4-4 4' }
+  };
+  // Drops a new piece at the room's center at its typical size (shrunk to
+  // fit a small room), each one stepped half a foot further than the last
+  // so several added in a row don't land exactly on top of each other.
+  function addFurniture(type){
+    const { label, w, d } = FURNITURE_TYPES[type];
+    const width = Math.min(w, room.w), height = Math.min(d, room.d);
+    const step = (offLimitZones.filter(z => z.furnitureType).length % 6) * 0.5;
+    offLimitZones.push({
+      id: nextId++, name: label, furnitureType: type,
+      x: Math.min(room.w - width, (room.w - width)/2 + step),
+      y: Math.min(room.d - height, (room.d - height)/2 + step),
+      width, height
+    });
+    renderZoneList();
+    draw();
+  }
+  (function initFurniturePalette(){
+    const palette = document.getElementById('furniturePalette');
+    for(const [type, { label, icon }] of Object.entries(FURNITURE_TYPES)){
+      const btn = document.createElement('button');
+      btn.className = 'small';
+      btn.dataset.furniture = type;
+      btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${icon}"/></svg>${label}`;
+      btn.addEventListener('click', () => addFurniture(type));
+      palette.appendChild(btn);
+    }
+  })();
+
+  // Below this much free floor, say so: the optimizer has little left to search.
+  const LOW_FREE_FLOOR_FRACTION = 0.25;
+  function updateFloorCoverageWarning(){
+    const el = document.getElementById('floorCoverageWarning');
+    const free = RoomPhysics.freeFloorFraction(room, offLimitZones);
+    el.style.display = free < LOW_FREE_FLOOR_FRACTION ? 'block' : 'none';
+    el.textContent = `Obstacles cover ${Math.round((1 - free) * 100)}% of the floor. The optimizer only searches the remaining area.`;
+  }
+
   function renderZoneList(){
+    updateFloorCoverageWarning();
     const list = document.getElementById('zoneList');
     list.innerHTML = '';
     const allZones = [
@@ -1431,7 +1488,7 @@ function applyAppearanceAttrs(mode, theme){
     ];
     if(allZones.length === 0) return;
     for(const z of allZones){
-      const { color, label } = ZONE_KIND_INFO[z.kind];
+      const { color, label } = FURNITURE_TYPES[z.furnitureType] ? { color: 'var(--text-dim)', label: 'Furniture' } : ZONE_KIND_INFO[z.kind];
       const row = document.createElement('div');
       row.className = 'src-block';
       row.style.padding = '6px 10px';
@@ -2331,7 +2388,7 @@ function applyAppearanceAttrs(mode, theme){
 
   function drawZones(offX, offY, scale){
     const allZones = [
-      ...offLimitZones.map(z => ({ ...z, kind: 'offlimit', color: OFFLIMIT_COLOR })),
+      ...offLimitZones.map(z => ({ ...z, kind: 'offlimit', color: FURNITURE_TYPES[z.furnitureType] ? themeColors['wall'] : OFFLIMIT_COLOR })),
       ...allowedZones.map(z => ({ ...z, kind: 'allowed', color: ALLOWED_COLOR })),
       ...preferredZones.map(z => ({ ...z, kind: 'preferred', color: PREFERRED_COLOR }))
     ];
@@ -2339,25 +2396,49 @@ function applyAppearanceAttrs(mode, theme){
       const px = offX + z.x*scale, py = offY + z.y*scale;
       const pw = z.width*scale, ph = z.height*scale;
       const isBeingDrawn = zoneEditTarget && zoneEditTarget.mode === 'creating' && zoneEditTarget.id === z.id;
-      const { fill, dash, label } = ZONE_DRAW_INFO[z.kind];
+      const furniture = FURNITURE_TYPES[z.furnitureType];
 
-      ctx.fillStyle = fill;
-      ctx.fillRect(px, py, pw, ph);
-      ctx.strokeStyle = z.color;
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash(dash);
-      ctx.strokeRect(px, py, pw, ph);
-      ctx.setLineDash([]);
+      if(furniture){
+        // A solid object in the wall color, with its icon and name, instead
+        // of a dashed off-limits rectangle.
+        ctx.save();
+        ctx.fillStyle = z.color;
+        ctx.strokeStyle = z.color;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 6);
+        ctx.globalAlpha = 0.3;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.stroke();
+        const iconPx = Math.max(18, Math.min(64, pw - 12, ph - 12));
+        ctx.translate(px + pw/2 - iconPx/2, py + ph/2 - iconPx/2);
+        ctx.scale(iconPx/24, iconPx/24);
+        ctx.lineWidth = 1.5;
+        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        ctx.stroke(new Path2D(furniture.icon));
+        ctx.restore();
+        drawNameChip(furniture.label, px + 4, py + 15, '#e8ecf1');
+      } else {
+        const { fill, dash, label } = ZONE_DRAW_INFO[z.kind];
 
-      // label
-      ctx.font = 'bold 15.5px sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      const zoneLabelW = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(11,14,18,0.85)';
-      ctx.fillRect(px+2, py+2, zoneLabelW+10, 22);
-      ctx.fillStyle = z.color;
-      ctx.fillText(label, px+7, py+6);
+        ctx.fillStyle = fill;
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = z.color;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash(dash);
+        ctx.strokeRect(px, py, pw, ph);
+        ctx.setLineDash([]);
+
+        // label
+        ctx.font = 'bold 15.5px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        const zoneLabelW = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(11,14,18,0.85)';
+        ctx.fillRect(px+2, py+2, zoneLabelW+10, 22);
+        ctx.fillStyle = z.color;
+        ctx.fillText(label, px+7, py+6);
+      }
 
       // resize handles at the 4 corners (only show for zones, not while actively creating a new one)
       if(!isBeingDrawn){
@@ -3580,15 +3661,13 @@ function applyAppearanceAttrs(mode, theme){
     return null;
   }
 
+  // Topmost zone under the point, in the reverse of drawZones' paint order
+  // (kinds, then newest first within a kind), so the zone that is grabbed is
+  // the one visibly on top, e.g. a couch just dropped onto an older zone.
   function findZoneAt(x, y){
-    for(const z of preferredZones){
-      if(isPointInZoneRect(x, y, z)) return { kind:'preferred', id: z.id, zone: z };
-    }
-    for(const z of allowedZones){
-      if(isPointInZoneRect(x, y, z)) return { kind:'allowed', id: z.id, zone: z };
-    }
-    for(const z of offLimitZones){
-      if(isPointInZoneRect(x, y, z)) return { kind:'offlimit', id: z.id, zone: z };
+    for(const [kind, zones] of [['preferred', preferredZones], ['allowed', allowedZones], ['offlimit', offLimitZones]]){
+      const zone = zones.findLast(z => isPointInZoneRect(x, y, z));
+      if(zone) return { kind, id: zone.id, zone };
     }
     return null;
   }
