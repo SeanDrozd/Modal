@@ -344,6 +344,16 @@
   // point) rather than clustering on the outer shell. Deterministic (no RNG)
   // so the same inputs always produce the same cloud -- a UI value shouldn't
   // flicker between otherwise-identical redraws.
+  //
+  // The radius fraction comes from the base-2 van der Corput sequence, not
+  // from the same index fraction that sets the height. Sharing one variable
+  // put every point above the center near it and every point below it far
+  // out, so the cloud sat lower than its center.
+  function vanDerCorput(i){
+    let v = 0, f = 0.5;
+    for(; i > 0; i >>= 1, f /= 2) if(i & 1) v += f;
+    return v;
+  }
   function sphereSamplePoints(cx, cy, cz, radiusFt, n){
     const points = [];
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -352,7 +362,7 @@
       const zUnit = 1 - 2 * t; // -1..1, evenly stepped
       const rXY = Math.sqrt(Math.max(0, 1 - zUnit * zUnit));
       const theta = goldenAngle * i;
-      const r = radiusFt * Math.cbrt(t); // cube-root spacing -> uniform volume density
+      const r = radiusFt * Math.cbrt(vanDerCorput(i + 1)); // cube-root spacing -> uniform volume density
       points.push({
         x: cx + r * rXY * Math.cos(theta),
         y: cy + r * rXY * Math.sin(theta),

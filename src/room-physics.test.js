@@ -265,6 +265,20 @@ test('is deterministic -- same inputs produce the same cloud every time', () => 
   assert.deepStrictEqual(a, b);
 });
 
+test('the cloud is centered: points above and below the center reach out equally far', () => {
+  const pts = P.sphereSamplePoints(0, 0, 0, 2, 20);
+  const r = p => Math.hypot(p.x, p.y, p.z);
+  const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+  const above = pts.filter(p => p.z > 0).map(r), below = pts.filter(p => p.z < 0).map(r);
+  assert.strictEqual(above.length, 10);
+  assert.strictEqual(below.length, 10);
+  assert.ok(Math.abs(mean(above) - mean(below)) < 0.1, `mean radius above ${mean(above).toFixed(2)} vs below ${mean(below).toFixed(2)}`);
+  for(const axis of ['x', 'y', 'z']){
+    const c = mean(pts.map(p => p[axis]));
+    assert.ok(Math.abs(c) < 0.05, `centroid ${axis} = ${c.toFixed(3)} ft, expected within 0.05 ft of the center`);
+  }
+});
+
 test('radius 0 collapses every point onto the center', () => {
   const pts = P.sphereSamplePoints(9, 6, 3, 0, 10);
   for(const p of pts) assert.deepStrictEqual(p, { x: 9, y: 6, z: 3 });
