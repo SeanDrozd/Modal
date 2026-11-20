@@ -302,7 +302,7 @@ function applyAppearanceAttrs(mode, theme){
   <div id="canvasWrap">
     <div id="canvasStack" style="position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
       <canvas id="cvGL" width="1400" height="1400" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); max-width:100%; max-height:100%; display:block;"></canvas>
-      <canvas id="cv" width="1400" height="1400" style="position:relative; display:block; max-width:100%; max-height:100%;"></canvas>
+      <canvas id="cv" role="img" aria-label="Map of the room" width="1400" height="1400" style="position:relative; display:block; max-width:100%; max-height:100%;"></canvas>
     </div>
   </div>
   <div id="bottomPanel">
@@ -492,7 +492,7 @@ function applyAppearanceAttrs(mode, theme){
       const m = ftToM(ft);
       const stepM = opts.stepM ?? 0.05;
       return `<span class="length-field" data-field="${dataField}" data-unit="m">
-        <input type="number" data-role="value" step="${stepM}" value="${m.toFixed(2)}" style="width:${widthPx}px;">
+        <input type="number" data-role="value" aria-label="meters" step="${stepM}" value="${m.toFixed(2)}" style="width:${widthPx}px;">
         <span class="length-suffix">m</span>
       </span>`;
     }
@@ -500,9 +500,9 @@ function applyAppearanceAttrs(mode, theme){
     const wholeFt = Math.floor(totalInches / 12);
     const inches = totalInches % 12;
     return `<span class="length-field" data-field="${dataField}" data-unit="ft">
-      <input type="number" data-role="ft" min="0" step="1" value="${wholeFt}" style="width:46px;">
+      <input type="number" data-role="ft" aria-label="feet" min="0" step="1" value="${wholeFt}" style="width:46px;">
       <span class="length-suffix">'</span>
-      <input type="number" data-role="in" min="0" max="11" step="1" value="${inches}" style="width:40px;">
+      <input type="number" data-role="in" aria-label="inches" min="0" max="11" step="1" value="${inches}" style="width:40px;">
       <span class="length-suffix">"</span>
     </span>`;
   }
