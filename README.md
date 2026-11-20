@@ -16,6 +16,10 @@ Same room, same two subs, same frequency, before/after running the sub-placement
 
 ## Screenshots
 
+![The setup guide's optimize step: the result card with its verdict, figures and before and after response, next to the pressure map with the suggested sub position](docs/guide.png)
+
+The setup guide's optimize step, with the result card and the suggested sub position on the map.
+
 | | |
 |---|---|
 | ![Main view: interference field, sources, and stereo-triangle guide](docs/overview.png) | ![Subwoofer placement optimizer, showing a score heatmap and suggested position](docs/optimizer.png) |
@@ -33,6 +37,7 @@ Per-wall and ceiling material configuration, each with its own frequency-depende
 - The starting "Center (default)" off-limits zone is removed when setup starts, since it is an assumption rather than something in your room. In its place the obstacles step marks each row's seating as a place a sub can't go, once; remove it if a sub could sit there.
 - The optimize step asks whether you run room correction (yes selects the "Null avoidance" mode, no or not sure selects "Balanced") and runs the same search as the full tool against your existing subs or the number you plan to buy. The result is measured the way the frequency response chart is (spatially averaged at every seat, across the optimizer's frequency range, with speaker delays re-aligned as they will be once the subs are moved) and graded with the optimizer's own scoring formula, so the verdict cannot disagree with the search: a score gain of 6 dB or more is "major", 2 dB or more "modest", a loss of 2 dB or more says to leave the subs where they are, and anything between says there is little to gain. The card shows that score change with the figures behind it (average level, response variation as the standard deviation across the range, the deepest null and its frequency, and with more than one seat the seat-to-seat variation), next to a before and after response chart. "Show alternatives" overlays the score heatmap, and "Can't use that spot" goes back to the obstacles step.
 - The last step is a setup sheet: where each sub goes as distances from its two nearest walls, the geometric distance from each sub to the main seat, and what to do about the AVR's sub distance (room correction measures it and includes the sub's processing delay, so its figure is the one to keep). It can be saved as a room preset and printed; the printed page is the sheet and the floor plan in the light palette.
+- Less common terms (room mode, null, room correction, the optimizer score and the figures on the result card) carry a "?" that opens a one or two sentence definition; they live in one `GLOSSARY` object in `src/guide.js`. Every step works from the keyboard: focus moves to each step's heading, any position can be typed as distances from two walls instead of dragged, and removing or applying something leaves focus on the next sensible control. Text meets WCAG AA contrast in all four themes, light and dark.
 
 **Sources & listening positions**
 - "+ Add Main" and "+ Add Sub" add a source with the right crossover range already set (80Hz to 20kHz for mains, 20 to 80Hz for subs); Add Main cycles through standard channel abbreviations in layout order (FL, FR, C, SL, SR, SBL, SBR, FWL, FWR, covering 5.1 through 9.1) before falling back to a generic numbered name, and Add Sub numbers SW1, SW2, ...

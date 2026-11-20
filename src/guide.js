@@ -23,6 +23,19 @@
     { id: 'unsure', label: 'Not sure', mode: 'balanced' }
   ];
 
+  // The definitions behind the "?" buttons (see term() below): the terms the
+  // guide uses that an AVR owner may know by name without knowing exactly
+  // what they mean here. Everyday ones (Hz, dB, crossover) are not listed.
+  const GLOSSARY = {
+    mode: { term: 'Room mode', text: "A frequency at which bass reflecting between the room's surfaces reinforces itself into a standing wave. At that frequency some parts of the room are loud and others nearly silent." },
+    null: { term: 'Null', text: 'A frequency at which reflections cancel the direct sound at one spot, so the level drops sharply there. More power or EQ does not fill a null; moving the sub or the seat does.' },
+    roomCorrection: { term: 'Room correction', text: "The AVR's automatic setup: it plays test tones through a supplied microphone, then sets speaker distances, levels and EQ. Audyssey, YPAO, Dirac Live, MCACC, AccuEQ and ARC are common names for it." },
+    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: average level minus response variation, with a further penalty for a null more than 20 dB deep. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
+    variation: { term: 'Response variation', text: 'The standard deviation of level across the frequency range, at the seat where it is largest. Lower is more even.' },
+    seatToSeat: { term: 'Seat-to-seat variation', text: 'Half the gap between the loudest and the quietest seat at each frequency, averaged over the range. Lower means every seat gets closer to the same bass.' },
+    spatialAverage: { term: 'Spatial averaging', text: 'The response is averaged over 20 points within 2 ft (0.6 m) of the seat, not read at one exact point, much like moving a measurement mic around the listening position.' }
+  };
+
   const SPEAKER_LAYOUTS = [
     { count: 2, label: 'Stereo', detail: 'Left and right' },
     { count: 3, label: '3.0', detail: 'Adds a center' },
@@ -42,6 +55,37 @@
     coach.setAttribute('aria-live', 'polite');
     coach.hidden = true;
     document.body.appendChild(coach);
+
+    // The one definition popover, shown under whichever "?" was pressed.
+    const termNote = document.createElement('div');
+    termNote.id = 'termNote';
+    termNote.setAttribute('role', 'status');
+    termNote.hidden = true;
+    document.body.appendChild(termNote);
+    let termBtn = null;
+    function closeTerm(){
+      if(termBtn) termBtn.setAttribute('aria-expanded', 'false');
+      termBtn = null;
+      termNote.hidden = true;
+    }
+    // Any click closes an open definition; a click on a different "?" opens that one.
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.guide-term');
+      const open = btn && btn !== termBtn;
+      closeTerm();
+      if(!open) return;
+      const entry = GLOSSARY[btn.dataset.term];
+      termNote.innerHTML = `<strong>${entry.term}.</strong> ${esc(entry.text)}`;
+      termNote.hidden = false;
+      const at = btn.getBoundingClientRect();
+      const below = at.bottom + 8 + termNote.offsetHeight < window.innerHeight;
+      termNote.style.left = Math.max(8, Math.min(window.innerWidth - termNote.offsetWidth - 8, at.left - 12)) + 'px';
+      termNote.style.top = (below ? at.bottom + 8 : at.top - 8 - termNote.offsetHeight) + 'px';
+      termBtn = btn;
+      btn.setAttribute('aria-expanded', 'true');
+    });
+    document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeTerm(); });
+    panel.parentElement.addEventListener('scroll', closeTerm);
 
     // step: index into STEPS. roomShape: a ROOM_SHAPES id. plannedSubs: how
     // many subs to recommend positions for when there are none yet.
@@ -71,6 +115,7 @@
     }
 
     const esc = (text) => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const term = (id) => `<button class="guide-term" data-term="${id}" aria-label="Definition: ${GLOSSARY[id].term}" aria-expanded="false">?</button>`;
     const choiceCards = (items, attr, pressedId) => items.map(it =>
       `<button class="guide-card" ${attr}="${it.id ?? it.count}" aria-pressed="${(it.id ?? it.count) === pressedId}"><strong>${esc(it.label)}</strong><span>${esc(it.detail)}</span>${it.extra || ''}</button>`
     ).join('');
@@ -90,8 +135,8 @@
         list.innerHTML = items.map(it => `
           <div class="guide-speaker" data-id="${it.id}">
             <button class="small guide-speaker-name" title="Show ${esc(it.name)} on the map">${esc(it.name)}</button>
-            <div class="guide-field"><label>From left wall</label><span data-axis="x"></span></div>
-            <div class="guide-field"><label>From front wall</label><span data-axis="y"></span></div>
+            <div class="guide-field"><label>From left wall</label><span data-axis="x" role="group" aria-label="${esc(it.name)}, from left wall"></span></div>
+            <div class="guide-field"><label>From front wall</label><span data-axis="y" role="group" aria-label="${esc(it.name)}, from front wall"></span></div>
             ${extra.html ? extra.html(it) : ''}
           </div>`).join('');
         cards = items.map(it => {
@@ -141,7 +186,7 @@
     function renderWelcome(body){
       body.innerHTML = `
         <h2 tabindex="-1">Find the best subwoofer placement for your room</h2>
-        <p>Below about 200 Hz, room modes create peaks and nulls that vary seat to seat by 10 to 20 dB, and sub position is the biggest lever you have.</p>
+        <p>Below about 200 Hz, room modes${term('mode')} create peaks and nulls${term('null')} that vary seat to seat by 10 to 20 dB, and sub position is the biggest lever you have.</p>
         <p>Enter your room, speakers and seating, and Modal will model the response and recommend where your sub(s) should go. A tape measure helps; estimates within a few inches are fine.</p>
         <div class="guide-field">
           <label>Units</label>
@@ -177,7 +222,7 @@
         ${DIMS.map(f => `
           <div class="guide-field">
             <label>${f.label}<span>${f.detail}</span></label>
-            <span data-dim="${f.dim}"></span>
+            <span data-dim="${f.dim}" role="group" aria-label="${f.label}"></span>
           </div>
           <p class="guide-warning" data-dim-msg="${f.dim}" hidden></p>`).join('')}`;
 
@@ -337,7 +382,10 @@
             if(btn) app.setRowSeats(card.id, card.item.seats + Number(btn.dataset.seats));
           });
           el.querySelector('input[type="range"]').addEventListener('input', function(){ app.setRowFacing(card.id, Number(this.value)); });
-          el.querySelector('[data-remove]').addEventListener('click', () => app.removeRow(card.id));
+          el.querySelector('[data-remove]').addEventListener('click', () => {
+            app.removeRow(card.id);
+            body.querySelector('#guideAddRowBtn').focus(); // the button just pressed is gone
+          });
         },
         sync(row, el, rows){
           el.querySelector('.guide-stepper output').textContent = row.seats;
@@ -382,7 +430,7 @@
         </div>
         <p class="guide-hint">A piece drops into the middle of the room. Drag it into place and drag a corner to resize it.</p>
         <button data-draw="offlimit">Draw another no-go area</button>
-        <p class="guide-hint" id="guideDrawHint" hidden>Click and drag on the map to draw the area.</p>
+        <p class="guide-hint" id="guideDrawHint" hidden>Drag on the map to draw the area.</p>
         <div id="guideZoneList"></div>
         <p class="guide-warning" id="guideCoverageWarning" hidden></p>
         <details class="guide-more"><summary>More options</summary>
@@ -420,7 +468,10 @@
       });
       zoneList.addEventListener('click', (e) => {
         const btn = e.target.closest('button');
-        if(btn) app.removeZone(btn.dataset.kind, Number(btn.dataset.id));
+        if(!btn) return;
+        app.removeZone(btn.dataset.kind, Number(btn.dataset.id));
+        refresh();
+        (zoneList.querySelector('button') || body.querySelector('#guidePalette button')).focus(); // the button just pressed is gone
       });
 
       // Rebuilt only when their content changes, so a button is never
@@ -430,7 +481,7 @@
         setHtml(offers, app.getRows().filter(r => !r.hasObstacle).map(r =>
           `<p class="guide-note guide-offer"><span>${esc(r.name)}'s seating is not marked as an obstacle.</span><button class="small" data-row="${r.id}">Add it</button></p>`).join(''));
         setHtml(zoneList, app.getZones().map(z =>
-          `<div class="guide-zone"><span>${esc(z.isFurniture ? z.name : ZONE_KIND_LABELS[z.kind])} <span class="dim">${esc(app.formatLength(z.width))} &times; ${esc(app.formatLength(z.height))}</span></span><button class="icon-btn" data-kind="${z.kind}" data-id="${z.id}" title="Remove">&times;</button></div>`).join(''));
+          `<div class="guide-zone"><span>${esc(z.isFurniture ? z.name : ZONE_KIND_LABELS[z.kind])} <span class="dim">${esc(app.formatLength(z.width))} &times; ${esc(app.formatLength(z.height))}</span></span><button class="icon-btn" data-kind="${z.kind}" data-id="${z.id}" title="Remove" aria-label="Remove ${esc(z.isFurniture ? z.name : ZONE_KIND_LABELS[z.kind])}">&times;</button></div>`).join(''));
         const drawing = app.getZoneDrawMode();
         body.querySelectorAll('[data-draw]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.draw === drawing)));
         body.querySelector('#guideDrawHint').hidden = !drawing;
@@ -458,7 +509,7 @@
       return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz">
           ${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
         </svg>
-        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">Suggested</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat</span></div>`;
+        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">Suggested</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
     }
     const VERDICTS = {
       major: 'Major improvement.',
@@ -473,11 +524,11 @@
       return `
         ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
         ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
-        ${b ? change('Optimizer score', null, signedDb(o.comparison.gainDb, 1)) : ''}
-        ${change('Response variation', b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
-        ${change('Deepest null', b && nullText(b), nullText(a))}
+        ${b ? change('Optimizer score' + term('score'), null, signedDb(o.comparison.gainDb, 1)) : ''}
+        ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
+        ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
         ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
-        ${o.seats > 1 ? change('Seat-to-seat variation', b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
+        ${o.seats > 1 ? change('Seat-to-seat variation' + term('seatToSeat'), b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
         ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}
         <ul class="guide-moves">${o.subs.map(sub => {
@@ -498,7 +549,7 @@
         <h2 tabindex="-1">Find the best spot</h2>
         <p>The map now shows sound pressure level across the room at the selected frequency. The goal is a response at your seats that stays even across the ${settings.freqLow} to ${settings.freqHigh} Hz range, without deep nulls.</p>
         <h3>Room correction</h3>
-        <p>Do you run room correction (Audyssey, Dirac, YPAO, ARC)?</p>
+        <p>Do you run room correction (Audyssey, Dirac, YPAO, ARC)?${term('roomCorrection')}</p>
         <div class="segmented guide-counts" id="guideRoomCorrection" role="group" aria-label="Room correction">${ROOM_CORRECTION.map(c => `<button data-rc="${c.id}">${c.label}</button>`).join('')}</div>
         <p class="guide-hint">Room correction can cut peaks but can't fill nulls, so with it, Modal prioritizes avoiding nulls.</p>
         <details class="guide-more"><summary>Settings</summary>
@@ -535,6 +586,7 @@
         });
         if(!body.isConnected) return; // the step was left while the search ran
         runBtn.disabled = false;
+        if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
         outcome = app.optimizerOutcome() || 'none';
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
@@ -551,6 +603,7 @@
           app.applyOptimizerResult();
           app.autofitColorRange();
           refresh();
+          panel.querySelector('#guideNextBtn').focus(); // Apply went away with the card
         } else if(id === 'guideAlternativesBtn'){
           app.setScoreHeatmap(!app.getScoreHeatmap());
           shown = null;
@@ -657,6 +710,7 @@
       refreshStep = null;
       coachTarget = null;
       coach.hidden = true;
+      closeTerm();
       if(app.getZoneDrawMode()) app.toggleZoneDraw(app.getZoneDrawMode()); // an armed drawing tool does not carry over
     }
     function goTo(step){
@@ -715,14 +769,16 @@
       if(finished) state.step = 1;
       save();
       if(state.viewBefore) app.setMapView(state.viewBefore);
+      guideBtn.focus();
     }
 
     const refreshActiveStep = () => { if(state.active && refreshStep) refreshStep(); };
     app.onDraw(refreshActiveStep);
-    window.addEventListener('resize', refreshActiveStep);
+    window.addEventListener('resize', refreshActiveStep); // the coach mark follows the map when the window or tablet orientation changes
+    window.addEventListener('resize', closeTerm);
     // The setup sheet prints in the light palette whatever is on screen.
     window.addEventListener('beforeprint', () => { if(state.active) app.setPrintAppearance(true); });
-    window.addEventListener('afterprint', () => { if(state.active) app.setPrintAppearance(false); }); // the coach mark follows the map when the window or tablet orientation changes
+    window.addEventListener('afterprint', () => { if(state.active) app.setPrintAppearance(false); });
 
     return {
       toggle(){ if(state.active) close(false); else open(); },

@@ -187,6 +187,30 @@ async function expandSection(page, sectionId){
   await page.screenshot({ path: path.join(OUT_DIR, 'materials.png') });
   console.log('Saved materials.png');
 
+  // The setup guide's result step. A separate page has its own fresh
+  // storage, so it opens in the guide the way a first visit does. The sub
+  // starts mid-floor, a spot with a visible gain to report.
+  const guidePage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  guidePage.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
+  guidePage.on('pageerror', err => consoleErrors.push('pageerror: ' + err.message));
+  await guidePage.goto(APP_URL);
+  await guidePage.waitForTimeout(500);
+  for (let i = 0; i < 3; i++) await guidePage.click('#guideNextBtn'); // welcome, room, speakers
+  await guidePage.click('#guideSubCount button[data-count="1"]');
+  for (const [axis, feet] of [['x', 4], ['y', 6]]) {
+    const field = guidePage.locator(`#guideSubList [data-axis="${axis}"] input[data-role="ft"]`);
+    await field.fill(String(feet));
+    await field.press('Tab');
+  }
+  for (let i = 0; i < 3; i++) await guidePage.click('#guideNextBtn'); // subs, seats, obstacles
+  await guidePage.click('#guideRoomCorrection button[data-rc="no"]');
+  await guidePage.click('#guideOptimizeBtn');
+  await guidePage.waitForSelector('#guideApplyBtn', { timeout: 120000 });
+  await guidePage.waitForTimeout(300);
+  await guidePage.screenshot({ path: path.join(OUT_DIR, 'guide.png') });
+  console.log('Saved guide.png');
+  await guidePage.close();
+
   // ============================================================
   // Reset to a clean scene, add 2 subs placed SYMMETRICALLY
   // ============================================================

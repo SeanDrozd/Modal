@@ -94,7 +94,7 @@
   --bg: #ededed; --panel: #ffffff; --panel-2: #f2f2f2;
   --border: #d6d6d6; --border-strong: #adadad;
   --text: #1c1c1c; --text-dim: #5c5c5c;
-  --accent: #b84a00; --on-accent: #ffffff;
+  --accent: #b44800; --on-accent: #ffffff;
   --good: #1b7a44; --bad: #c22f3d;
   --floor: #e2e2e2; --wall: #3d3d3d;
 }
@@ -374,7 +374,7 @@ body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-act
 .guide-result { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-top: 8px; }
 #guidePanel .guide-verdict { font-size: 15px; font-weight: 650; margin-bottom: 8px; }
 .guide-stat { display: flex; justify-content: space-between; gap: 10px; font-size: 13.5px; padding: 3px 0; }
-.guide-stat span { color: var(--text-dim); }
+.guide-stat span { flex: none; color: var(--text-dim); }
 .guide-stat strong { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .guide-chart { display: block; width: 100%; margin-top: 8px; background: var(--bg); border-radius: 6px; fill: none; stroke-width: 1.5; stroke-linejoin: round; }
 .guide-chart .before { stroke: var(--text-dim); stroke-dasharray: 4 3; }
@@ -425,6 +425,18 @@ body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-act
   #guideRail button:not([aria-current="step"]) .guide-rail-title { display: none; }
   #guideRail button:not([aria-current="step"]) { padding-right: 5px; }
 }
+/* The "?" after a term, and the definition it opens (guide.js GLOSSARY). */
+.guide-term {
+  position: relative; width: 18px; height: 18px; padding: 0; margin-left: 5px; border-radius: 50%;
+  font-size: 11.5px; font-weight: 650; line-height: 1; vertical-align: 1px; color: var(--text-dim);
+}
+.guide-term[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+#termNote {
+  position: fixed; z-index: 6; max-width: 300px; padding: 10px 12px; border-radius: 8px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border-strong);
+  font-size: 13.5px; line-height: 1.45; box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+}
+#termNote[hidden] { display: none; }
 /* Callout that points at one marker on the map. It never takes pointer
    input, so the marker under it can still be dragged. */
 #coachMark {
@@ -481,6 +493,9 @@ body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-act
   button, select, input[type="number"], input[type="text"], input[type="range"] { min-height: 44px; }
   .icon-btn { min-width: 44px; }
   .guide-stepper button { width: 44px; }
+  /* Stays small enough to sit in a line of text; the tap area extends 10px past it on every side, 44px in all. */
+  .guide-term { min-height: 0; width: 24px; height: 24px; font-size: 13px; }
+  .guide-term::after { content: ''; position: absolute; inset: -10px; }
   .guide-more summary { padding: 14px 0; }
   input[type="checkbox"] { width: 24px; height: 24px; }
   .section-title .chevron { width: 44px; height: 44px; line-height: 44px; margin: 0 0 0 -14px; text-align: center; }
