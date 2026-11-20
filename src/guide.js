@@ -36,10 +36,11 @@
     coach.hidden = true;
     document.body.appendChild(coach);
 
-    // step: index into STEPS. roomShape: a ROOM_SHAPES id. viewBefore: the
-    // map view to put back when the guide closes. seenWelcome: the welcome
-    // step is shown once, not on every later visit to the guide.
-    let state = { active: false, step: 0, roomShape: 'closed', viewBefore: null, seenWelcome: false };
+    // step: index into STEPS. roomShape: a ROOM_SHAPES id. plannedSubs: how
+    // many subs to recommend positions for when there are none yet.
+    // viewBefore: the map view to put back when the guide closes.
+    // seenWelcome: the welcome step is shown once, not on every later visit.
+    let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, viewBefore: null, seenWelcome: false };
     try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY))); } catch(e){ /* start from the defaults above */ }
     function save(){
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch(e){ /* progress just won't survive a reload */ }
@@ -49,17 +50,81 @@
     // any change to the room, from the guide, the map or Undo). Set by the
     // step's render function, cleared when the step changes.
     let refreshStep = null;
-    // Speaker the coach mark points at, and where it was when selected: the
-    // mark goes away once that speaker has been moved.
+    // The marker the coach mark points at ({ id, x, y } as it was when
+    // picked: the mark goes away once that marker has been moved), and the
+    // current step's wording for it, (item, index) => text.
     let coachTarget = null;
-    // Where the last chosen layout put each speaker, by name, for the
-    // "still at its default position" note.
-    let layoutDefaults = {};
+    let coachText = null;
+    function pointAt(item){
+      coachTarget = item ? { id: item.id, x: item.x, y: item.y } : null;
+    }
 
     const esc = (text) => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const choiceCards = (items, attr, pressedId) => items.map(it =>
       `<button class="guide-card" ${attr}="${it.id ?? it.count}" aria-pressed="${(it.id ?? it.count) === pressedId}"><strong>${esc(it.label)}</strong><span>${esc(it.detail)}</span>${it.extra || ''}</button>`
     ).join('');
+    const countButtons = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => `<button data-count="${from + i}">${from + i}</button>`).join('');
+    const pressOnly = (group, isPressed) => group.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(isPressed(b))));
+
+    // A list of things on the map (speakers, subs or seat rows): one card
+    // each, with its distance from the left and front walls as editable
+    // fields that stay in step with the map. `extra.html(item)` adds a
+    // card's own controls, `extra.wire(card, el)` wires them (card.item is
+    // always the latest data for that card) and `extra.sync(item, el, items)`
+    // keeps them current. Returns a function that brings the list in line
+    // with `items`.
+    function positionList(list, extra = {}){
+      let cards = [];
+      function build(items){
+        list.innerHTML = items.map(it => `
+          <div class="guide-speaker" data-id="${it.id}">
+            <button class="small guide-speaker-name" title="Show ${esc(it.name)} on the map">${esc(it.name)}</button>
+            <div class="guide-field"><label>From left wall</label><span data-axis="x"></span></div>
+            <div class="guide-field"><label>From front wall</label><span data-axis="y"></span></div>
+            ${extra.html ? extra.html(it) : ''}
+          </div>`).join('');
+        cards = items.map(it => {
+          const el = list.querySelector(`[data-id="${it.id}"]`);
+          const card = { id: it.id, el, item: it, xField: el.querySelector('[data-axis="x"]'), yField: el.querySelector('[data-axis="y"]') };
+          const select = () => { pointAt(card.item); refreshStep(); };
+          el.querySelector('.guide-speaker-name').addEventListener('click', select);
+          // Moving focus into a card from elsewhere points at its marker; moving between the card's own fields does not bring a dismissed mark back.
+          el.addEventListener('focusin', (e) => { if(!el.contains(e.relatedTarget) && (!coachTarget || coachTarget.id !== it.id)) select(); });
+          card.writeX = app.lengthField(card.xField, it.x, (ft) => app.moveSource(it.id, ft, card.item.y));
+          card.writeY = app.lengthField(card.yField, it.y, (ft) => app.moveSource(it.id, card.item.x, ft));
+          if(extra.wire) extra.wire(card, el);
+          return card;
+        });
+      }
+      return (items) => {
+        if(items.length !== cards.length || items.some((it, i) => it.id !== cards[i].id)) build(items);
+        items.forEach((it, i) => {
+          const card = cards[i];
+          card.item = it;
+          card.el.classList.toggle('selected', !!coachTarget && coachTarget.id === it.id);
+          // A field being typed in is left alone until focus moves on.
+          if(!card.xField.contains(document.activeElement)) card.writeX(it.x);
+          if(!card.yField.contains(document.activeElement)) card.writeY(it.y);
+          if(extra.sync) extra.sync(it, card.el, items);
+        });
+      };
+    }
+
+    // The coach mark points at one marker until that marker moves.
+    function positionCoach(items){
+      const index = coachTarget ? items.findIndex(it => it.id === coachTarget.id) : -1;
+      const item = items[index];
+      if(item && (Math.abs(item.x - coachTarget.x) > 0.01 || Math.abs(item.y - coachTarget.y) > 0.01)) coachTarget = null;
+      if(!item || !coachTarget){ coach.hidden = true; return; }
+      const at = app.roomToClient(item.x, item.y);
+      coach.textContent = coachText(item, index);
+      coach.hidden = false;
+      // Below the marker unless that would leave the viewport.
+      const below = at.y + 34 + coach.offsetHeight < window.innerHeight;
+      coach.classList.toggle('above', !below);
+      coach.style.left = Math.max(8, Math.min(window.innerWidth - coach.offsetWidth - 8, at.x - coach.offsetWidth / 2)) + 'px';
+      coach.style.top = (below ? at.y + 34 : at.y - 34 - coach.offsetHeight) + 'px';
+    }
 
     // ---- Step 0: welcome ----
     function renderWelcome(body){
@@ -161,87 +226,209 @@
         <p id="guideSpeakersIntro"></p>
         <div id="guideSpeakerList"></div>
         <p class="guide-note" id="guideDefaultsNote" hidden></p>`;
-      const list = body.querySelector('#guideSpeakerList');
       const note = body.querySelector('#guideDefaultsNote');
-      let rows = []; // { id, writeX, writeY, el }
+      const syncList = positionList(body.querySelector('#guideSpeakerList'));
+      coachText = (s) => `Drag ${s.name} to its real position, or enter its distance from two walls.`;
 
       body.querySelector('#guideLayouts').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
         if(!btn) return;
-        layoutDefaults = Object.fromEntries(app.setMainLayout(Number(btn.dataset.count)).map(p => [p.name, p]));
-        const first = app.getMains()[0];
-        coachTarget = first ? { ...first } : null;
+        app.setMainLayout(Number(btn.dataset.count));
+        pointAt(app.getMains()[0]);
         refresh();
       });
-      const select = (id) => {
-        const s = app.getMains().find(m => m.id === id);
-        coachTarget = s ? { ...s } : null;
-        refresh();
-      };
-      function buildList(mains){
-        list.innerHTML = mains.map(s => `
-          <div class="guide-speaker" data-id="${s.id}">
-            <button class="small guide-speaker-name" title="Show ${esc(s.name)} on the map">${esc(s.name)}</button>
-            <div class="guide-field"><label>From left wall</label><span data-axis="x"></span></div>
-            <div class="guide-field"><label>From front wall</label><span data-axis="y"></span></div>
-          </div>`).join('');
-        rows = mains.map(s => {
-          const el = list.querySelector(`[data-id="${s.id}"]`);
-          const current = () => app.getMains().find(m => m.id === s.id);
-          el.querySelector('.guide-speaker-name').addEventListener('click', () => select(s.id));
-          el.addEventListener('focusin', () => { if(!coachTarget || coachTarget.id !== s.id) select(s.id); });
-          return {
-            id: s.id, el,
-            writeX: app.lengthField(el.querySelector('[data-axis="x"]'), s.x, (ft) => app.moveSource(s.id, ft, current().y)),
-            writeY: app.lengthField(el.querySelector('[data-axis="y"]'), s.y, (ft) => app.moveSource(s.id, current().x, ft))
-          };
-        });
-      }
       function refresh(){
         const mains = app.getMains();
-        if(mains.length !== rows.length || mains.some((s, i) => s.id !== rows[i].id)) buildList(mains);
-        body.querySelectorAll('#guideLayouts button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.count) === mains.length)));
+        syncList(mains);
+        pressOnly(body.querySelector('#guideLayouts'), b => Number(b.dataset.count) === mains.length);
         body.querySelector('#guideSpeakersIntro').textContent = mains.length
           ? 'Drag each speaker on the map to where it really is, or enter its distance from two walls.'
           : 'No main speakers to place.';
-        mains.forEach((s, i) => {
-          const row = rows[i];
-          row.el.classList.toggle('selected', !!coachTarget && coachTarget.id === s.id);
-          if(!row.el.contains(document.activeElement)){ row.writeX(s.x); row.writeY(s.y); }
-        });
-        const untouched = mains.filter(s => layoutDefaults[s.name] && Math.abs(layoutDefaults[s.name].x - s.x) < 0.01 && Math.abs(layoutDefaults[s.name].y - s.y) < 0.01);
+        const untouched = mains.filter(s => s.atDefault);
         note.hidden = untouched.length === 0;
         note.textContent = `Still at ${untouched.length === 1 ? 'its default position' : 'their default positions'}: ${untouched.map(s => s.name).join(', ')}.`;
         positionCoach(mains);
       }
-      if(!coachTarget){
-        const first = app.getMains()[0];
-        if(first) coachTarget = { ...first };
-      }
+      pointAt(app.getMains()[0]);
       refresh();
       return refresh;
     }
 
-    // The coach mark points at one speaker until that speaker moves.
-    function positionCoach(mains){
-      const s = coachTarget && mains.find(m => m.id === coachTarget.id);
-      if(s && (Math.abs(s.x - coachTarget.x) > 0.01 || Math.abs(s.y - coachTarget.y) > 0.01)) coachTarget = null;
-      if(!s || !coachTarget){ coach.hidden = true; return; }
-      const at = app.roomToClient(s.x, s.y);
-      coach.textContent = `Drag ${s.name} to its real position, or enter its distance from two walls.`;
-      coach.hidden = false;
-      // Below the speaker unless that would leave the viewport.
-      const below = at.y + 34 + coach.offsetHeight < window.innerHeight;
-      coach.classList.toggle('above', !below);
-      coach.style.left = Math.max(8, Math.min(window.innerWidth - coach.offsetWidth - 8, at.x - coach.offsetWidth / 2)) + 'px';
-      coach.style.top = (below ? at.y + 34 : at.y - 34 - coach.offsetHeight) + 'px';
+    // ---- Step 3: subwoofers ----
+    function renderSubs(body){
+      body.innerHTML = `
+        <h2 tabindex="-1">Your subwoofers</h2>
+        <h3>How many you have</h3>
+        <div class="segmented guide-counts" id="guideSubCount" role="group" aria-label="Number of subwoofers"><button data-count="0">None yet</button>${countButtons(1, 4)}</div>
+        <div id="guideSubsPlanned" hidden>
+          <p>Modal will recommend positions for new subs. How many are you considering?</p>
+          <div class="segmented guide-counts" id="guidePlannedCount" role="group" aria-label="Number of subwoofers to plan for">${countButtons(1, 4)}</div>
+        </div>
+        <div id="guideSubsPlaced" hidden>
+          <h3>Positions</h3>
+          <p>Place each sub where it is now: drag it on the map, or enter its distance from two walls. Modal uses the current position as the baseline for comparison.</p>
+          <div id="guideSubList"></div>
+        </div>`;
+      const syncList = positionList(body.querySelector('#guideSubList'));
+      coachText = (s) => `Drag ${s.name} to where it is now.`;
+
+      body.querySelector('#guideSubCount').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        app.setSubCount(Number(btn.dataset.count));
+        pointAt(app.getSubs()[0]);
+        refresh();
+      });
+      body.querySelector('#guidePlannedCount').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        state.plannedSubs = Number(btn.dataset.count);
+        save();
+        refresh();
+      });
+      function refresh(){
+        const subs = app.getSubs();
+        syncList(subs);
+        pressOnly(body.querySelector('#guideSubCount'), b => Number(b.dataset.count) === subs.length);
+        pressOnly(body.querySelector('#guidePlannedCount'), b => Number(b.dataset.count) === state.plannedSubs);
+        body.querySelector('#guideSubsPlanned').hidden = subs.length > 0;
+        body.querySelector('#guideSubsPlaced').hidden = subs.length === 0;
+        positionCoach(subs);
+      }
+      pointAt(app.getSubs()[0]);
+      refresh();
+      return refresh;
+    }
+
+    // ---- Step 4: seats ----
+    function renderSeats(body){
+      const lim = app.rowLimits;
+      body.innerHTML = `
+        <h2 tabindex="-1">Where you sit</h2>
+        <p>Drag the marker to your main seat, or enter its distance from two walls, and set how many seats are in the row. Modal weights the center seat most heavily.</p>
+        <div id="guideRowList"></div>
+        <button id="guideAddRowBtn">Add a row</button>
+        <p class="guide-hint">For a second couch or a row of recliners. Each additional row is weighted at half the priority of the row above it.</p>`;
+      const syncList = positionList(body.querySelector('#guideRowList'), {
+        html: () => `
+          <div class="guide-field"><label>Seats</label>
+            <div class="guide-stepper"><button data-seats="-1" aria-label="Fewer seats">&minus;</button><output></output><button data-seats="1" aria-label="More seats">+</button></div>
+          </div>
+          <details class="guide-more"><summary>This row faces a different way</summary>
+            <div class="guide-field"><label>Facing<span>0&deg; is the front wall, 90&deg; the right wall</span></label>
+              <span class="guide-facing"><input type="range" min="0" max="355" step="5" aria-label="Facing in degrees"><output></output></span>
+            </div>
+          </details>
+          <button class="guide-skip" data-remove>Remove this row</button>`,
+        wire(card, el){
+          el.querySelector('.guide-stepper').addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if(btn) app.setRowSeats(card.id, card.item.seats + Number(btn.dataset.seats));
+          });
+          el.querySelector('input[type="range"]').addEventListener('input', function(){ app.setRowFacing(card.id, Number(this.value)); });
+          el.querySelector('[data-remove]').addEventListener('click', () => app.removeRow(card.id));
+        },
+        sync(row, el, rows){
+          el.querySelector('.guide-stepper output').textContent = row.seats;
+          el.querySelector('[data-seats="-1"]').disabled = row.seats <= 1;
+          el.querySelector('[data-seats="1"]').disabled = row.seats >= lim.maxSeats;
+          const slider = el.querySelector('input[type="range"]');
+          if(document.activeElement !== slider) slider.value = row.facing;
+          el.querySelector('.guide-facing output').textContent = `${Math.round(row.facing)}°`;
+          el.querySelector('[data-remove]').hidden = rows.length <= 1;
+        }
+      });
+      coachText = (row, index) => index === 0 ? `Drag ${row.name} to your main seat.` : `Drag ${row.name} to where that row sits.`;
+
+      const addBtn = body.querySelector('#guideAddRowBtn');
+      addBtn.addEventListener('click', () => {
+        if(!app.addRow()) return;
+        pointAt(app.getRows().at(-1));
+        refresh();
+      });
+      function refresh(){
+        const rows = app.getRows();
+        syncList(rows);
+        addBtn.disabled = rows.length >= lim.maxRows;
+        positionCoach(rows);
+      }
+      pointAt(app.getRows()[0]);
+      refresh();
+      return refresh;
+    }
+
+    // ---- Step 5: furniture and no-go areas ----
+    const ZONE_KIND_LABELS = { offlimit: 'No-go area', preferred: 'Preferred area', allowed: 'Allowed area' };
+    function renderObstacles(body){
+      body.innerHTML = `
+        <h2 tabindex="-1">Furniture and no-go areas</h2>
+        <p>Mark furniture, doorways and walkways where a sub physically can't go. The optimizer searches everything else. Wall and corner positions usually perform best, but the whole floor is searched.</p>
+        <p class="guide-note">Furniture is not included in the acoustic calculation. It only excludes sub positions.</p>
+        <div id="guideSeatingOffers"></div>
+        <h3>Add an obstacle</h3>
+        <div class="guide-palette" id="guidePalette">
+          ${app.furnitureTypes.map(f => `<button class="small" data-furniture="${f.type}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${f.icon}"/></svg>${esc(f.label)}</button>`).join('')}
+        </div>
+        <p class="guide-hint">A piece drops into the middle of the room. Drag it into place and drag a corner to resize it.</p>
+        <button data-draw="offlimit">Draw another no-go area</button>
+        <p class="guide-hint" id="guideDrawHint" hidden>Click and drag on the map to draw the area.</p>
+        <div id="guideZoneList"></div>
+        <p class="guide-warning" id="guideCoverageWarning" hidden></p>
+        <details class="guide-more"><summary>More options</summary>
+          <div class="guide-field"><label>Preferred area<span>A soft bias. A clearly better spot elsewhere still wins.</span></label><button class="small" data-draw="preferred">Draw</button></div>
+          <div class="guide-field"><label>Allowed area only<span>A hard limit. Subs are only placed inside it.</span></label><button class="small" data-draw="allowed">Draw</button></div>
+        </details>`;
+      const offers = body.querySelector('#guideSeatingOffers');
+      const zoneList = body.querySelector('#guideZoneList');
+      const warning = body.querySelector('#guideCoverageWarning');
+
+      body.querySelector('#guidePalette').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(btn) app.addFurniture(btn.dataset.furniture);
+      });
+      body.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-draw]');
+        if(!btn) return;
+        app.toggleZoneDraw(btn.dataset.draw);
+        refresh();
+      });
+      offers.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        const row = btn && app.getRows().find(r => r.id === Number(btn.dataset.row));
+        if(row) app.addFurniture('couch', { name: `${row.name} seating`, ...row.footprint });
+      });
+      zoneList.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(btn) app.removeZone(btn.dataset.kind, Number(btn.dataset.id));
+      });
+
+      // Rebuilt only when their content changes, so a button is never
+      // replaced partway through a click.
+      const setHtml = (el, html) => { if(el.dataset.html !== html){ el.dataset.html = html; el.innerHTML = html; } };
+      function refresh(){
+        setHtml(offers, app.getRows().filter(r => !r.hasObstacle).map(r =>
+          `<p class="guide-note guide-offer"><span>${esc(r.name)}'s seating is not marked as an obstacle.</span><button class="small" data-row="${r.id}">Add it</button></p>`).join(''));
+        setHtml(zoneList, app.getZones().map(z =>
+          `<div class="guide-zone"><span>${esc(z.isFurniture ? z.name : ZONE_KIND_LABELS[z.kind])} <span class="dim">${esc(app.formatLength(z.width))} &times; ${esc(app.formatLength(z.height))}</span></span><button class="icon-btn" data-kind="${z.kind}" data-id="${z.id}" title="Remove">&times;</button></div>`).join(''));
+        const drawing = app.getZoneDrawMode();
+        body.querySelectorAll('[data-draw]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.draw === drawing)));
+        body.querySelector('#guideDrawHint').hidden = !drawing;
+        const text = app.floorCoverageWarning();
+        warning.hidden = !text;
+        warning.textContent = text || '';
+      }
+      refresh();
+      return refresh;
     }
 
     // `title` puts a step on the rail; the welcome step has none.
     const STEPS = [
       { render: renderWelcome, next: 'Start setup' },
       { title: 'Room', render: renderRoom },
-      { title: 'Speakers', render: renderSpeakers }
+      { title: 'Speakers', render: renderSpeakers },
+      { title: 'Subs', render: renderSubs },
+      { title: 'Seats', render: renderSeats },
+      { title: 'Obstacles', render: renderObstacles }
     ];
 
     function renderRail(){
@@ -254,13 +441,17 @@
       if(btn) goTo(Number(btn.dataset.step));
     });
 
+    function leaveStep(){
+      refreshStep = null;
+      coachTarget = null;
+      coach.hidden = true;
+      if(app.getZoneDrawMode()) app.toggleZoneDraw(app.getZoneDrawMode()); // an armed drawing tool does not carry over
+    }
     function goTo(step){
       state.step = Math.max(0, Math.min(STEPS.length - 1, step));
       if(state.step > 0) state.seenWelcome = true;
       save();
-      refreshStep = null;
-      coachTarget = null;
-      coach.hidden = true;
+      leaveStep();
       const last = state.step === STEPS.length - 1;
       panel.innerHTML = `
         <div class="guide-body"></div>
@@ -293,14 +484,14 @@
       state.viewBefore = app.getMapView();
       setActive(true);
       app.setMapView('plan');
+      app.removeDefaultZone();
       goTo(state.seenWelcome ? Math.max(1, state.step) : 0);
     }
     // Leaves the guide for the full tool. The step is kept, so reopening
     // the guide carries on from it; finishing starts it over from the room.
     function close(finished){
       setActive(false);
-      refreshStep = null;
-      coach.hidden = true;
+      leaveStep();
       panel.innerHTML = '';
       if(finished) state.step = 1;
       save();

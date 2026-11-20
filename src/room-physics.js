@@ -502,6 +502,22 @@
     return positions;
   }
 
+  // The floor a row's couch or chairs take up, as an axis-aligned rectangle
+  // { x, y, width, height } for marking it as an obstacle: one seat spacing
+  // of width per seat along the row and `depthFt` (default 3) front to
+  // back, centered on the row and clipped to the room. A row facing at an
+  // angle gets the bounding box of its rotated footprint. Same facing
+  // convention as rowSeatPositions (the row runs along (cos, sin)).
+  function rowFootprintRect(row, room, depthFt = 3){
+    const rad = (row.facing ?? 0) * Math.PI / 180;
+    const halfLen = Math.max(1, row.seats | 0) * row.spacingFt / 2, halfDepth = depthFt / 2;
+    const hx = Math.abs(Math.cos(rad)) * halfLen + Math.abs(Math.sin(rad)) * halfDepth;
+    const hy = Math.abs(Math.sin(rad)) * halfLen + Math.abs(Math.cos(rad)) * halfDepth;
+    const x0 = Math.max(0, row.x - hx), y0 = Math.max(0, row.y - hy);
+    const x1 = Math.min(room.w, row.x + hx), y1 = Math.min(room.d, row.y + hy);
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+
   // ---- Listening-row/seat importance weighting ----
   // rank: 0-based index into an ordered list of rows (0 = rank 1, most
   // important) -- geometric falloff, so each successively lower-ranked row
@@ -1320,6 +1336,7 @@
     preferredZoneBonusDb,
     SPEAKER_AZIMUTH_DEG,
     standardSpeakerPositions,
+    rowFootprintRect,
     isPointInRect,
     freeFloorFraction,
     isCandidateValid,
