@@ -138,6 +138,7 @@ With more than one listening row/seat configured, the same spatially-averaged ca
 - `src/room-physics.test.js`: a hand-rolled test suite (no framework, no dependencies) covering the physics module. Run with `node src/room-physics.test.js`.
 - `src/field-render.js`: turns a precomputed per-mode coefficient list into pixels, on either a canvas2d (CPU) or WebGL (GPU) path. GPU mode data rides on float textures (double-buffered, to avoid a CPU/GPU sync stall), not uniform arrays, so it isn't bounded by WebGL1's small uniform-vector budget.
 - `src/modal.html`: the UI. DOM wiring, canvas drawing/overlays, presets/session persistence. Delegates all physics to `room-physics.js` and all field rendering to `field-render.js`.
+- `src/modal.css`: the UI's stylesheet, loaded by `modal.html` via a plain `<link>`.
 - `tools/`: dev-only scripts for regenerating the screenshots/animations in `docs/` (Playwright-driven UI capture, encoded to animated WebP via `sharp`; plus a from-scratch renderer for the sphere-sampling GIF). Not part of the app; has its own `package.json`. See `tools/capture-docs-media.js` and `tools/render-sphere-demo.js`.
 
 ## Running it

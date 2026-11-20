@@ -1,0 +1,188 @@
+:root {
+  --bg: #0b0e12;
+  --panel: #151a21;
+  --panel-2: #1c232c;
+  --border: #2a3340;
+  --text: #e8ecf1;
+  --text-dim: #8b96a5;
+  --accent: #4fb0e8;
+  --good: #4fe89a;
+  --bad: #e85c5c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+#sidebar {
+  width: 340px;
+  min-width: 340px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  min-width: 0;
+}
+h1 { font-size: 16.5px; font-weight: 600; margin: 0 0 4px; }
+.subtitle { font-size: 13.5px; color: var(--text-dim); margin: 0 0 16px; line-height: 1.4; }
+.section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.section:last-child { border-bottom: none; }
+.section-title {
+  font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;
+}
+.row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; gap: 8px; }
+.row label { font-size: 13.5px; color: var(--text); flex-shrink: 0; }
+.row .val { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; min-width: 50px; text-align: right; }
+/* Label+value on their own line, control (slider/select) on a full-width
+   line below -- used for rows whose label+control+value can't all fit on
+   one line without crowding or overflowing the sidebar (long labels, wide
+   dropdown text). Puts the value right next to its label instead of pinned
+   to the far edge of the sidebar. */
+.row-stacked { margin-bottom: 7px; }
+.row-stacked .row-stacked-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.row-stacked .row-stacked-head label { font-size: 13.5px; color: var(--text); }
+.row-stacked .row-stacked-head .val { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.row-stacked input[type="range"] { width: 100%; }
+.row-stacked select { width: 100%; }
+/* A length-valued field: either one meters input, or a feet+inches pair,
+   depending on the current unit toggle -- see lengthFieldHtml(). Always
+   wrapped in one element so existing querySelector('[data-field="x"]')
+   call sites keep working unchanged regardless of which shape is inside. */
+.length-field { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.length-field input[type="number"] { text-align: right; }
+.length-suffix { font-size: 14.5px; font-weight: 600; color: var(--text); flex-shrink: 0; }
+/* min-width:0 overrides the flex item default of min-width:auto, which
+   resolves to the element's min-content size. Range inputs' min-content
+   width differs by browser (Firefox's default is wider than Chromium's),
+   so without this, a .row's range slider could refuse to shrink enough in
+   Firefox, pushing the sibling .val text outside the container. */
+input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+input[type="number"] {
+  width: 56px; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 4px; padding: 4px 6px; font-size: 13.5px;
+}
+input[type="text"] {
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 4px; padding: 5px 8px; font-size: 13.5px; width: 100%;
+}
+select {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 4px; padding: 5px 6px; font-size: 13.5px; width: 100%;
+}
+.src-block {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; margin-bottom: 8px;
+}
+.src-block .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
+.src-label {
+  font-size: 13.5px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;
+}
+.src-label .name-wrap { display: flex; align-items: center; flex: 1; min-width: 0; }
+.src-label .name-wrap span.txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn {
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 15.5px; padding: 2px 5px; line-height: 1; border-radius: 3px;
+}
+.icon-btn:hover { color: var(--bad); background: rgba(232,92,92,0.1); }
+.icon-btn.reorder-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+.icon-btn.reorder-btn:disabled { opacity: 0.3; cursor: default; }
+.icon-btn.reorder-btn:disabled:hover { background: transparent; }
+.src-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
+.presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+button {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+}
+button:hover { background: #232c37; border-color: #3a4552; }
+button.active { background: rgba(79,176,232,0.15); border-color: var(--accent); color: var(--accent); }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.danger { border-color: var(--bad); color: var(--bad); }
+button.danger:hover { background: rgba(232,92,92,0.1); }
+button.full { width: 100%; }
+button.small { padding: 4px 8px; font-size: 12.5px; }
+#canvasWrap {
+  position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--panel); border-radius: 8px; border: 1px solid var(--border);
+}
+canvas { max-width: 100%; max-height: 100%; cursor: grab; }
+canvas.dragging { cursor: grabbing; }
+#cvGL { pointer-events: none; } /* overlay canvas (cv) handles all interaction; cvGL is purely visual */
+/* Bottom info panel (below the canvas): frequency control + live readouts,
+   replacing what used to be a floating label drawn on the canvas itself
+   plus two thin centered lines -- there's real width down here once the
+   canvas is square, worth using for more than that. */
+#bottomPanel { margin-top: 12px; }
+#bottomPanel .freq-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#bottomPanel .freq-row label { font-size: 13.5px; color: var(--text); flex-shrink: 0; }
+#bottomPanel .freq-row .val { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+#freqSliderWrap { position: relative; flex: 1; min-width: 120px; display: flex; align-items: center; }
+#freqSliderWrap input[type="range"] { width: 100%; }
+/* Fixed width so toggling between "Sweep" and "Pause" (different text/icon
+   widths) doesn't reflow the row and shift the slider (and sweep-end
+   marker) that comes before it in flex order. Same underlying cause, and
+   same fix, as #freqVal's fixed min-width (inline in modal.html): a
+   sibling's width changing mid-animation shouldn't move anything else. */
+#freqSweepPlayBtn { width: 78px; text-align: center; }
+/* The clickable box sits well above the slider's own vertical center (not
+   overlapping it), so it never steals a click meant for the native range
+   thumb when their x-positions happen to coincide. Only a thin,
+   pointer-events:none tail extends down to the track for visual alignment. */
+#sweepEndMarker {
+  position: absolute; top: 50%; width: 10px; height: 10px; margin-top: -22px; margin-left: -5px;
+  background: rgba(245,213,71,0.85); border-radius: 2px; cursor: ew-resize; pointer-events: auto;
+}
+#sweepEndMarker::after {
+  content: ''; position: absolute; left: 50%; top: 10px; width: 2px; height: 12px;
+  background: rgba(245,213,71,0.85); transform: translateX(-50%); pointer-events: none;
+}
+#bottomPanel .stats-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+#bottomPanel .stats-row > * { flex: 1; min-width: 180px; }
+#legend {
+  display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 10px;
+  font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap;
+}
+#legend .swatch { display: inline-block; width: 60px; height: 10px; border-radius: 2px; vertical-align: middle; margin: 0 6px; }
+#info { font-size: 12.5px; color: var(--text-dim); text-align: center; margin-top: 8px; }
+.stat-chip {
+  font-size: 13.5px; color: var(--text); background: var(--panel-2); border-radius: 5px;
+  padding: 8px 10px; line-height: 1.5;
+}
+.stat-chip b { color: var(--accent); }
+.stat-chip:empty { display: none; } /* e.g. earDiffInfo renders '' with no active sources -- don't show an empty box */
+#modalInfo { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin-top: 6px; }
+/* Collapsible sidebar sections -- a chevron toggles .collapsed on the
+   parent .section, which hides .section-body. The chevron is its own
+   clickable element (not the whole header row) because several headers
+   already have their own interactive controls nested in them (an "All"
+   checkbox, a "+ Add ..." button) that shouldn't also toggle collapse. */
+/* Groups the chevron with its label text as one flex item, so
+   .section-title's justify-content:space-between spreads [chevron+label]
+   vs. [nested header controls, e.g. an "All" checkbox / "+ Add" button]
+   apart -- not the chevron and its own label away from each other. */
+.section-title-label { display: inline-flex; align-items: center; }
+.section-title .chevron {
+  cursor: pointer; display: inline-block; width: 14px; margin-right: 2px;
+  transition: transform 0.15s ease; user-select: none;
+}
+.section.collapsed .chevron { transform: rotate(-90deg); }
+.section.collapsed .section-body { display: none; }
+.hint { font-size: 12.5px; color: var(--text-dim); margin-top: 4px; line-height: 1.4; }
+.range-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.range-row label { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.range-row input[type="number"] { width: 52px; }
+.status-msg { font-size: 12.5px; padding: 6px 8px; border-radius: 4px; margin-top: 6px; }
+.status-msg.ok { background: rgba(79,232,154,0.12); color: var(--good); }
+.status-msg.err { background: rgba(232,92,92,0.12); color: var(--bad); }
+#saveAsRow.show { display: flex !important; }
