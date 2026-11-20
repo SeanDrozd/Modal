@@ -1,21 +1,103 @@
+/* ---- Design tokens ----
+   Every color in this file comes from the custom properties below, set by
+   two attributes on <html>: data-mode ("dark" or "light", already resolved
+   from the Auto/Light/Dark setting by applyAppearanceAttrs() in modal.html)
+   and data-theme (one of the four color themes). Canvas drawing reads the
+   same properties (see readThemeColors() in modal.html), so the map outline
+   and the frequency response chart follow the theme too. The heatmap's own
+   colormap is deliberately not a token: a given dB reading looks the same
+   under every theme. */
+
+/* Mode-level tokens: the same in every theme, since they are data colors
+   (chart series, the listening-position/sweep marker) or native-control
+   behavior (color-scheme), not part of a theme's identity. */
 :root {
-  --bg: #0b0e12;
-  --panel: #151a21;
-  --panel-2: #1c232c;
-  --border: #2a3340;
-  --text: #e8ecf1;
-  --text-dim: #8b96a5;
-  --accent: #4fb0e8;
-  --good: #4fe89a;
-  --bad: #e85c5c;
+  color-scheme: dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --series-1: #4fb0e8;
+  --series-2: #4fe89a;
+  --marker: #f5d547;
+  --shadow: none;
+}
+:root[data-mode="light"] {
+  color-scheme: light;
+  --series-1: #0b6fae;
+  --series-2: #0f8a4e;
+  --marker: #9a6b00;
+  --shadow: 0 1px 2px rgba(0,0,0,0.06), 0 4px 14px rgba(0,0,0,0.06);
+}
+
+/* Theme tokens. Each theme has a dark block and a light block. The selectors
+   match either <html> itself or any descendant carrying data-theme, which is
+   what lets each swatch button in the header preview its own theme's colors
+   (in the current mode) without those colors being repeated anywhere else.
+   Contrast is checked for every theme and mode: text is at least 7:1 on
+   panels, and dim text, accent, good and bad are at least 4.5:1. */
+:root, [data-theme="studio"] {
+  --bg: #0b0e12; --panel: #151a21; --panel-2: #1c232c;
+  --border: #2a3340; --border-strong: #3d4856;
+  --text: #e8ecf1; --text-dim: #94a0b0;
+  --accent: #4fb0e8; --on-accent: #06121b;
+  --good: #4fe89a; --bad: #f07272;
+}
+:root[data-mode="light"], [data-mode="light"] [data-theme="studio"] {
+  --bg: #eef1f4; --panel: #ffffff; --panel-2: #f1f4f7;
+  --border: #d3dae2; --border-strong: #aab4c0;
+  --text: #18202a; --text-dim: #566270;
+  --accent: #0b6fae; --on-accent: #ffffff;
+  --good: #0f7a45; --bad: #c23434;
+}
+[data-theme="walnut"] {
+  --bg: #12100d; --panel: #1c1814; --panel-2: #26201a;
+  --border: #3a3027; --border-strong: #524536;
+  --text: #f0e9df; --text-dim: #ab9e8e;
+  --accent: #e3a23f; --on-accent: #1c1203;
+  --good: #93d07c; --bad: #f0796a;
+}
+[data-mode="light"][data-theme="walnut"], [data-mode="light"] [data-theme="walnut"] {
+  --bg: #f1ebe2; --panel: #fffdf9; --panel-2: #f4eee5;
+  --border: #ddd1c1; --border-strong: #b8a892;
+  --text: #2a2118; --text-dim: #675949;
+  --accent: #8f5200; --on-accent: #ffffff;
+  --good: #2c7436; --bad: #b5382b;
+}
+[data-theme="midnight"] {
+  --bg: #090b17; --panel: #111428; --panel-2: #191d38;
+  --border: #292e54; --border-strong: #3c4273;
+  --text: #e7e9f8; --text-dim: #989dc4;
+  --accent: #a995ff; --on-accent: #110a33;
+  --good: #5fe0a8; --bad: #f47a93;
+}
+[data-mode="light"][data-theme="midnight"], [data-mode="light"] [data-theme="midnight"] {
+  --bg: #eceef8; --panel: #ffffff; --panel-2: #eff0fa;
+  --border: #d2d5ec; --border-strong: #a9aed2;
+  --text: #171a33; --text-dim: #555a80;
+  --accent: #5a3fd0; --on-accent: #ffffff;
+  --good: #0f7a56; --bad: #bf3050;
+}
+[data-theme="signal"] {
+  --bg: #0e0e0e; --panel: #181818; --panel-2: #212121;
+  --border: #343434; --border-strong: #4a4a4a;
+  --text: #eeeeee; --text-dim: #a0a0a0;
+  --accent: #ff8a3d; --on-accent: #1f0d00;
+  --good: #5fd38d; --bad: #f25f6b;
+}
+[data-mode="light"][data-theme="signal"], [data-mode="light"] [data-theme="signal"] {
+  --bg: #ededed; --panel: #ffffff; --panel-2: #f2f2f2;
+  --border: #d6d6d6; --border-strong: #adadad;
+  --text: #1c1c1c; --text-dim: #5c5c5c;
+  --accent: #b84a00; --on-accent: #ffffff;
+  --good: #1b7a44; --bad: #c22f3d;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  display: flex;
+  font-family: var(--font);
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
@@ -28,13 +110,33 @@ body {
   overflow-y: auto;
 }
 #main {
-  flex: 1;
   display: flex;
   flex-direction: column;
   padding: 16px;
   min-width: 0;
+  min-height: 0;
 }
-h1 { font-size: 16.5px; font-weight: 600; margin: 0 0 4px; }
+#appHeader {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand .logo { width: 28px; height: 28px; color: var(--accent); flex-shrink: 0; }
+h1 { font-size: 19px; font-weight: 650; letter-spacing: 0.01em; margin: 0; }
+.brand .tagline { font-size: 13px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.segmented button { border: none; border-radius: 0; padding: 4px 10px; font-size: 12.5px; color: var(--text-dim); }
+.segmented button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+/* Each swatch carries its own data-theme, so var(--bg)/var(--accent) here
+   resolve to that theme's colors, not the page's current ones. */
+#themeSwatches { display: flex; gap: 6px; }
+.theme-swatch {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid var(--border-strong);
+  background: linear-gradient(135deg, var(--bg) 50%, var(--accent) 50%);
+}
+.theme-swatch:hover { background: linear-gradient(135deg, var(--bg) 50%, var(--accent) 50%); }
+.theme-swatch[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
 .subtitle { font-size: 13.5px; color: var(--text-dim); margin: 0 0 16px; line-height: 1.4; }
 .section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .section:last-child { border-bottom: none; }
@@ -71,18 +173,20 @@ h1 { font-size: 16.5px; font-weight: 600; margin: 0 0 4px; }
 input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
 input[type="number"] {
   width: 56px; background: var(--panel-2); border: 1px solid var(--border);
-  color: var(--text); border-radius: 4px; padding: 4px 6px; font-size: 13.5px;
+  color: var(--text); border-radius: 6px; padding: 4px 6px; font-size: 13.5px;
 }
 input[type="text"] {
   background: var(--panel-2); border: 1px solid var(--border);
-  color: var(--text); border-radius: 4px; padding: 5px 8px; font-size: 13.5px; width: 100%;
+  color: var(--text); border-radius: 6px; padding: 5px 8px; font-size: 13.5px; width: 100%;
 }
 select {
   background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-  border-radius: 4px; padding: 5px 6px; font-size: 13.5px; width: 100%;
+  border-radius: 6px; padding: 5px 6px; font-size: 13.5px; width: 100%;
 }
+input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: none; border-color: var(--accent); }
+button:focus-visible, input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .src-block {
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px; margin-bottom: 8px;
 }
 .src-block .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
@@ -95,26 +199,29 @@ select {
   background: transparent; border: none; color: var(--text-dim); cursor: pointer;
   font-size: 15.5px; padding: 2px 5px; line-height: 1; border-radius: 3px;
 }
-.icon-btn:hover { color: var(--bad); background: rgba(232,92,92,0.1); }
-.icon-btn.reorder-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+.icon-btn:hover { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.icon-btn.reorder-btn:hover { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
 .icon-btn.reorder-btn:disabled { opacity: 0.3; cursor: default; }
 .icon-btn.reorder-btn:disabled:hover { background: transparent; }
 .src-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
 .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 button {
   background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-  border-radius: 5px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+  border-radius: 7px; padding: 6px 10px; font-size: 13px; font-family: inherit; cursor: pointer;
 }
-button:hover { background: #232c37; border-color: #3a4552; }
-button.active { background: rgba(79,176,232,0.15); border-color: var(--accent); color: var(--accent); }
-button.primary { border-color: var(--accent); color: var(--accent); }
+button:hover { background: color-mix(in srgb, var(--text) 8%, var(--panel-2)); border-color: var(--border-strong); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { background: var(--panel-2); border-color: var(--border); }
+button.active { background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--text)); border-color: var(--accent); }
 button.danger { border-color: var(--bad); color: var(--bad); }
-button.danger:hover { background: rgba(232,92,92,0.1); }
+button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
 button.full { width: 100%; }
 button.small { padding: 4px 8px; font-size: 12.5px; }
 #canvasWrap {
   position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
-  background: var(--panel); border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel); border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow);
 }
 canvas { max-width: 100%; max-height: 100%; cursor: grab; }
 canvas.dragging { cursor: grabbing; }
@@ -141,11 +248,11 @@ canvas.dragging { cursor: grabbing; }
    pointer-events:none tail extends down to the track for visual alignment. */
 #sweepEndMarker {
   position: absolute; top: 50%; width: 10px; height: 10px; margin-top: -22px; margin-left: -5px;
-  background: rgba(245,213,71,0.85); border-radius: 2px; cursor: ew-resize; pointer-events: auto;
+  background: var(--marker); border-radius: 2px; cursor: ew-resize; pointer-events: auto;
 }
 #sweepEndMarker::after {
   content: ''; position: absolute; left: 50%; top: 10px; width: 2px; height: 12px;
-  background: rgba(245,213,71,0.85); transform: translateX(-50%); pointer-events: none;
+  background: var(--marker); transform: translateX(-50%); pointer-events: none;
 }
 #bottomPanel .stats-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 #bottomPanel .stats-row > * { flex: 1; min-width: 180px; }
@@ -156,7 +263,7 @@ canvas.dragging { cursor: grabbing; }
 #legend .swatch { display: inline-block; width: 60px; height: 10px; border-radius: 2px; vertical-align: middle; margin: 0 6px; }
 #info { font-size: 12.5px; color: var(--text-dim); text-align: center; margin-top: 8px; }
 .stat-chip {
-  font-size: 13.5px; color: var(--text); background: var(--panel-2); border-radius: 5px;
+  font-size: 13.5px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; line-height: 1.5;
 }
 .stat-chip b { color: var(--accent); }
@@ -182,7 +289,7 @@ canvas.dragging { cursor: grabbing; }
 .range-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .range-row label { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
 .range-row input[type="number"] { width: 52px; }
-.status-msg { font-size: 12.5px; padding: 6px 8px; border-radius: 4px; margin-top: 6px; }
-.status-msg.ok { background: rgba(79,232,154,0.12); color: var(--good); }
-.status-msg.err { background: rgba(232,92,92,0.12); color: var(--bad); }
+.status-msg { font-size: 12.5px; padding: 6px 8px; border-radius: 6px; margin-top: 6px; }
+.status-msg.ok { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); }
+.status-msg.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
 #saveAsRow.show { display: flex !important; }
