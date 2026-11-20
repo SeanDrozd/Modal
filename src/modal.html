@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Modal: subwoofer placement and room modes</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23151a21'/%3E%3Cpath d='M7 25V8Q12 8 16 20Q20 8 25 8V25' fill='none' stroke='%234fb0e8' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23e3a23f' stroke-linecap='round'%3E%3Crect width='32' height='32' rx='7' fill='%231c1814' stroke='none'/%3E%3Cpath d='M3 16Q9.5 3 16 16T29 16' stroke-width='3'/%3E%3Cpath d='M3 16Q9.5 29 16 16T29 16' stroke-width='3' opacity='.45'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="modal.css">
 <script>
 // Sets the two <html> attributes that modal.css keys every color off (see
@@ -22,7 +22,7 @@ function applyAppearanceAttrs(mode, theme){
 (function(){
   let session = null;
   try { session = JSON.parse(localStorage.getItem('room-viz-session-v1')); } catch(e){ /* fall through to the defaults */ }
-  applyAppearanceAttrs((session && session.appearanceMode) || 'auto', (session && session.colorTheme) || 'studio');
+  applyAppearanceAttrs((session && session.appearanceMode) || 'auto', (session && session.colorTheme) || 'walnut');
 })();
 </script>
 </head>
@@ -30,7 +30,7 @@ function applyAppearanceAttrs(mode, theme){
 
 <header id="appHeader">
   <div class="brand">
-    <svg class="logo" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 26V7Q11.5 7 16 20.5Q20.5 7 26 7V26" stroke-width="3.2"/><path d="M6 26h20" stroke-width="2" opacity=".4"/></svg>
+    <svg class="logo" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5.5" width="25" height="21" rx="4.5" stroke-width="2.6"/><path d="M3.5 16Q9.75 5.5 16 16T28.5 16" stroke-width="2.4"/><path d="M3.5 16Q9.75 26.5 16 16T28.5 16" stroke-width="2.4" opacity=".45"/></svg>
     <h1>Modal</h1>
     <span class="tagline">Subwoofer placement and room mode modeling</span>
   </div>
@@ -43,8 +43,8 @@ function applyAppearanceAttrs(mode, theme){
       <button data-appearance="dark">Dark</button>
     </div>
     <div id="themeSwatches" role="group" aria-label="Color theme">
-      <button class="theme-swatch" data-theme="studio" title="Studio theme" aria-label="Studio theme"></button>
       <button class="theme-swatch" data-theme="walnut" title="Walnut theme" aria-label="Walnut theme"></button>
+      <button class="theme-swatch" data-theme="studio" title="Studio theme" aria-label="Studio theme"></button>
       <button class="theme-swatch" data-theme="midnight" title="Midnight theme" aria-label="Midnight theme"></button>
       <button class="theme-swatch" data-theme="signal" title="Signal theme" aria-label="Signal theme"></button>
     </div>
@@ -846,7 +846,7 @@ function applyAppearanceAttrs(mode, theme){
   const APPEARANCE_MODES = ['auto', 'light', 'dark'];
   const COLOR_THEMES = ['studio', 'walnut', 'midnight', 'signal'];
   let appearanceMode = 'auto';
-  let colorTheme = 'studio';
+  let colorTheme = 'walnut';
   // Canvas drawing can't reference CSS custom properties directly, so the few
   // theme-dependent canvas colors (the room outline and the frequency
   // response chart) are copied out of the stylesheet's tokens here. Read once
