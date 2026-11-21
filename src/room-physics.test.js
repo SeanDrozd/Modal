@@ -2425,6 +2425,126 @@ testAsync('async twins match the sync optimizers with timeAlignTo, speaker clear
   assert.deepStrictEqual(asyncPolish.polishResults.map(r => r.best), syncPolish.polishResults.map(r => r.best));
 });
 
+console.log('\n-- pressureToDb / sampleFieldDbRange / logSpacedFreqs / maxSchroederFrequency --');
+
+test('pressureToDb is 20 log10 of the magnitude over refAmp, floored at 1e-6', () => {
+  approx(P.pressureToDb(1, 0), 0, 1e-12);
+  approx(P.pressureToDb(3, 4), 20 * Math.log10(5), 1e-12);
+  approx(P.pressureToDb(1, 0, 2), -20 * Math.log10(2), 1e-12);
+  approx(P.pressureToDb(0, 0), -120, 1e-9, 'a perfect null stays finite');
+});
+
+test('fieldDbAtPoint is the field at that point through pressureToDb', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const pre = P.precomputeModalField(src, 47, ctx, P.enumerateModes(ctx));
+  const { re, im } = P.computeFieldAtPoint(9, 6, 3.5, pre);
+  approx(P.fieldDbAtPoint(9, 6, 3.5, src, 47, ctx), P.pressureToDb(re, im), 1e-12);
+});
+
+test('sampleFieldDbRange returns the min and max of an n x n grid that includes the walls', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const pre = P.precomputeModalField(src, 55, ctx, P.enumerateModes(ctx));
+  let min = Infinity, max = -Infinity;
+  for(let j = 0; j < 4; j++) for(let i = 0; i < 4; i++){
+    const { re, im } = P.computeFieldAtPoint(i / 3 * 18, j / 3 * 13.5, 3.5, pre);
+    const db = P.pressureToDb(re, im);
+    min = Math.min(min, db); max = Math.max(max, db);
+  }
+  const r = P.sampleFieldDbRange(pre, ctx.room, 3.5, 4);
+  approx(r.min, min, 1e-12); approx(r.max, max, 1e-12);
+  assert.ok(r.max - r.min > 3, `expected some spread across the floor, got ${(r.max - r.min).toFixed(2)} dB`);
+  const def = P.sampleFieldDbRange(pre, ctx.room, 3.5);
+  assert.ok(def.min <= r.min && def.max >= r.max, 'the default 10 x 10 grid includes the 4 x 4 grid corners, so its range is at least as wide');
+});
+
+test('logSpacedFreqs spaces n frequencies evenly on a log axis, both ends included', () => {
+  const f = P.logSpacedFreqs(20, 200, 3);
+  approx(f[0], 20, 1e-9); approx(f[1], Math.sqrt(20 * 200), 1e-9); approx(f[2], 200, 1e-9);
+  const g = P.logSpacedFreqs(20, 250, 48);
+  assert.strictEqual(g.length, 48);
+  for(let i = 2; i < g.length; i++) approx(g[i] / g[i - 1], g[1] / g[0], 1e-9, 'constant ratio');
+});
+
+test('maxSchroederFrequency is the highest Schroeder frequency over 24 samples from 20 to 300 Hz', () => {
+  const ctx = {
+    room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.06, floorAbsorption: 0.15,
+    wallMaterials: { left: P.WALL_MATERIALS.drywallInsulated, right: P.WALL_MATERIALS.drywallInsulated, front: P.WALL_MATERIALS.masonry, back: P.WALL_MATERIALS.masonry },
+    ceilingMaterial: P.WALL_MATERIALS.drywallHollow
+  };
+  let expected = 0;
+  for(let i = 0; i < 24; i++){
+    const f = 20 + 280 * i / 23;
+    expected = Math.max(expected, P.schroederFrequency(ctx.room, P.estimatedT60(ctx.room, f, ctx)));
+  }
+  approx(P.maxSchroederFrequency(ctx), expected, 1e-9);
+  assert.ok(P.maxSchroederFrequency(ctx) > P.schroederFrequency(ctx.room, P.estimatedT60(ctx.room, 80, ctx)), 'the drywall resonance near 80 Hz is not the least absorptive frequency');
+});
+
+console.log('\n-- seatPositions / measureAtSeats / gradePlacement / optimizerFreqList --');
+
+test('seatPositions flattens rows in rank order with each seat\'s rank, offset and weight', () => {
+  const rows = [
+    { x: 9, y: 9, z: 3.5, facing: 0, seats: 3, spacingFt: 2 },
+    { x: 9, y: 12, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }
+  ];
+  const seats = P.seatPositions(rows);
+  assert.strictEqual(seats.length, 4);
+  assert.deepStrictEqual(seats.map(s => s.rank), [0, 0, 0, 1]);
+  assert.deepStrictEqual(seats.map(s => s.rowSeatCount), [3, 3, 3, 1]);
+  const byOffset = Object.fromEntries(seats.slice(0, 3).map(s => [s.offsetIndex, s.weight]));
+  approx(byOffset[0], 1, 1e-12, 'center seat of the top row');
+  approx(byOffset[-1], 0.5, 1e-12, 'edge seat');
+  approx(byOffset[1], 0.5, 1e-12, 'edge seat');
+  approx(seats[3].weight, 0.5, 1e-12, 'second row, single seat');
+  const row0 = P.rowSeatPositions(rows[0]);
+  assert.deepStrictEqual(seats.slice(0, 3).map(s => [s.x, s.y, s.z]), row0.map(s => [s.x, s.y, s.z]));
+});
+
+test('measureAtSeats averages over a 2 ft, 20 point cloud at every seat and the reference point', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const seats = P.seatPositions([{ x: 9, y: 9, z: 3.5, facing: 0, seats: 2, spacingFt: 2 }]);
+  const reference = { x: 9, y: 9, z: 3.5 };
+  const freqs = [30, 45, 60, 75];
+  const m = P.measureAtSeats(seats, reference, freqs, src, ctx);
+  assert.deepStrictEqual(P.SEAT_AVERAGING, { radiusFt: 2, numPoints: 20 });
+  const ref = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, src, ctx, P.SEAT_AVERAGING);
+  ref.forEach((r, j) => approx(m.referenceDb[j], r.db, 1e-9, `reference at ${freqs[j]} Hz`));
+  seats.forEach((s, i) => {
+    const r = P.spatiallyAveragedResponse(s.x, s.y, s.z, freqs, src, ctx, P.SEAT_AVERAGING);
+    r.forEach((x, j) => approx(m.perSeatDb[i][j], x.db, 1e-9, `seat ${i} at ${freqs[j]} Hz`));
+  });
+  freqs.forEach((_, j) => {
+    approx(m.seatMinDb[j], Math.min(m.perSeatDb[0][j], m.perSeatDb[1][j]), 1e-12);
+    approx(m.seatMaxDb[j], Math.max(m.perSeatDb[0][j], m.perSeatDb[1][j]), 1e-12);
+  });
+});
+
+test('gradePlacement scores the seats with their weights and reports seat-to-seat variation', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const seats = P.seatPositions([{ x: 9, y: 9, z: 3.5, facing: 0, seats: 3, spacingFt: 2 }, { x: 9, y: 12, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }]);
+  const reference = { x: 9, y: 9, z: 3.5 };
+  const freqs = P.logSpacedFreqs(20, 120, 12);
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const g = P.gradePlacement(seats, reference, freqs, src, ctx, mode);
+    const m = P.measureAtSeats(seats, reference, freqs, src, ctx);
+    assert.deepStrictEqual(g.db, m.referenceDb);
+    assert.deepStrictEqual(g.stats, P.scoreResponses(m.perSeatDb, [0.5, 1, 0.5, 0.5], mode));
+    approx(g.seatToSeatDb, P.seatToSeatVariationDb(m.perSeatDb), 1e-12);
+  }
+});
+
+test('optimizerFreqList steps about 12 times across the band, never under 2 Hz apart', () => {
+  const wide = P.optimizerFreqList(20, 120);
+  assert.strictEqual(wide.length, 13);
+  approx(wide[0], 20, 1e-12); approx(wide[12], 120, 1e-9);
+  approx(wide[1] - wide[0], 100 / 12, 1e-9);
+  assert.deepStrictEqual(P.optimizerFreqList(20, 30), [20, 22, 24, 26, 28, 30]);
+});
+
 (async () => {
   for(const { name, fn } of pendingAsync){
     try {

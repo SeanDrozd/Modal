@@ -328,12 +328,34 @@
   // draw() does per grid point, but callable standalone (e.g. for two-ear sampling,
   // or tests) without running the full grid.
   function fieldDbAtPoint(px, py, pz, sources, freq, ctx, refAmp){
-    refAmp = refAmp ?? 1.0;
     const modes = enumerateModes(ctx);
     const precomputed = precomputeModalField(sources, freq, ctx, modes);
     const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
+    return pressureToDb(re, im, refAmp);
+  }
+  // A complex pressure (computeFieldAtPoint's re, im) in dB relative to
+  // refAmp (default 1), floored at 1e-6 so a perfect null stays finite.
+  function pressureToDb(re, im, refAmp){
     const mag = Math.sqrt(re*re + im*im);
-    return 20 * Math.log10(Math.max(mag, 1e-6) / refAmp);
+    return 20 * Math.log10(Math.max(mag, 1e-6) / (refAmp ?? 1.0));
+  }
+  // The quietest and loudest level on an n x n grid over the floor plan at
+  // height z (walls included), from one precomputeModalField result. A cheap
+  // stand-in for the full render when only the range is needed.
+  function sampleFieldDbRange(precomputed, room, z, n){
+    n = n ?? 10;
+    let min = Infinity, max = -Infinity;
+    for(let j = 0; j < n; j++){
+      const py = (j/(n-1)) * room.d;
+      for(let i = 0; i < n; i++){
+        const px = (i/(n-1)) * room.w;
+        const { re, im } = computeFieldAtPoint(px, py, z, precomputed);
+        const db = pressureToDb(re, im);
+        if(db < min) min = db;
+        if(db > max) max = db;
+      }
+    }
+    return { min, max };
   }
 
   // ---- Spherical spatial sampling (moving-mic-style measurement) ----
@@ -370,6 +392,17 @@
       });
     }
     return points;
+  }
+
+  // n frequencies from minHz to maxHz inclusive, evenly spaced on a log axis.
+  function logSpacedFreqs(minHz, maxHz, n){
+    const logMin = Math.log10(minHz), logMax = Math.log10(maxHz);
+    const freqs = [];
+    for(let i = 0; i < n; i++){
+      const t = i / (n - 1);
+      freqs.push(Math.pow(10, logMin + t * (logMax - logMin)));
+    }
+    return freqs;
   }
 
   // ---- Spatially-averaged frequency response (moving-mic-method-style) ----
@@ -558,6 +591,23 @@
     if(!(maxOffset > 0)) return 1;
     return 1 - 0.5 * (Math.abs(offsetIndex) / maxOffset);
   }
+  // Every seat of every row (rows in rank order, index 0 first), each with
+  // its row's rank, its offsetIndex and its row's seat count, and the weight
+  // the optimizer and the result card give it (rowRankWeight times
+  // seatCenterWeight).
+  function seatPositions(rows){
+    const out = [];
+    rows.forEach((row, rank) => {
+      const seats = rowSeatPositions(row);
+      for(const seat of seats){
+        out.push({
+          x: seat.x, y: seat.y, z: seat.z, rank, offsetIndex: seat.offsetIndex, rowSeatCount: seats.length,
+          weight: rowRankWeight(rank) * seatCenterWeight(seat.offsetIndex, seats.length)
+        });
+      }
+    });
+    return out;
+  }
 
   // ---- Axial room mode frequencies for one dimension ----
   function axialModes(dimFt, maxOrder, maxFreq){
@@ -646,6 +696,20 @@
     const volumeM3 = (room.w * room.d * room.h) * (FT_TO_M ** 3);
     if(volumeM3 <= 0) return 0;
     return 2000 * Math.sqrt(t60 / volumeM3);
+  }
+  // The room's highest Schroeder frequency over 20 to 300 Hz (24 evenly
+  // spaced samples), using the T60 estimatedT60 gives at each. Materials
+  // absorb differently with frequency, so this is the worst case, a stable
+  // bound that does not move with whichever frequency is being viewed.
+  function maxSchroederFrequency(ctx){
+    const SEARCH_MIN_HZ = 20, SEARCH_MAX_HZ = 300, SEARCH_POINTS = 24;
+    let maxFs = 0;
+    for(let i = 0; i < SEARCH_POINTS; i++){
+      const f = SEARCH_MIN_HZ + (SEARCH_MAX_HZ - SEARCH_MIN_HZ) * i / (SEARCH_POINTS - 1);
+      const fs = schroederFrequency(ctx.room, estimatedT60(ctx.room, f, ctx));
+      if(fs > maxFs) maxFs = fs;
+    }
+    return maxFs;
   }
 
   // ---- Null-proximity classification ----
@@ -881,6 +945,37 @@
     }
     return sum / numFreqs;
   }
+  // ---- Measuring a placement at the seats ----
+  // How the frequency response chart and the result card measure: a
+  // spatially averaged response (a 2 ft cloud of 20 points) at every seat
+  // and at one reference point, the top row's own center, which is not
+  // always a seat.
+  const SEAT_AVERAGING = { radiusFt: 2, numPoints: 20 };
+  // seats: from seatPositions. reference: {x, y, z}. Returns perSeatDb
+  // [seat][freqIndex], referenceDb [freqIndex], and the quietest and loudest
+  // seat at each frequency (seatMinDb, seatMaxDb).
+  function measureAtSeats(seats, reference, freqs, sources, ctx){
+    const { perCenterDb } = spatiallyAveragedResponseMulti(seats.concat([reference]), freqs, sources, ctx, SEAT_AVERAGING);
+    const perSeatDb = perCenterDb.slice(0, seats.length);
+    return {
+      perSeatDb,
+      referenceDb: perCenterDb[seats.length],
+      seatMinDb: freqs.map((_, j) => Math.min(...perSeatDb.map(row => row[j]))),
+      seatMaxDb: freqs.map((_, j) => Math.max(...perSeatDb.map(row => row[j])))
+    };
+  }
+  // A placement graded the way the result card shows it: the reference
+  // response (db), the weighted scoreResponses stats over every seat, and the
+  // seat-to-seat variation.
+  function gradePlacement(seats, reference, freqs, sources, ctx, mode){
+    const m = measureAtSeats(seats, reference, freqs, sources, ctx);
+    return {
+      db: m.referenceDb,
+      stats: scoreResponses(m.perSeatDb, seats.map(s => s.weight ?? 1), mode),
+      seatToSeatDb: seatToSeatVariationDb(m.perSeatDb)
+    };
+  }
+
   // What moving from one placement to another amounts to, from the two
   // placements' scoreResponses results (same listeners, frequencies and
   // mode). gainDb is the change in score, so it is positive when `after` is
@@ -1076,6 +1171,16 @@
   //     (the candidate included) gets the delay automatic time alignment to
   //     that point would give it with the candidate in place, recomputed
   //     per candidate, instead of the delays the sources came in with.
+  // The frequencies a sub search samples: about 12 steps from freqLow up to
+  // freqHigh, never closer than 2 Hz apart. Coarser than the result card's
+  // 48, since every candidate position is scored at each of them.
+  function optimizerFreqList(freqLow, freqHigh){
+    const freqList = [];
+    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
+    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
+    return freqList;
+  }
+
   function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
@@ -1464,6 +1569,15 @@
     precomputeModalField,
     computeFieldAtPoint,
     fieldDbAtPoint,
+    pressureToDb,
+    sampleFieldDbRange,
+    logSpacedFreqs,
+    seatPositions,
+    maxSchroederFrequency,
+    SEAT_AVERAGING,
+    measureAtSeats,
+    gradePlacement,
+    optimizerFreqList,
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
