@@ -324,6 +324,43 @@
     return { re, im };
   }
 
+  // Factors computeFieldAtPoint's sum for a whole map at one listening
+  // height. Every mode shape is cos(kx*x)*cos(ky*y)*cos(kz*z), and only a
+  // few distinct kx values exist (11 for a 20 x 15 x 8 ft room's 261 modes),
+  // so for each map row y this pre-sums every mode sharing a kx into one
+  // complex value. The field at (x, rowYsFt[r]) is then the sum over columns
+  // c of cos(kx[c] * x_m) * (sums[(r*nCols+c)*2], sums[(r*nCols+c)*2+1]),
+  // the same result as computeFieldAtPoint with far fewer terms per point.
+  function fieldRowSums(precomputed, pz, rowYsFt){
+    const pzM = pz * FT_TO_M;
+    const colOf = new Map(), kyOf = new Map(), pairOf = new Map();
+    const kx = [], ky = [], pairs = [];
+    for(const mode of precomputed){
+      if(!colOf.has(mode.invLx)){ colOf.set(mode.invLx, kx.length); kx.push(mode.invLx); }
+      if(!kyOf.has(mode.invLy)){ kyOf.set(mode.invLy, ky.length); ky.push(mode.invLy); }
+      const key = mode.invLx + '|' + mode.invLy;
+      let pair = pairOf.get(key);
+      if(!pair){ pair = { col: colOf.get(mode.invLx), kyIdx: kyOf.get(mode.invLy), re: 0, im: 0 }; pairOf.set(key, pair); pairs.push(pair); }
+      const cz = Math.cos(mode.invLz * pzM);
+      pair.re += mode.coefRe * cz;
+      pair.im += mode.coefIm * cz;
+    }
+    const nCols = kx.length, nRows = rowYsFt.length;
+    const sums = new Float64Array(nRows * nCols * 2);
+    const cosY = new Float64Array(ky.length);
+    for(let r = 0; r < nRows; r++){
+      const yM = rowYsFt[r] * FT_TO_M;
+      for(let i = 0; i < ky.length; i++) cosY[i] = Math.cos(ky[i] * yM);
+      const base = r * nCols * 2;
+      for(const p of pairs){
+        const c = cosY[p.kyIdx];
+        sums[base + p.col*2] += p.re * c;
+        sums[base + p.col*2 + 1] += p.im * c;
+      }
+    }
+    return { kx: Float64Array.from(kx), nCols, nRows, sums };
+  }
+
   // Convenience: full pressure-to-dB at one point, given app state. Mirrors what
   // draw() does per grid point, but callable standalone (e.g. for two-ear sampling,
   // or tests) without running the full grid.
@@ -1628,6 +1665,7 @@
     enumerateModes,
     precomputeModalField,
     computeFieldAtPoint,
+    fieldRowSums,
     fieldDbAtPoint,
     pressureToDb,
     sampleFieldDbRange,

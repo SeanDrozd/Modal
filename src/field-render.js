@@ -6,12 +6,11 @@
 // specific page.
 //
 // The GLSL fragment shader mirrors computeFieldAtPoint from room-physics.js
-// (see the shader's own comments) — mode enumeration and per-mode complex
-// coefficients (enumerateModes/precomputeModalField) stay in that one JS
-// implementation; this module's GPU path only does the final per-pixel sum
-// over an already-computed mode list (a real-valued mode-shape evaluation
-// times a precomputed complex coefficient), which is the part that actually
-// benefits from GPU parallelism.
+// (see the shader's own comments) — mode enumeration, per-mode complex
+// coefficients (enumerateModes/precomputeModalField) and the per-row partial
+// sums (fieldRowSums) stay in that one JS implementation; this module's GPU
+// path only does the final per-pixel sum over the few distinct x
+// frequencies, which is the part that actually benefits from GPU parallelism.
 
 (function(root, factory){
   const mod = factory();
@@ -22,32 +21,17 @@
   }
 })(typeof self !== 'undefined' ? self : this, function(){
 
-  // Mode coefficient data is uploaded to the GPU as two floating-point
-  // textures (see MODE_TEX_W/H below) rather than uniform arrays -- a
-  // several-hundred-entry uniform array blows WebGL1's
-  // MAX_FRAGMENT_UNIFORM_VECTORS budget (spec guarantees only 1024 total,
-  // and each array entry here costs multiple vectors), which fails to link
-  // on real hardware, not just weak/theoretical devices. A texture's size
-  // budget (MAX_TEXTURE_SIZE) is a completely different, far larger limit.
-  // The modal method has no "order" to truncate the way the old image-source
-  // method did -- every mode below the room's fixed frequency cutoff is
-  // included exactly (see room-physics.js's enumerateModes/MODE_CUTOFF_HZ),
-  // so mode counts stay modest (~150-800 for typical room sizes) and this
-  // cap exists only as a generous sane ceiling, not a real constraint. See
-  // flattenModes for what happens if this is ever exceeded.
-  //
-  // 64x64 (4096) turned out not generous enough -- a large-but-real room
-  // (e.g. 50x70x16ft) needs ~5000 modes below the 300Hz cutoff, since mode
-  // count grows with volume (roughly cubically with the cutoff frequency,
-  // per the standard 3D mode-density asymptotic). 128x128 (16384) gives
-  // ~3x headroom over that case at negligible extra cost (a few hundred KB
-  // of float-texture memory, still far under any real MAX_TEXTURE_SIZE, and
-  // the shader's per-pixel loop already breaks at uCount, the actual mode
-  // count -- see the fragment shader below -- so this costs nothing extra
-  // for the common small-room case).
-  const MODE_TEX_W = 128;
-  const MODE_TEX_H = 128;
-  const MAX_MODES = MODE_TEX_W * MODE_TEX_H; // 4096
+  // The shader sums one term per distinct kx (the mode's x spatial
+  // frequency) instead of one per mode: room-physics.js's fieldRowSums
+  // pre-sums every mode sharing a kx for each map row on the CPU (all the
+  // y and z cosines), and that per-row table rides on a float texture, one
+  // texel per (row, kx) holding (re, im, kx). A 20 x 15 x 8 ft room's 261
+  // modes become 11 terms per pixel, and the 30 x 30 x 15 ft maximum's 1,265
+  // become 16. MAX_COLS is the shader's loop bound and texture width: a
+  // generous ceiling (the largest room the app allows needs 16), kept small
+  // because a long loop bound is what made the old per-mode loop slow under
+  // ANGLE on Windows.
+  const MAX_COLS = 64;
 
   const VERTEX_SRC = `
     attribute vec2 aPos;
@@ -62,34 +46,17 @@
     uniform vec2 uFieldOrigin;  // pixels, top-left of the room's rendered rect
     uniform vec2 uFieldSize;    // pixels, w*scale x d*scale
     uniform vec2 uRoomSize;     // feet, room.w x room.d
-    uniform float uListenerZ;   // feet
     uniform float uDbMin;
     uniform float uDbMax;
-    uniform int uCount;         // number of valid entries in the textures below
+    uniform int uCount;         // number of kx columns in uRowTex
     uniform bool uDebugMode;    // true: encode raw dB into RGBA instead of colormap (for CPU/GPU verification)
     uniform int uColormapId;    // 0=thermal, 1=full spectrum, 2=viridis (colorblind-safe), 3=cool to warm (default)
 
-    // Per-mode data, packed into two float textures instead of uniform arrays
-    // (see MODE_TEX_W/H in JS -- this sidesteps WebGL1's small uniform-vector
-    // budget entirely). uModeGeomTex.rgb = nx*pi/Lx, ny*pi/Ly, nz*pi/Lz (the
-    // mode's per-axis angular spatial frequency, precomputed on the CPU so
-    // the shader only needs a multiply, not an nx*pi/Lx per pixel); .a unused.
-    // uModeCoefTex.rg = coefRe, coefIm -- the mode's already-divided complex
-    // coefficient (source coupling and the 1/(k_n^2-k^2-jk*delta_n) division
-    // both happen ONCE per mode on the CPU in precomputeModalField, not per
-    // pixel -- so this shader's inner loop only needs a real-valued mode-shape
-    // evaluation (three cosines) and one complex multiply-by-real-scalar).
-    uniform sampler2D uModeGeomTex;
-    uniform sampler2D uModeCoefTex;
-    uniform vec2 uModeTexSize; // (MODE_TEX_W, MODE_TEX_H)
-
-    vec2 modeTexelUV(int i){
-      float w = uModeTexSize.x;
-      float fi = float(i);
-      float col = mod(fi, w);
-      float row = floor(fi / w);
-      return vec2((col + 0.5) / uModeTexSize.x, (row + 0.5) / uModeTexSize.y);
-    }
+    // fieldRowSums output (see MAX_COLS in JS): texel (column c, row r) =
+    // (re, im, kx) for canvas pixel row uRowStart + r, counted from the top.
+    uniform sampler2D uRowTex;
+    uniform vec2 uRowTexSize; // (MAX_COLS, allocated rows)
+    uniform float uRowStart;
 
     const float FT_TO_M = 0.3048;
 
@@ -194,20 +161,17 @@
       if(local.x < 0.0 || local.y < 0.0 || local.x > uFieldSize.x || local.y > uFieldSize.y){
         discard; // outside the room rect -- let cv's background show through
       }
-      float px = (local.x / uFieldSize.x) * uRoomSize.x;
-      float py = (local.y / uFieldSize.y) * uRoomSize.y;
-      float pxM = px * FT_TO_M, pyM = py * FT_TO_M, pzM = uListenerZ * FT_TO_M;
+      float pxM = (local.x / uFieldSize.x) * uRoomSize.x * FT_TO_M;
+      float v = (floor(fragPx.y) - uRowStart + 0.5) / uRowTexSize.y;
 
       float re = 0.0;
       float im = 0.0;
-      for(int i = 0; i < ${MAX_MODES}; i++){
+      for(int i = 0; i < ${MAX_COLS}; i++){
         if(i >= uCount) break;
-        vec2 uv = modeTexelUV(i);
-        vec3 geom = texture2D(uModeGeomTex, uv).rgb; // nx*pi/Lx, ny*pi/Ly, nz*pi/Lz
-        vec2 coef = texture2D(uModeCoefTex, uv).rg;  // coefRe, coefIm
-        float psi = cos(geom.x * pxM) * cos(geom.y * pyM) * cos(geom.z * pzM);
-        re += coef.x * psi;
-        im += coef.y * psi;
+        vec3 t = texture2D(uRowTex, vec2((float(i) + 0.5) / uRowTexSize.x, v)).rgb;
+        float c = cos(t.z * pxM);
+        re += t.x * c;
+        im += t.y * c;
       }
       float mag = sqrt(re*re + im*im);
       float db = 20.0 * log(max(mag, 1e-6)) / log(10.0);
@@ -301,50 +265,23 @@
     return (r/255.0) + (g/255.0)/255.0 + (b/255.0)/65025.0 + (a/255.0)/16581375.0;
   }
 
-  // Flattens a CPU-computed precomputeModalField result (room-physics.js) --
-  // one entry per mode, each already carrying its final complex coefficient
-  // (source coupling and the 1/(k_n^2-k^2-jk*delta_n) division both already
-  // done, see precomputeModalField's doc comment) -- into flat typed arrays
-  // for shader upload. This is the ONLY bridge between the two paths:
-  // everything upstream of this (mode enumeration, per-mode coefficients) is
-  // shared, single-implementation logic; everything downstream (the per-pixel
-  // mode-shape evaluation and sum) is GPU-parallel.
-  function flattenModes(precomputed){
-    const geom = new Float32Array(MAX_MODES * 3);
-    const coef = new Float32Array(MAX_MODES * 2);
-    let count = 0;
-    const totalWanted = precomputed.length; // true total, even past the cap -- lets callers detect truncation
-    for(const mode of precomputed){
-      if(count >= MAX_MODES) break; // keep totalWanted accurate above, but stop writing
-      geom[count*3] = mode.invLx;
-      geom[count*3+1] = mode.invLy;
-      geom[count*3+2] = mode.invLz;
-      coef[count*2] = mode.coefRe;
-      coef[count*2+1] = mode.coefIm;
-      count++;
+  // Packs RoomPhysics.fieldRowSums for the given map rows into the RGBA
+  // texels the shader samples (see uRowTex in FRAGMENT_SRC): (re, im, kx)
+  // per (row, column), nCols wide. Columns past MAX_COLS are dropped, and
+  // totalCols reports the true count so the caller can warn.
+  function packRowTexture(precomputed, pz, rowYsFt){
+    const { kx, nCols: totalCols, nRows, sums } = RoomPhysics.fieldRowSums(precomputed, pz, rowYsFt);
+    const nCols = Math.min(totalCols, MAX_COLS);
+    const buf = new Float32Array(nCols * nRows * 4);
+    for(let r = 0; r < nRows; r++){
+      for(let c = 0; c < nCols; c++){
+        const o = (r*nCols + c)*4, i = (r*totalCols + c)*2;
+        buf[o] = sums[i];
+        buf[o+1] = sums[i+1];
+        buf[o+2] = kx[c];
+      }
     }
-    return { geom, coef, count, totalWanted };
-  }
-
-  // Repacks flattenModes' flat arrays into the two RGBA texel buffers the
-  // shader samples (see the uModeGeomTex/uModeCoefTex comment in
-  // FRAGMENT_SRC). Only allocates/fills as many full rows as `count` actually
-  // needs (not the full MODE_TEX_W*MODE_TEX_H capacity) -- the caller uploads
-  // just those rows via texSubImage2D, so a typical frame (a couple hundred
-  // modes) touches a handful of rows instead of re-uploading all 4096 texels.
-  function packModeTextures(flattened){
-    const { geom, coef, count } = flattened;
-    const rows = count === 0 ? 0 : Math.min(MODE_TEX_H, Math.ceil(count / MODE_TEX_W));
-    const geomBuf = new Float32Array(MODE_TEX_W * rows * 4);
-    const coefBuf = new Float32Array(MODE_TEX_W * rows * 4);
-    for(let i=0; i<count; i++){
-      geomBuf[i*4] = geom[i*3];
-      geomBuf[i*4+1] = geom[i*3+1];
-      geomBuf[i*4+2] = geom[i*3+2];
-      coefBuf[i*4] = coef[i*2];
-      coefBuf[i*4+1] = coef[i*2+1];
-    }
-    return { geomBuf, coefBuf, rows };
+    return { buf, nCols, nRows, totalCols };
   }
 
   function compileShader(gl, type, src){
@@ -362,8 +299,8 @@
   // Builds a renderer bound to a specific 2D canvas context and (optionally)
   // a WebGL context -- neither is looked up internally, so this module never
   // touches document/DOM directly. `onTruncationWarning(message|null)` is
-  // called with a warning string when the GPU path had to drop modes past
-  // MAX_MODES, or with null to clear a previous warning; the caller decides
+  // called with a warning string when the GPU path had to drop kx columns
+  // past MAX_COLS, or with null to clear a previous warning; the caller decides
   // how (or whether) to surface that in its own UI.
   function createRenderer({ ctx2d, gl, canvasGL, onTruncationWarning }){
     let gpuProgram = null;
@@ -372,26 +309,22 @@
     // Double-buffered: writing into a texture the GPU may still be reading
     // from the previous frame's draw call forces the driver to stall the CPU
     // until that read finishes (a classic single-buffered-streaming-texture
-    // antipattern) -- alternating between two textures per channel each frame
-    // lets the CPU write into the "other" one while the GPU finishes with the
-    // one it just sampled, avoiding the stall entirely.
-    let geomTextures = null;
-    let coefTextures = null;
+    // antipattern) -- alternating between two textures each frame lets the
+    // CPU write into the "other" one while the GPU finishes with the one it
+    // just sampled, avoiding the stall entirely.
+    let rowTextures = null;
     let texBufferIndex = 0;
 
-    // Allocates the texture's full MODE_TEX_W x MODE_TEX_H storage ONCE (a
-    // no-op-sized initial upload) so later frames can use texSubImage2D to
-    // update only the rows actually in use, instead of re-uploading all 4096
-    // texels every frame regardless of how many modes are active.
-    function makeModeTexture(){
+    // Each texture is MAX_COLS wide and grows (never shrinks) to the tallest
+    // row count asked for, so most frames only texSubImage2D the rows in use.
+    function makeRowTexture(){
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MODE_TEX_W, MODE_TEX_H, 0, gl.RGBA, gl.FLOAT, null);
-      return tex;
+      return { tex, rows: 0 };
     }
 
     function initGPUProgram(){
@@ -425,23 +358,21 @@
         gl.enableVertexAttribArray(aPos);
         gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
-        geomTextures = [makeModeTexture(), makeModeTexture()];
-        coefTextures = [makeModeTexture(), makeModeTexture()];
+        rowTextures = [makeRowTexture(), makeRowTexture()];
 
         gpuUniforms = {
           uCanvasSize: gl.getUniformLocation(prog, 'uCanvasSize'),
           uFieldOrigin: gl.getUniformLocation(prog, 'uFieldOrigin'),
           uFieldSize: gl.getUniformLocation(prog, 'uFieldSize'),
           uRoomSize: gl.getUniformLocation(prog, 'uRoomSize'),
-          uListenerZ: gl.getUniformLocation(prog, 'uListenerZ'),
           uDbMin: gl.getUniformLocation(prog, 'uDbMin'),
           uDbMax: gl.getUniformLocation(prog, 'uDbMax'),
           uCount: gl.getUniformLocation(prog, 'uCount'),
           uDebugMode: gl.getUniformLocation(prog, 'uDebugMode'),
           uColormapId: gl.getUniformLocation(prog, 'uColormapId'),
-          uModeGeomTex: gl.getUniformLocation(prog, 'uModeGeomTex'),
-          uModeCoefTex: gl.getUniformLocation(prog, 'uModeCoefTex'),
-          uModeTexSize: gl.getUniformLocation(prog, 'uModeTexSize')
+          uRowTex: gl.getUniformLocation(prog, 'uRowTex'),
+          uRowTexSize: gl.getUniformLocation(prog, 'uRowTexSize'),
+          uRowStart: gl.getUniformLocation(prog, 'uRowStart')
         };
       } catch(e){
         console.error('GPU shader init failed, falling back to CPU:', e);
@@ -505,10 +436,17 @@
         gl.viewport(0, 0, canvasGL.width, canvasGL.height);
         gl.useProgram(gpuProgram);
 
-        const { geom, coef, count, totalWanted } = flattenModes(precomputed);
+        // One table row per canvas pixel row inside the room rect, at the
+        // same room y the shader derives for that row's pixel centers.
+        const fieldH = d*scale;
+        const rowStart = Math.max(0, Math.ceil(offY - 0.5));
+        const rowEnd = Math.min(sizeH - 1, Math.floor(offY + fieldH - 0.5));
+        const rowYs = [];
+        for(let t = rowStart; t <= rowEnd; t++) rowYs.push(((t + 0.5 - offY) / fieldH) * d);
+        const { buf, nCols, nRows, totalCols } = packRowTexture(precomputed, pz, rowYs);
         if(onTruncationWarning){
-          if(totalWanted > MAX_MODES){
-            const msg = `GPU rendering is truncating modes: ${totalWanted} modes needed but only ${MAX_MODES} fit. Some modes' contributions are being dropped from the field. Try switching to CPU rendering.`;
+          if(totalCols > MAX_COLS){
+            const msg = `GPU rendering is truncating modes: the room needs ${totalCols} mode columns but only ${MAX_COLS} fit. Some modes' contributions are being dropped from the field. Try switching to CPU rendering.`;
             console.warn(msg);
             onTruncationWarning(msg);
           } else {
@@ -520,35 +458,26 @@
         gl.uniform2f(gpuUniforms.uFieldOrigin, offX, offY);
         gl.uniform2f(gpuUniforms.uFieldSize, w*scale, d*scale);
         gl.uniform2f(gpuUniforms.uRoomSize, w, d);
-        gl.uniform1f(gpuUniforms.uListenerZ, pz);
         gl.uniform1f(gpuUniforms.uDbMin, params.dbMin ?? -24);
         gl.uniform1f(gpuUniforms.uDbMax, params.dbMax ?? 12);
-        gl.uniform1i(gpuUniforms.uCount, count);
+        gl.uniform1i(gpuUniforms.uCount, nCols);
         gl.uniform1i(gpuUniforms.uDebugMode, debugMode ? 1 : 0);
         gl.uniform1i(gpuUniforms.uColormapId, COLORMAP_ID_TO_INT[params.colormapId] ?? 0);
-        gl.uniform2f(gpuUniforms.uModeTexSize, MODE_TEX_W, MODE_TEX_H);
+        gl.uniform1f(gpuUniforms.uRowStart, rowStart);
 
-        const { geomBuf, coefBuf, rows } = packModeTextures({ geom, coef, count });
-
-        // texSubImage2D, not texImage2D: only re-uploads the rows actually
-        // holding mode data (typically a handful of rows for a couple hundred
-        // modes) instead of the full MODE_TEX_W*MODE_TEX_H=4096 texels every
-        // frame -- storage was already allocated once in makeModeTexture.
-        // Alternates between the two buffered textures per channel (see the
+        // Alternates between the two buffered textures (see the
         // double-buffering comment above) to avoid a CPU-GPU sync stall.
         texBufferIndex = 1 - texBufferIndex;
-        const geomTexture = geomTextures[texBufferIndex];
-        const coefTexture = coefTextures[texBufferIndex];
-
+        const rowTexture = rowTextures[texBufferIndex];
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, geomTexture);
-        if(rows > 0) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MODE_TEX_W, rows, gl.RGBA, gl.FLOAT, geomBuf);
-        gl.uniform1i(gpuUniforms.uModeGeomTex, 0);
-
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, coefTexture);
-        if(rows > 0) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MODE_TEX_W, rows, gl.RGBA, gl.FLOAT, coefBuf);
-        gl.uniform1i(gpuUniforms.uModeCoefTex, 1);
+        gl.bindTexture(gl.TEXTURE_2D, rowTexture.tex);
+        if(nRows > rowTexture.rows){
+          rowTexture.rows = nRows;
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MAX_COLS, nRows, 0, gl.RGBA, gl.FLOAT, null);
+        }
+        if(nRows > 0 && nCols > 0) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, nCols, nRows, gl.RGBA, gl.FLOAT, buf);
+        gl.uniform1i(gpuUniforms.uRowTex, 0);
+        gl.uniform2f(gpuUniforms.uRowTexSize, MAX_COLS, Math.max(1, rowTexture.rows));
 
         const glErrBeforeDraw = gl.getError();
         if(glErrBeforeDraw !== gl.NO_ERROR){
@@ -585,16 +514,13 @@
   }
 
   return {
-    MAX_MODES,
-    MODE_TEX_W,
-    MODE_TEX_H,
+    MAX_COLS,
     VERTEX_SRC,
     FRAGMENT_SRC,
     colormap,
     COLORMAPS,
     decodeFloatFromRGBA,
-    flattenModes,
-    packModeTextures,
+    packRowTexture,
     compileShader,
     createRenderer
   };
