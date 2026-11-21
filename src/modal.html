@@ -153,6 +153,15 @@ function applyAppearanceAttrs(mode, theme){
     </div>
   </div>
 
+  <div class="section collapsed" id="bassTrapsSection">
+    <div class="section-title"><span class="section-title-label"><span class="chevron">&#9662;</span>Bass traps</span></div>
+    <div class="section-body">
+      <div id="bassTrapList"></div>
+      <button id="addBassTrapBtn" class="small">Add bass trap</button>
+      <div class="hint">Corner traps lower mode peaks and shorten ringing, since every mode has high pressure in the corners. Each is a 2 &times; 4 ft panel, 5.4 in deep, modeled from lab data; the membrane type does more below 100 Hz. They help most with rigid walls, since drywall already absorbs a lot of bass. Thin wall panels do almost nothing below 150 Hz, so they are not modeled.</div>
+    </div>
+  </div>
+
   <div class="section" id="sourcesSection">
     <div class="section-title">
       <span class="section-title-label"><span class="chevron">&#9662;</span>Speakers &amp; subs</span>
@@ -430,6 +439,8 @@ function applyAppearanceAttrs(mode, theme){
   let ceilingMaterialKey = 'drywallInsulated';
   let ceilingCustomAbsorption = 0.06; // used only when ceilingMaterialKey is 'custom'
   let floorAbsorption = 0.15; // defaults to a wood floor on joists; see FLOOR_MATERIALS
+  // Corner bass traps: { id, type ('porous' | 'membrane', see RoomPhysics.BASS_TRAPS), x, y (the corner it was put in, feet), fullHeight (floor to ceiling, else one 4 ft panel) }. Each stands in the outside corner nearest (x, y), so it follows its corner when the room is reshaped (see resolvedBassTraps).
+  let bassTraps = [];
   let optimizerMode = 'balanced'; // 'balanced' | 'nullAvoidance' -- see RoomPhysics.scoreSubPosition; a session/device preference, not a room property
   let autoTimeAlignEnabled = true; // see autoTimeAlign; a session/workflow preference, not a room property, so it lives in session settings, not a saved preset
   let nextId = 1;
@@ -700,7 +711,8 @@ function applyAppearanceAttrs(mode, theme){
       wallCustomAbsorption: JSON.parse(JSON.stringify(wallCustomAbsorption)),
       ceilingMaterialKey, ceilingCustomAbsorption,
       freq, wallAbsorption, floorAbsorption,
-      floorMaterialKey: document.getElementById('floorMaterial').value
+      floorMaterialKey: document.getElementById('floorMaterial').value,
+      bassTraps: JSON.parse(JSON.stringify(bassTraps))
     };
   }
 
@@ -803,6 +815,8 @@ function applyAppearanceAttrs(mode, theme){
     freq = cfg.freq;
     wallAbsorption = absorptionFromLegacyConfig(cfg, 'wallAbsorption', 'wallReflect', 0.06);
     floorAbsorption = cfg.floorAbsorption ?? (cfg.floorReflect != null ? 1 - cfg.floorReflect * cfg.floorReflect : wallAbsorption);
+    bassTraps = cfg.bassTraps ? JSON.parse(JSON.stringify(cfg.bassTraps)) : []; // presets from before bass traps have none
+    for(const t of bassTraps){ if(t.id >= nextId) nextId = t.id + 1; }
     if(cfg.floorMaterialKey == null && LEGACY_CARPET_ABSORPTION.some(a => Math.abs(a - floorAbsorption) < 1e-9)) floorAbsorption = FLOOR_MATERIALS.woodJoists;
     renderRoomDimFields();
     document.getElementById('floorAbsorption').value = floorAbsorption;
@@ -824,6 +838,7 @@ function applyAppearanceAttrs(mode, theme){
     renderListenerRowsList();
     renderWallList();
     syncCeilingUI();
+    renderBassTrapList();
     renderZoneList();
   }
 
@@ -923,6 +938,7 @@ function applyAppearanceAttrs(mode, theme){
     ceilingMaterialKey = 'drywallInsulated';
     ceilingCustomAbsorption = 0.06;
     floorAbsorption = FLOOR_MATERIALS.woodJoists;
+    bassTraps = [];
     loadConfig(makeConfig());
   }
 
@@ -1485,6 +1501,81 @@ function applyAppearanceAttrs(mode, theme){
     });
   }
 
+  // ---- Bass trap list UI ----
+  // Each trap as the physics takes it ({ type, heightFt, corner, x, y }, see RoomPhysics.bassTrapCorner), in bassTraps' order.
+  function resolvedBassTraps(){
+    return bassTraps.map(t => ({
+      type: t.type,
+      heightFt: t.fullHeight ? room.h : Math.min(RoomPhysics.BASS_TRAP_UNIT_HEIGHT_FT, room.h),
+      ...RoomPhysics.bassTrapCorner(room.polygon, t.x, t.y)
+    }));
+  }
+  // The room's outside corners as { index, label }: a rectangle's by position, any other shape's by the two walls that meet there (corner i joins wall i - 1 and wall i).
+  function bassTrapCornerChoices(){
+    const rectNames = ['Front left', 'Front right', 'Back right', 'Back left'], walls = wallLabels(), n = room.polygon.length;
+    return room.polygon.map((p, i) => i).filter(i => RoomPhysics.isConvexCorner(room.polygon, i))
+      .map(i => ({ index: i, label: isRectangleRoom() ? rectNames[i] : `${walls[(i - 1 + n) % n]} and ${walls[i].toLowerCase()}` }));
+  }
+  function renderBassTrapList(){
+    const list = document.getElementById('bassTrapList');
+    list.innerHTML = '';
+    const choices = bassTrapCornerChoices(), resolved = resolvedBassTraps();
+    bassTraps.forEach((t, i) => {
+      const block = document.createElement('div');
+      block.className = 'src-block';
+      block.innerHTML = `
+        <div class="src-label">
+          <div class="name-wrap">
+            <span class="dot" style="background:var(--accent)"></span>
+            <span style="font-weight:600;font-size:13.5px;">Trap ${i + 1}</span>
+          </div>
+          <button class="icon-btn" data-action="remove" title="Remove" aria-label="Remove trap ${i + 1}">&times;</button>
+        </div>
+        <div class="range-row"><label>Corner</label>
+          <select data-field="corner" style="flex:1;">${choices.map(c => `<option value="${c.index}">${c.label}</option>`).join('')}</select>
+        </div>
+        <div class="range-row"><label>Type</label>
+          <select data-field="type" style="flex:1;">
+            <option value="porous">Porous</option>
+            <option value="membrane">Porous with membrane</option>
+          </select>
+        </div>
+        <div class="range-row"><label>Height</label>
+          <select data-field="height" style="flex:1;">
+            <option value="panel">One panel (4 ft)</option>
+            <option value="full">Floor to ceiling</option>
+          </select>
+        </div>
+      `;
+      list.appendChild(block);
+      const cornerSelect = block.querySelector('[data-field="corner"]');
+      cornerSelect.value = resolved[i].corner;
+      block.querySelector('[data-field="type"]').value = t.type;
+      block.querySelector('[data-field="height"]').value = t.fullHeight ? 'full' : 'panel';
+      cornerSelect.addEventListener('change', function(){
+        const c = room.polygon[parseInt(this.value, 10)];
+        t.x = c.x; t.y = c.y;
+        scheduleDraw();
+      });
+      block.querySelector('[data-field="type"]').addEventListener('change', function(){ t.type = this.value; scheduleDraw(); });
+      block.querySelector('[data-field="height"]').addEventListener('change', function(){ t.fullHeight = this.value === 'full'; scheduleDraw(); });
+      block.querySelector('[data-action="remove"]').addEventListener('click', () => {
+        bassTraps.splice(i, 1);
+        renderBassTrapList();
+        scheduleDraw();
+      });
+    });
+  }
+  // A new trap goes in the first outside corner that has none yet.
+  document.getElementById('addBassTrapBtn').addEventListener('click', () => {
+    const used = new Set(resolvedBassTraps().map(t => t.corner));
+    const choices = bassTrapCornerChoices();
+    const c = room.polygon[(choices.find(ch => !used.has(ch.index)) || choices[0]).index];
+    bassTraps.push({ id: nextId++, type: 'porous', x: c.x, y: c.y, fullHeight: false });
+    renderBassTrapList();
+    scheduleDraw();
+  });
+
   // Ceiling material lives in the "Floor & ceiling" section (a single control,
   // not a card list like walls -- there's only one ceiling). Same
   // dropdown + conditional-custom-slider + live-readout pattern as a wall card.
@@ -1838,7 +1929,7 @@ function applyAppearanceAttrs(mode, theme){
   // An edit with no follow-up (a level, a name, a filter slope) only redraws.
   function edited(...what){
     const has = (kind) => what.includes(kind) || what.includes('room');
-    if(what.includes('room')){ sceneChanged(); renderWallList(); }
+    if(what.includes('room')){ sceneChanged(); renderWallList(); renderBassTrapList(); }
     if(has('layout')) autoTimeAlign();
     if(has('sources')) renderSrcList();
     else if(has('layout')) syncDelaySlidersFromState(); // cheap, no DOM rebuild: a drag edits the layout on every mousemove
@@ -1889,7 +1980,7 @@ function applyAppearanceAttrs(mode, theme){
   // fieldReady) and one material per polygon wall.
   function physicsCtx(){
     const materials = room.polygon.map((_, i) => resolveWallMaterial(i));
-    const shared = { wallAbsorption, floorAbsorption, ceilingMaterial: resolveCeilingMaterial() };
+    const shared = { wallAbsorption, floorAbsorption, ceilingMaterial: resolveCeilingMaterial(), bassTraps: resolvedBassTraps() };
     if(isRectangleRoom()){
       const wallMaterials = {};
       RoomPhysics.floorPlanWalls(room.polygon).forEach((wall, i) => { wallMaterials[wall.side] = materials[i]; });
@@ -1968,7 +2059,9 @@ function applyAppearanceAttrs(mode, theme){
   function optimizerScene(){
     const { floorPlan, ...ctx } = physicsCtx();
     const scene = JSON.parse(JSON.stringify({
-      physicsCtx: ctx, offLimitZones, allowedZones, preferredZones,
+      physicsCtx: ctx, allowedZones, preferredZones,
+      // a bass trap's corner is taken, so no sub goes there
+      offLimitZones: offLimitZones.concat(ctx.bassTraps.map(t => RoomPhysics.bassTrapFootprint(room.polygon, t))),
       sources: sourcesEnabled ? sources.filter(s => s.enabled !== false) : [],
       listenerPositions: allSeatPositions(),
       timeAlignTo: autoTimeAlignEnabled ? primaryRow() : undefined
@@ -2447,6 +2540,7 @@ function applyAppearanceAttrs(mode, theme){
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
     drawZones(offX, offY, scale);
+    drawBassTraps(offX, offY, scale);
 
     const lx = offX + primaryRow().x*scale, ly = offY + primaryRow().y*scale;
 
@@ -2568,6 +2662,26 @@ function applyAppearanceAttrs(mode, theme){
     allowed: { fill: 'rgba(79,168,232,0.32)', dash: [2,2], label: '✓ allowed' },
     preferred: { fill: 'rgba(240,185,63,0.28)', dash: [1,3], label: '☆ preferred' }
   };
+
+  // Each bass trap as a triangle across its corner: a 2 ft panel face set diagonally, so each leg along a wall is about 1.4 ft.
+  function drawBassTraps(offX, offY, scale){
+    const leg = 2 / Math.SQRT2;
+    ctx.save();
+    ctx.fillStyle = themeColors['accent'];
+    ctx.strokeStyle = themeColors['accent'];
+    ctx.lineWidth = 2;
+    for(const t of resolvedBassTraps()){
+      const c = room.polygon[t.corner], sx = Math.sign(t.x - c.x), sy = Math.sign(t.y - c.y);
+      ctx.beginPath();
+      ctx.moveTo(offX + c.x * scale, offY + c.y * scale);
+      ctx.lineTo(offX + (c.x + sx * leg) * scale, offY + c.y * scale);
+      ctx.lineTo(offX + c.x * scale, offY + (c.y + sy * leg) * scale);
+      ctx.closePath();
+      ctx.globalAlpha = 0.55; ctx.fill();
+      ctx.globalAlpha = 1; ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   function drawZones(offX, offY, scale){
     const allZones = [

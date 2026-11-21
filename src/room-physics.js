@@ -131,7 +131,63 @@
     suspendedTile:    { shape: 'porousRamp', baseAbsorption: 0.10, midFreq: 100, slope: 0.025, maxAbsorbBoost: 0.30 }
   };
 
-  // ---- Rectangular-room modal (eigenfunction) solution ----
+  // ---- Bass traps: localized absorbers standing in a room corner ----
+  // Each type is lab data for one 2 x 4 ft, 5.4 in deep panel, in sabins (ft^2) per unit by 1/3-octave band, measured by Riverbank Acoustical Laboratories under ASTM C423 / E795 mounting J: porous:   GIK Acoustics 244 Bass Trap, report A13-143 (2013) membrane: the same panel with its FRT range-limiter membrane, A13-179 The membrane type absorbs more below 100 Hz and less above 160 Hz. Reverberation-chamber data below 100 Hz is only approximate, since the chamber has few modes there.
+  const BASS_TRAPS = {
+    porous:   { sabinsPerUnit: [[40, 0.88], [50, 2.85], [63, 3.50], [80, 13.55], [100, 14.88], [125, 16.66], [160, 16.24], [200, 14.66], [250, 15.88]] },
+    membrane: { sabinsPerUnit: [[40, 1.67], [50, 5.53], [63, 5.10], [80, 16.01], [100, 18.12], [125, 14.85], [160, 14.21], [200, 9.91], [250, 9.86]] }
+  };
+  const BASS_TRAP_UNIT_HEIGHT_FT = 4;
+  // Lab sabins already include the boost of the panel's test position: one edge resting on the chamber floor, where a low-frequency field's mean square pressure is about twice the room average. The trap's own absorption area, before its position here is accounted for, is the lab value divided by that.
+  const BASS_TRAP_LAB_COUPLING = 2;
+  // A trap standing in a vertical corner sits where two walls meet, where the mean square pressure of a diffuse field is about 4 times the room average; estimatedT60 uses this for the trap's whole-room absorption.
+  const BASS_TRAP_CORNER_COUPLING = 4;
+  // How far a trap's acoustic center sits from its corner along the corner's diagonal, in feet (about half the panel's depth across it).
+  const BASS_TRAP_CORNER_INSET_FT = 0.5;
+
+  // A trap's own absorption area (m^2) at frequency f: the lab sabins at f, interpolated on log frequency between bands, scaled by its height in 4 ft panels and divided by BASS_TRAP_LAB_COUPLING. Below the lowest band (40 Hz) it falls as f^2, as a resonant or porous absorber does well below its working range; above the highest band it holds that band's value.
+  function bassTrapAbsorptionM2(type, f, heightFt){
+    const bands = BASS_TRAPS[type].sabinsPerUnit;
+    let sabins;
+    if(f <= bands[0][0]) sabins = bands[0][1] * (f / bands[0][0]) ** 2;
+    else if(f >= bands[bands.length - 1][0]) sabins = bands[bands.length - 1][1];
+    else {
+      let i = 1;
+      while(bands[i][0] < f) i++;
+      const [f0, a0] = bands[i - 1], [f1, a1] = bands[i];
+      sabins = a0 + (a1 - a0) * Math.log(f / f0) / Math.log(f1 / f0);
+    }
+    return sabins * FT_TO_M * FT_TO_M * (heightFt / BASS_TRAP_UNIT_HEIGHT_FT) / BASS_TRAP_LAB_COUPLING;
+  }
+
+  // The outside (90 degree) corner of the floor plan nearest (xFt, yFt), as { corner, x, y }: corner is its index in the polygon and (x, y) the trap's acoustic center, BASS_TRAP_CORNER_INSET_FT in from the corner along its diagonal. Traps only go in outside corners, where every mode of a rectangle has a pressure maximum.
+  function bassTrapCorner(polygon, xFt, yFt){
+    const n = polygon.length;
+    let best = null, bestDist = Infinity;
+    for(let i = 0; i < n; i++){
+      if(!isConvexCorner(polygon, i)) continue;
+      const c = polygon[i], dist = Math.hypot(c.x - xFt, c.y - yFt);
+      if(dist < bestDist){ bestDist = dist; best = i; }
+    }
+    const c = polygon[best], p = polygon[(best - 1 + n) % n], q = polygon[(best + 1) % n];
+    const inset = BASS_TRAP_CORNER_INSET_FT / Math.SQRT2;
+    return { corner: best, x: c.x + Math.sign(p.x - c.x + q.x - c.x) * inset, y: c.y + Math.sign(p.y - c.y + q.y - c.y) * inset };
+  }
+
+  // The floor a trap at { corner } (see bassTrapCorner) takes up, as an { x, y, width, height } rectangle in feet: the square its two 1.4 ft legs span along the walls, so no sub is placed into it.
+  function bassTrapFootprint(polygon, trap){
+    const n = polygon.length, c = polygon[trap.corner], p = polygon[(trap.corner - 1 + n) % n], q = polygon[(trap.corner + 1) % n];
+    const leg = 2 / Math.SQRT2, sx = Math.sign(p.x - c.x + q.x - c.x), sy = Math.sign(p.y - c.y + q.y - c.y);
+    return { x: sx > 0 ? c.x : c.x - leg, y: sy > 0 ? c.y : c.y - leg, width: leg, height: leg };
+  }
+
+  // The mean of cos^2(kz * z) over a trap's height, z from the floor to heightM: how much of the mode's height variation the trap sees.
+  function heightCosSquaredMean(kz, heightM){
+    if(kz === 0 || !(heightM > 0)) return 1;
+    return 0.5 + Math.sin(2 * kz * heightM) / (4 * kz * heightM);
+  }
+
+    // ---- Rectangular-room modal (eigenfunction) solution ----
   // Replaces the old truncated image-source method entirely. For a rigid-wall
   // rectangular room, the exact steady-state pressure field is a sum over the
   // room's normal modes (nx,ny,nz):
@@ -170,7 +226,16 @@
   }
 
   // ---- Enumerates every room mode with resonance frequency <= cutoffFreq ----
-  // ctx: { room, wallAbsorption, floorAbsorption, ceilingMaterial, wallMaterials }.
+  // The damping (1/m) a mode gets from ctx.bassTraps, each { type, x, y, heightFt } with (x, y) its acoustic center in feet (see bassTrapCorner) standing from the floor to heightFt. A small absorber of area A at a point adds A * psi_n^2 there to the surface integral in delta_n below, so each trap adds scale * A(f_n) * psiSquared(trap), where scale is the mode's own 1 / (8 * volume integral of psi_n^2) and psiSquared gives psi_n^2 at the trap, averaged over its height.
+  function bassTrapDamping(ctx, fn, scale, psiSquared){
+    const traps = ctx.bassTraps;
+    if(!traps || !traps.length) return 0;
+    let sum = 0;
+    traps.forEach((t, i) => { sum += bassTrapAbsorptionM2(t.type, fn, t.heightFt) * psiSquared(t, i); });
+    return scale * sum;
+  }
+
+  // ctx: { room, wallAbsorption, floorAbsorption, ceilingMaterial, wallMaterials, bassTraps }.
   // Depends only on room geometry + wall materials, not on source/listener
   // position or the frequency being evaluated -- callers doing a frequency
   // sweep (spatiallyAveragedResponse) or many candidate evaluations
@@ -252,7 +317,8 @@
             absorptionOf('left') * Sx + absorptionOf('right') * Sx +
             absorptionOf('front') * Sy + absorptionOf('back') * Sy +
             absorptionOf('floor') * Sz + absorptionOf('ceil') * Sz
-          );
+          ) + bassTrapDamping(ctx, fn, epsX * epsY * epsZ / (8 * V), (t) =>
+            Math.cos(nx * piOverLx * t.x * FT_TO_M) ** 2 * Math.cos(ny * piOverLy * t.y * FT_TO_M) ** 2 * heightCosSquaredMean(nz * piOverLz, t.heightFt * FT_TO_M));
 
           modes.push({ nx, ny, nz, kn, fn, deltaN, An, invLx: nx * piOverLx, invLy: ny * piOverLy, invLz: nz * piOverLz });
         }
@@ -1353,6 +1419,7 @@
     modes.floorPlan = plan;
     if(!(Lz > 0)) return modes;
     const { numModes, numWalls, kSquared, wallWeights, areaM2 } = plan;
+    const trapShapes = (ctx.bassTraps || []).map(t => floorPlanShapesAt(plan, t.x, t.y));
     for(let m = 0; m < numModes; m++){
       for(let nz = 0; ; nz++){
         const kz = nz * Math.PI / Lz;
@@ -1362,7 +1429,8 @@
         const epsZ = epsFactor(nz);
         let wallSum = 0;
         for(let i = 0; i < numWalls; i++) wallSum += surfaceAbsorptionAtFreq(i, fn, ctx) * wallWeights[m * numWalls + i];
-        const deltaN = (wallSum / areaM2 + epsZ * (surfaceAbsorptionAtFreq('floor', fn, ctx) + surfaceAbsorptionAtFreq('ceil', fn, ctx)) / Lz) / 8;
+        const deltaN = (wallSum / areaM2 + epsZ * (surfaceAbsorptionAtFreq('floor', fn, ctx) + surfaceAbsorptionAtFreq('ceil', fn, ctx)) / Lz) / 8
+          + bassTrapDamping(ctx, fn, epsZ / (8 * areaM2 * Lz), (t, i) => trapShapes[i][m] ** 2 * heightCosSquaredMean(kz, t.heightFt * FT_TO_M));
         modes.push({ shape: m, nz, kn, fn, deltaN, An: C * C * epsZ / (areaM2 * Lz), invLz: kz });
       }
     }
@@ -1758,7 +1826,8 @@
   // assume evenly-distributed absorption); enumerateModes' per-mode damping
   // is a different, more detailed quantity that should track it in the
   // uniform-absorption case -- see the cross-check test tying the two together.
-  // ctx: { wallAbsorption, floorAbsorption, wallMaterials, ceilingMaterial }
+  // ctx: { wallAbsorption, floorAbsorption, wallMaterials, ceilingMaterial, bassTraps }
+  // (bass traps count as corner traps, see BASS_TRAP_CORNER_COUPLING)
   // -- a subset of enumerateModes' ctx shape is fine; only these fields are read.
   // A room with room.polygon (see solveFloorPlan) uses the polygon's own
   // floor area and one wall per polygon edge, wall i's material being
@@ -1800,7 +1869,8 @@
       totalAreaFt2 += s.area;
     }
     const totalAreaM2 = totalAreaFt2 * (FT_TO_M ** 2);
-    const totalAbsorptionM2 = totalAbsorptionFt2 * (FT_TO_M ** 2);
+    let totalAbsorptionM2 = totalAbsorptionFt2 * (FT_TO_M ** 2);
+    for(const t of ctx.bassTraps || []) totalAbsorptionM2 += BASS_TRAP_CORNER_COUPLING * bassTrapAbsorptionM2(t.type, freqForAbsorption, t.heightFt);
     const volumeM3 = (floorArea * h) * (FT_TO_M ** 3);
     if(totalAreaM2 <= 0 || volumeM3 <= 0) return 0;
     const avgAlpha = totalAbsorptionM2 / totalAreaM2;
@@ -2825,6 +2895,11 @@
     floorPlanWorkerReply,
     createFloorPlanSolver,
     WALL_MATERIALS,
+    BASS_TRAPS,
+    bassTrapAbsorptionM2,
+    bassTrapCorner,
+    bassTrapFootprint,
+    BASS_TRAP_UNIT_HEIGHT_FT,
     MODE_CUTOFF_HZ,
     enumerateModes,
     precomputeModalField,
