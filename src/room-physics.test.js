@@ -1194,6 +1194,20 @@ test('standardSpeakerPositions stays inside the inset rectangle for any room and
   }
 });
 
+test('standardSpeakerPositions keeps the center on the front wall when the seat is near a side wall', () => {
+  // the seat moves onto the left wall's inset line, and C runs along it
+  for(const x of [0.5, 1, 1.5]){
+    const c = P.standardSpeakerPositions(baseRoom, { x, y: 9 }, ['C'])[0];
+    approx(c.x, 1.5, 1e-9, `C x for seat x ${x}`);
+    approx(c.y, 1.5, 1e-9, `C y for seat x ${x}`);
+  }
+  // a seat exactly the inset to the side of an L's notch wall
+  const L = { w: 20, d: 16, h: 8, polygon: [{ x: 0, y: 0 }, { x: 12, y: 0 }, { x: 12, y: 6 }, { x: 20, y: 6 }, { x: 20, y: 16 }, { x: 0, y: 16 }] };
+  const c = P.standardSpeakerPositions(L, { x: 10.5, y: 12 }, ['C'])[0];
+  approx(c.x, 10.5, 1e-9, 'C x in the L');
+  approx(c.y, 1.5, 1e-9, 'C y in the L');
+});
+
 test('standardSpeakerPositions skips names it has no azimuth for and keeps the order given', () => {
   const pos = P.standardSpeakerPositions(baseRoom, { x: 9, y: 9 }, ['SR', 'Main 1', 'FL']);
   assert.deepStrictEqual(pos.map(p => p.name), ['SR', 'FL']);
@@ -3264,6 +3278,19 @@ test('nearestWallDistances in an L room measures to the notch\'s walls where the
     const withIndex = (e) => ({ ...e, index: index[e.wall] });
     assert.deepStrictEqual(P.nearestWallDistances(pos, { ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }), { side: withIndex(plain.side), end: withIndex(plain.end) });
   }
+});
+
+test('wallsAround gives the first wall each way, a notch wall where it is the nearer that way', () => {
+  assert.deepStrictEqual(P.wallsAround({ x: 2.25, y: 1 }, baseRoom), {
+    left: { wall: 'left', distFt: 2.25, x: 0 }, right: { wall: 'right', distFt: 15.75, x: 18 },
+    front: { wall: 'front', distFt: 1, y: 0 }, back: { wall: 'back', distFt: 12.5, y: 13.5 }
+  });
+  // below the notch the back wall is the notch's own wall at y = 12
+  const below = P.wallsAround({ x: 20, y: 10 }, lShapedRoom);
+  assert.deepStrictEqual(below.back, { wall: 'back', distFt: 2, y: 12, index: 2 });
+  assert.deepStrictEqual(below.left, { wall: 'left', distFt: 20, x: 0, index: 5 });
+  // beside the notch the right wall is the notch's side wall at x = 14
+  assert.deepStrictEqual(P.wallsAround({ x: 10, y: 16 }, lShapedRoom).right, { wall: 'right', distFt: 4, x: 14, index: 3 });
 });
 
 test('speakerKeepOut runs back to a notch wall when that is the nearest wall', () => {

@@ -169,8 +169,8 @@
         list.innerHTML = items.map(it => `
           <div class="guide-speaker" data-id="${it.id}">
             <button class="small guide-speaker-name" title="Show ${esc(it.name)} on the map">${esc(it.name)}</button>
-            <div class="guide-field"><label>From left wall</label><span data-axis="x" role="group" aria-label="${esc(it.name)}, from left wall"></span></div>
-            <div class="guide-field"><label>From front wall</label><span data-axis="y" role="group" aria-label="${esc(it.name)}, from front wall"></span></div>
+            <div class="guide-field"><label data-label="x">From left wall</label><span data-axis="x" role="group" aria-label="${esc(it.name)}, from left wall"></span></div>
+            <div class="guide-field"><label data-label="y">From front wall</label><span data-axis="y" role="group" aria-label="${esc(it.name)}, from front wall"></span></div>
             ${extra.html ? extra.html(it) : ''}
           </div>`).join('');
         cards = items.map(it => {
@@ -180,8 +180,12 @@
           el.querySelector('.guide-speaker-name').addEventListener('click', select);
           // Moving focus into a card from elsewhere points at its marker; moving between the card's own fields does not bring a dismissed mark back.
           el.addEventListener('focusin', (e) => { if(!el.contains(e.relatedTarget) && (!coachTarget || coachTarget.id !== it.id)) select(); });
-          card.writeX = app.lengthField(card.xField, it.x, (ft) => app.moveSource(it.id, ft, card.item.y));
-          card.writeY = app.lengthField(card.yField, it.y, (ft) => app.moveSource(it.id, card.item.x, ft));
+          // Each distance is from the wall straight to the item's left or
+          // in front of it, which in an L, T or U room may be a notch's
+          // wall rather than the room's outer edge (app.wallsAround).
+          const walls = app.wallsAround(it);
+          card.writeX = app.lengthField(card.xField, walls.left.distFt, (ft) => app.moveSource(it.id, app.wallsAround(card.item).left.x + ft, card.item.y));
+          card.writeY = app.lengthField(card.yField, walls.front.distFt, (ft) => app.moveSource(it.id, card.item.x, app.wallsAround(card.item).front.y + ft));
           if(extra.wire) extra.wire(card, el);
           return card;
         });
@@ -193,8 +197,14 @@
           card.item = it;
           card.el.classList.toggle('selected', !!coachTarget && coachTarget.id === it.id);
           // A field being typed in is left alone until focus moves on.
-          if(!card.xField.contains(document.activeElement)) card.writeX(it.x);
-          if(!card.yField.contains(document.activeElement)) card.writeY(it.y);
+          const walls = app.wallsAround(it);
+          for(const [axis, field, write, wall] of [['x', card.xField, card.writeX, walls.left], ['y', card.yField, card.writeY, walls.front]]){
+            if(field.contains(document.activeElement)) continue;
+            const label = `From ${wall.label.toLowerCase()}`;
+            card.el.querySelector(`[data-label="${axis}"]`).textContent = label;
+            field.setAttribute('aria-label', `${it.name}, ${label.toLowerCase()}`);
+            write(wall.distFt);
+          }
           if(extra.sync) extra.sync(it, card.el, items);
         });
       };

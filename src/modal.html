@@ -617,11 +617,23 @@ function applyAppearanceAttrs(mode, theme){
     room.d = d;
     wallMaterialKeys = result.walls.map(j => wallMaterialKeys[j]);
     wallCustomAbsorption = result.walls.map(j => wallCustomAbsorption[j]);
-    keepSceneInRoom(result.shift.x, result.shift.y);
     if(shapeDrag){
+      // During a drag the contents are fitted from where they were when it
+      // began, so a wall that passes a seat and comes back leaves it where
+      // it was: only the shape the drag ends on counts.
+      const start = shapeDrag.scene;
+      start.shift.x += result.shift.x;
+      start.shift.y += result.shift.y;
+      listenerRows.concat(sources).forEach(p => Object.assign(p, start.points.get(p)));
+      offLimitZones = start.offLimitZones.map(z => ({ ...z }));
+      allowedZones = start.allowedZones.map(z => ({ ...z }));
+      preferredZones = start.preferredZones.map(z => ({ ...z }));
+      keepSceneInRoom(start.shift.x, start.shift.y);
       // the room stays where it is on the map while a drag is under way
       shapeDrag.layout.offX -= result.shift.x * shapeDrag.layout.scale;
       shapeDrag.layout.offY -= result.shift.y * shapeDrag.layout.scale;
+    } else {
+      keepSceneInRoom(result.shift.x, result.shift.y);
     }
     for(const dim of ['w', 'd']) writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
     edited('room');
@@ -1427,10 +1439,26 @@ function applyAppearanceAttrs(mode, theme){
     for(const entry of [near.side, near.end]) entry.label = labels[entry.index].toLowerCase();
     return near;
   }
+  // Set while a Walls list field's own edit is applied, so the list is
+  // updated in place rather than rebuilt: a rebuild would remove the
+  // inches box that Tab or a click is moving focus to.
+  let editingWallList = false;
   function renderWallList(){
     const list = document.getElementById('wallList');
-    list.innerHTML = '';
     const labels = wallLabels();
+    if(editingWallList && list.children.length === room.polygon.length){
+      [...list.children].forEach((block, i) => {
+        block.querySelector('[data-role="wallName"]').textContent = labels[i];
+        writeLengthFieldValue(block.querySelector('[data-field="wallLength"]'), wallLength(i));
+        block.querySelector('[data-field="material"]').value = wallMaterialKeys[i];
+        block.querySelector('[data-role="customRow"]').style.display = wallMaterialKeys[i] === 'custom' ? 'flex' : 'none';
+        block.querySelector('[data-field="customAbsorption"]').value = wallCustomAbsorption[i];
+        block.querySelector('[data-out="customAbsorption"]').textContent = wallCustomAbsorption[i].toFixed(2);
+      });
+      updateWallReadouts();
+      return;
+    }
+    list.innerHTML = '';
     for(let i = 0; i < room.polygon.length; i++){
       const block = document.createElement('div');
       block.className = 'src-block';
@@ -1438,7 +1466,7 @@ function applyAppearanceAttrs(mode, theme){
         <div class="src-label">
           <div class="name-wrap">
             <span class="dot" style="background:${WALL_COLOR}"></span>
-            <span style="font-weight:600;font-size:13.5px;">${labels[i]}</span>
+            <span data-role="wallName" style="font-weight:600;font-size:13.5px;">${labels[i]}</span>
           </div>
         </div>
         <div class="row">
@@ -1469,7 +1497,10 @@ function applyAppearanceAttrs(mode, theme){
       // A new length moves the wall at this wall's far end (its right or
       // back end); one the room can't take is put back.
       wireLengthField(block, 'wallLength', (ft, fieldEl) => {
-        if(!applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))) writeLengthFieldValue(fieldEl, wallLength(i));
+        editingWallList = true;
+        try {
+          if(!applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))) writeLengthFieldValue(fieldEl, wallLength(i));
+        } finally { editingWallList = false; }
       });
 
       materialSelect.addEventListener('change', function(){
@@ -4229,7 +4260,13 @@ function applyAppearanceAttrs(mode, theme){
     const hit = shapeHitAt(evt);
     if(!hit) return false;
     const layout = { ...mapLayout(canvas.width, canvas.height) };
-    shapeDrag = { ...hit, layout, size: { sizeW: canvas.width, sizeH: canvas.height }, startX: evt.clientX, startY: evt.clientY, moved: false };
+    // what is in the room when the drag begins (see applyFloorPlanEdit)
+    const scene = {
+      points: new Map(listenerRows.concat(sources).map(p => [p, { x: p.x, y: p.y }])),
+      offLimitZones: offLimitZones.map(z => ({ ...z })), allowedZones: allowedZones.map(z => ({ ...z })), preferredZones: preferredZones.map(z => ({ ...z })),
+      shift: { x: 0, y: 0 }
+    };
+    shapeDrag = { ...hit, layout, scene, size: { sizeW: canvas.width, sizeH: canvas.height }, startX: evt.clientX, startY: evt.clientY, moved: false };
     return true;
   }
   function shapeMouseMove(evt){
@@ -4553,6 +4590,12 @@ function applyAppearanceAttrs(mode, theme){
     optimizerOutcome,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
     wallDistances: namedWallDistances,
+    // RoomPhysics.wallsAround, each wall with its name as the Walls list shows it
+    wallsAround: (pos) => {
+      const walls = RoomPhysics.wallsAround(pos, room), labels = wallLabels();
+      for(const entry of Object.values(walls)) entry.label = labels[entry.index];
+      return walls;
+    },
     applyOptimizerResult,
     clearOptimizerResult,
     // The green-to-red map of how every candidate position scored.

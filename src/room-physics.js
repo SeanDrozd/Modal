@@ -2193,16 +2193,15 @@
         : gainDb <= -PLACEMENT_GAIN_DB.modest ? 'worse' : 'similar'
     };
   }
-  // The nearer side wall and the nearer end wall to a point, with the
-  // distance to each and where that wall is: { side: { wall: 'left' |
-  // 'right', distFt, x }, end: { wall: 'front' | 'back', distFt, y } }. The
-  // front wall is y = 0 and the left wall x = 0; a point exactly midway
-  // reports left and front. In a room with room.polygon, the side walls are
-  // the first walls straight to the point's left and right, and the end
-  // walls the first straight ahead of and behind it, so in an L room the
-  // notch's walls count where they are the nearer; each also gives `index`,
-  // that wall's number in room.polygon.
-  function nearestWallDistances(pos, room){
+  // The four walls straight to a point's left, right, front and back, each
+  // with the distance to it and where it is: { left: { wall: 'left',
+  // distFt, x }, right: { wall: 'right', distFt, x }, front: { wall:
+  // 'front', distFt, y }, back: { wall: 'back', distFt, y } }. The front
+  // wall is y = 0 and the left wall x = 0. In a room with room.polygon,
+  // each is the first wall met going straight that way, so in an L room a
+  // notch's wall counts where it is the nearer that way; each also gives
+  // `index`, that wall's number in room.polygon.
+  function wallsAround(pos, room){
     let left = 0, right = room.w, front = 0, back = room.d;
     const at = {}; // the polygon wall each of the four came from
     if(room.polygon){
@@ -2222,8 +2221,20 @@
     }
     const which = (wall, entry) => room.polygon ? { ...entry, index: at[wall] } : entry;
     return {
-      side: pos.x - left <= right - pos.x ? which('left', { wall: 'left', distFt: pos.x - left, x: left }) : which('right', { wall: 'right', distFt: right - pos.x, x: right }),
-      end: pos.y - front <= back - pos.y ? which('front', { wall: 'front', distFt: pos.y - front, y: front }) : which('back', { wall: 'back', distFt: back - pos.y, y: back })
+      left: which('left', { wall: 'left', distFt: pos.x - left, x: left }),
+      right: which('right', { wall: 'right', distFt: right - pos.x, x: right }),
+      front: which('front', { wall: 'front', distFt: pos.y - front, y: front }),
+      back: which('back', { wall: 'back', distFt: back - pos.y, y: back })
+    };
+  }
+  // The nearer side wall and the nearer end wall to a point (see
+  // wallsAround): { side: the left or right entry, end: the front or back
+  // entry }. A point exactly midway reports left and front.
+  function nearestWallDistances(pos, room){
+    const w = wallsAround(pos, room);
+    return {
+      side: w.left.distFt <= w.right.distFt ? w.left : w.right,
+      end: w.front.distFt <= w.back.distFt ? w.front : w.back
     };
   }
 
@@ -2249,8 +2260,11 @@
       x0: Math.min(a.x, b.x) - inset, x1: Math.max(a.x, b.x) + inset,
       y0: Math.min(a.y, b.y) - inset, y1: Math.max(a.y, b.y) + inset
     }));
-    // The interval of t over which lx + d*t lies between lo and hi.
-    const slab = (l, d, lo, hi) => d > 0 ? [(lo - l) / d, (hi - l) / d] : d < 0 ? [(hi - l) / d, (lo - l) / d] : (l >= lo && l <= hi ? [-Infinity, Infinity] : [Infinity, -Infinity]);
+    // The interval of t over which lx + d*t lies between lo and hi. A ray
+    // parallel to the slab that runs along its edge (l exactly lo or hi,
+    // as for a seat moved onto a wall's inset line) does not count as
+    // inside it, so it only grazes that wall's box.
+    const slab = (l, d, lo, hi) => d > 0 ? [(lo - l) / d, (hi - l) / d] : d < 0 ? [(hi - l) / d, (lo - l) / d] : (l > lo && l < hi ? [-Infinity, Infinity] : [Infinity, -Infinity]);
     const positions = [];
     for(const name of names){
       if(!(name in SPEAKER_AZIMUTH_DEG)) continue;
@@ -2940,6 +2954,7 @@
     scoreResponses,
     seatToSeatVariationDb,
     comparePlacements,
+    wallsAround,
     nearestWallDistances,
     rowFootprintRect,
     isPointInRect,
