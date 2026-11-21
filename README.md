@@ -28,7 +28,7 @@ Symmetric sub placement looks tidy but excites the room's modes symmetrically, o
 - **Optimizer.** Scores candidate sub positions across every seat, weighted by row rank and seat position. "Balanced" mode minimizes variation and penalizes deep nulls; "Null avoidance" is for rooms with room correction. Multiple subs are placed greedily, then refined with coordinate-descent passes. New subs keep clear of each other and of each speaker's footprint back to its wall. The result is graded as a major (6 dB or more), modest (2 dB or more), similar, or worse change in score.
 - **Zones and furniture.** Off-limits, allowed-only and preferred zones, plus a furniture palette (couch, TV stand, bed, desk and more). Furniture only excludes sub positions; it is not part of the acoustic model.
 - **Sources and seats.** Any number of mains and subs with level, delay, crossover range and slope, and height. Delays auto time-align to the main seat. Multiple ranked seat rows of 1 to 5 seats.
-- **Room construction.** Per-wall, floor and ceiling materials, each with a frequency-dependent absorption curve.
+- **Room construction.** Per-wall, floor and ceiling materials, each with a frequency-dependent absorption curve, plus corner bass traps modeled from lab measurements.
 - **Views.** Floor plan or pressure map, frequency sweep, frequency response chart with the spread across all seats and an optimizer preview overlay. GPU rendering with CPU fallback.
 - **Quality of life.** Undo/redo, saved room presets, feet/meters, Auto/Light/Dark with four color themes, tablet support (768px and up, touch and pen).
 
@@ -51,7 +51,7 @@ p(r, r_s, f) = Σ_n  A_n · ψ_n(r) · ψ_n(r_s) / (k_n² − k² − j·k·δ_n
 - **Seat weighting:** each row counts half as much as the one above it; within a row, center seats count fully and the ends count half. The worst null is always found, but its penalty is scaled by that seat's weight.
 - **Delay** is true time delay, like an AVR's distance setting, not a sub's phase switch. The geometric figure ignores the sub's own processing latency, so trust room correction's measured distance over it.
 
-**Not modeled:** furniture, openings and localized treatment (rugs, panels); only the walls, floor and ceiling. The heat map is exact-point, so it looks sharper than what you hear. Material values are typical construction, not measurements of your walls.
+**Not modeled:** furniture, openings, rugs and thin wall panels (they do little below 150 Hz); only the walls, floor, ceiling and corner bass traps. The heat map is exact-point, so it looks sharper than what you hear. Material values are typical construction, not measurements of your walls.
 
 ## Development
 

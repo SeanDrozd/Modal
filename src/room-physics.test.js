@@ -2993,6 +2993,83 @@ test('a rectangle solved as a floor plan matches the rectangle formula: per-mode
   }
 });
 
+console.log('\n-- Bass traps (bassTrapAbsorptionM2 / bassTrapCorner / trap damping in enumerateModes and estimatedT60) --');
+
+test('bassTrapAbsorptionM2: lab sabins per 4 ft panel, halved for the lab floor boost, interpolated on log frequency', () => {
+  const ft2 = 0.3048 * 0.3048;
+  approx(P.bassTrapAbsorptionM2('porous', 63, 4), 3.50 * ft2 / 2, 1e-12);
+  approx(P.bassTrapAbsorptionM2('membrane', 100, 4), 18.12 * ft2 / 2, 1e-12);
+  approx(P.bassTrapAbsorptionM2('porous', 63, 8), 2 * P.bassTrapAbsorptionM2('porous', 63, 4), 1e-12, 'twice the height, twice the area');
+  const mid = Math.sqrt(63 * 80); // halfway between bands on log frequency
+  approx(P.bassTrapAbsorptionM2('porous', mid, 4), (3.50 + 13.55) / 2 * ft2 / 2, 1e-12);
+  approx(P.bassTrapAbsorptionM2('porous', 20, 4), P.bassTrapAbsorptionM2('porous', 40, 4) / 4, 1e-12, 'falls as f^2 below 40 Hz');
+  approx(P.bassTrapAbsorptionM2('porous', 300, 4), P.bassTrapAbsorptionM2('porous', 250, 4), 1e-12, 'holds the top band');
+  assert.ok(P.bassTrapAbsorptionM2('membrane', 50, 4) > P.bassTrapAbsorptionM2('porous', 50, 4), 'membrane type absorbs more at 50 Hz');
+  assert.ok(P.bassTrapAbsorptionM2('membrane', 250, 4) < P.bassTrapAbsorptionM2('porous', 250, 4), 'and less at 250 Hz');
+});
+
+test('bassTrapCorner: snaps to the nearest outside corner, inset along its diagonal, and skips inside corners', () => {
+  const inset = 0.5 / Math.SQRT2;
+  const rect = rectPolygon(20, 15);
+  const a = P.bassTrapCorner(rect, 18, 14);
+  assert.deepStrictEqual(rect[a.corner], { x: 20, y: 15 });
+  approx(a.x, 20 - inset, 1e-12); approx(a.y, 15 - inset, 1e-12);
+  const b = P.bassTrapCorner(rect, 1, 1);
+  approx(b.x, inset, 1e-12); approx(b.y, inset, 1e-12);
+  // lPolygon(24, 20, 10, 8) has its inside corner at (14, 12); a point right on it goes to an outside corner instead
+  const c = P.bassTrapCorner(lPoly, 14, 12);
+  const corner = lPoly[c.corner];
+  assert.ok(!(corner.x === 14 && corner.y === 12), 'not the inside corner');
+  assert.ok(P.isPointInPolygon(c.x, c.y, lPoly), 'acoustic center is inside the room');
+});
+
+test('bassTrapFootprint: the 1.4 ft square a trap spans in its corner', () => {
+  const rect = rectPolygon(20, 15), leg = 2 / Math.SQRT2;
+  const f = P.bassTrapFootprint(rect, P.bassTrapCorner(rect, 20, 15));
+  approx(f.x, 20 - leg, 1e-12); approx(f.y, 15 - leg, 1e-12); approx(f.width, leg, 1e-12); approx(f.height, leg, 1e-12);
+  const g = P.bassTrapFootprint(rect, P.bassTrapCorner(rect, 0, 0));
+  assert.deepStrictEqual([g.x, g.y], [0, 0]);
+});
+
+test('a corner bass trap adds the point-absorber damping A * psi^2 / (8 * mode volume integral) to each rectangle mode', () => {
+  const room = { w: 15, d: 20, h: 8 };
+  const base = { room, wallAbsorption: 0.03, floorAbsorption: 0.02 };
+  const trap = { type: 'porous', heightFt: 4, ...P.bassTrapCorner(rectPolygon(15, 20), 0, 0) };
+  const without = P.enumerateModes(base, 120), withTrap = P.enumerateModes({ ...base, bassTraps: [trap] }, 120);
+  const Lx = 15 * 0.3048, Ly = 20 * 0.3048, Lz = 8 * 0.3048, V = Lx * Ly * Lz, h = 4 * 0.3048;
+  for(let i = 0; i < without.length; i++){
+    const m = without[i], eps = n => n === 0 ? 1 : 2;
+    const kz = m.nz * Math.PI / Lz;
+    const zMean = m.nz === 0 ? 1 : 0.5 + Math.sin(2 * kz * h) / (4 * kz * h);
+    const psi2 = Math.cos(m.nx * Math.PI * trap.x * 0.3048 / Lx) ** 2 * Math.cos(m.ny * Math.PI * trap.y * 0.3048 / Ly) ** 2 * zMean;
+    const expected = P.bassTrapAbsorptionM2('porous', m.fn, 4) * psi2 * eps(m.nx) * eps(m.ny) * eps(m.nz) / (8 * V);
+    approx(withTrap[i].deltaN - m.deltaN, expected, 1e-12, `mode (${m.nx},${m.ny},${m.nz})`);
+  }
+  // A trap on the width mode's pressure node (mid-wall) adds almost nothing to that mode.
+  const mid = P.enumerateModes({ ...base, bassTraps: [{ type: 'porous', heightFt: 4, x: 7.5, y: 0.35 }] }, 120);
+  const k = without.findIndex(m => m.nx === 1 && m.ny === 0 && m.nz === 0);
+  assert.ok(mid[k].deltaN - without[k].deltaN < 1e-6 * without[k].deltaN + 1e-12, 'no damping at the node');
+});
+
+test('a corner bass trap damps a rectangle solved as a floor plan the same as the rectangle formula, within 2% (grid interpolation near the corner)', () => {
+  const room = { w: 17.3, d: 12.1, h: 9 };
+  const plan = P.solveFloorPlan(rectPolygon(17.3, 12.1), { cutoffHz: 120 });
+  const trap = { type: 'membrane', heightFt: 9, ...P.bassTrapCorner(rectPolygon(17.3, 12.1), 17, 12) };
+  const shared = { room, wallAbsorption: 0.03, floorAbsorption: 0.02 };
+  const gain = (ctx) => { const a = P.enumerateModes(ctx, 120), b = P.enumerateModes({ ...ctx, bassTraps: [trap] }, 120); return a.map((m, i) => ({ fn: m.fn, d: b[i].deltaN - m.deltaN })).sort((p, q) => p.fn - q.fn); };
+  const formula = gain(shared), numeric = gain({ ...shared, floorPlan: plan });
+  for(let i = 1; i < formula.length - 2; i++) approx(numeric[i].d, formula[i].d, 0.02 * formula[i].d, `trap damping of mode ${i} at ${formula[i].fn} Hz`);
+});
+
+test('estimatedT60 counts a corner trap as its own area times the corner coupling of 4', () => {
+  const room = { w: 15, d: 20, h: 8 }, ctx = { wallAbsorption: 0.03, floorAbsorption: 0.03 };
+  const traps = [{ type: 'porous', heightFt: 8, x: 0.35, y: 0.35 }];
+  const V = 15 * 20 * 8 * 0.3048 ** 3, S = 2 * (15 * 20 + 15 * 8 + 20 * 8) * 0.3048 ** 2;
+  const A = 0.03 * S + 4 * P.bassTrapAbsorptionM2('porous', 80, 8);
+  approx(P.estimatedT60(room, 80, { ...ctx, bassTraps: traps }), 0.161 * V / (-S * Math.log(1 - A / S)), 1e-9);
+  assert.ok(P.estimatedT60(room, 80, { ...ctx, bassTraps: traps }) < P.estimatedT60(room, 80, ctx));
+});
+
 test('a rectangle solved as a floor plan matches the rectangle formula: frequency response within 0.05 dB on average, 15 to 200 Hz', () => {
   const src = [{ x: 5, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 },
                { x: 15, y: 0.75, z: 1, levelDb: -3, delayMs: 2, freqLow: 20, freqHigh: 120 }];
