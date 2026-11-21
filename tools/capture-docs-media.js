@@ -235,6 +235,15 @@ async function expandSection(page, sectionId){
   await page.click('#addSubBtn'); await page.waitForTimeout(150);
   await page.click('#addSubBtn'); await page.waitForTimeout(150);
 
+  // A three-seat row (a couch, at the default 2 ft spacing) rather than one
+  // seat, so the optimizer has to work for the whole row.
+  await page.evaluate(() => {
+    const el = document.querySelector('#listenerRowsList [data-field="seats"]');
+    el.value = '3';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(150);
+
   let toScreen = await makeRoomToScreen(page);
 
   async function dragSourceFromTo(fromFt, toFt, steps){
