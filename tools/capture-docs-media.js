@@ -138,6 +138,13 @@ async function setFreq(page, hz){
   }, hz);
 }
 
+// Waits until the optimizer run started by a click has finished (its
+// buttons are disabled while it runs). A fixed delay is not enough: how long
+// a search takes depends on the machine, the room and the search itself.
+async function waitForOptimizer(page){
+  await page.waitForFunction(() => !document.getElementById('runOptimizerBtn').disabled, null, { timeout: 120000 });
+}
+
 async function expandSection(page, sectionId){
   await page.evaluate((id) => {
     const el = document.getElementById(id);
@@ -171,7 +178,7 @@ async function expandSection(page, sectionId){
   const findBtn = await page.$('#runOptimizerBtn');
   await findBtn.scrollIntoViewIfNeeded();
   await findBtn.click();
-  await page.waitForTimeout(1200);
+  await waitForOptimizer(page);
   await page.evaluate(() => document.getElementById('optimizerSection').scrollIntoView({ block: 'start' }));
   await page.click('#autofitDbRangeBtn');
   await page.waitForTimeout(200);
@@ -386,7 +393,7 @@ async function expandSection(page, sectionId){
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.click('#runOptimizerBtn');
-  await page.waitForTimeout(1500);
+  await waitForOptimizer(page);
   await page.evaluate(() => document.getElementById('freqResponseSection').scrollIntoView({ block: 'start' })); // clicking runOptimizerBtn can auto-scroll it into view; restore the chart to view
 
   const statusText = await page.textContent('#optimizerStatus');
@@ -407,6 +414,9 @@ async function expandSection(page, sectionId){
   const targets = [];
   for (let i = 0; i + 1 < nums.length; i += 2) targets.push({ x: nums[i], y: nums[i+1] });
   console.log('Parsed targets:', targets);
+  // Without two targets there is nothing to animate, and the result would
+  // be a still image; stop instead of writing one.
+  if(targets.length < 2) throw new Error(`Expected 2 suggested positions in the optimizer status, got: ${statusText}`);
 
   // Clear the optimizer's own preview overlay so it doesn't visually clutter
   // the "after" frames (we're moving the actual sources, not accepting the
