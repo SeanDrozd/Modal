@@ -696,6 +696,94 @@
     return finishFloorPlanEdit(pts.map(e => e.v), pts.map(e => e.wall));
   }
 
+  // The room shapes the setup guide offers, as a w x d ft floor plan with
+  // its corners in the same order as rectanglePolygon (front wall first).
+  // 'L' has a notch out of its back-right corner, 'T' a narrower back half
+  // (a notch out of each back corner) and 'U' a notch in the middle of its
+  // back wall; each notch is about 40% of the depth, rounded to half a foot.
+  const FLOOR_PLAN_TEMPLATES = ['rectangle', 'L', 'T', 'U'];
+  function floorPlanTemplate(kind, w, d){
+    const half = (v) => Math.max(FLOOR_PLAN_MIN_WALL_FT, Math.round(v * 2) / 2);
+    const ny = half(d * 0.4);
+    if(kind === 'L'){
+      const nx = half(w * 0.4);
+      return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d - ny }, { x: w - nx, y: d - ny }, { x: w - nx, y: d }, { x: 0, y: d }];
+    }
+    if(kind === 'T'){
+      const side = half(w / 4);
+      return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d - ny }, { x: w - side, y: d - ny }, { x: w - side, y: d }, { x: side, y: d }, { x: side, y: d - ny }, { x: 0, y: d - ny }];
+    }
+    if(kind === 'U'){
+      const arm = half(w / 3);
+      return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d }, { x: w - arm, y: d }, { x: w - arm, y: d - ny }, { x: arm, y: d - ny }, { x: arm, y: d }, { x: 0, y: d }];
+    }
+    return rectanglePolygon(w, d);
+  }
+  // Replaces a floor plan with one of FLOOR_PLAN_TEMPLATES at the same
+  // overall size, as an edit (see finishFloorPlanEdit): each new wall takes
+  // the settings of the first old wall on the same side of the room.
+  function floorPlanFromTemplate(polygon, kind){
+    const w = Math.max(...polygon.map(p => p.x)) - Math.min(...polygon.map(p => p.x));
+    const d = Math.max(...polygon.map(p => p.y)) - Math.min(...polygon.map(p => p.y));
+    const shape = floorPlanTemplate(kind, w, d);
+    const oldSides = floorPlanWalls(polygon).map(wall => wall.side);
+    return finishFloorPlanEdit(shape, floorPlanWalls(shape).map(wall => oldSides.indexOf(wall.side)));
+  }
+  // Which of FLOOR_PLAN_TEMPLATES a floor plan is, in any size and either
+  // way round, or null for any other shape: a rectangle has 4 corners, an L
+  // 6, and of 8-corner plans a T is missing the two bounding-box corners at
+  // one end of a side and a U none of them.
+  function floorPlanTemplateKind(polygon){
+    if(polygon.length === 4) return 'rectangle';
+    if(polygon.length === 6) return 'L';
+    if(polygon.length !== 8) return null;
+    const xs = polygon.map(p => p.x), ys = polygon.map(p => p.y);
+    const box = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]];
+    const missing = box.filter(([x, y]) => !polygon.some(p => p.x === x && p.y === y));
+    if(missing.length === 0) return 'U';
+    if(missing.length === 2 && (missing[0][0] === missing[1][0] || missing[0][1] === missing[1][1])) return 'T';
+    return null;
+  }
+  // A floor plan mirrored left to right (axis 'x') or front to back ('y'),
+  // as an edit (see finishFloorPlanEdit). Every wall keeps its own
+  // settings, so a mirrored wall's material goes with it to the other side.
+  // Like rectanglePolygon, the list starts at the front wall's left end.
+  function mirrorFloorPlan(polygon, axis){
+    const n = polygon.length, max = Math.max(...polygon.map(p => p[axis]));
+    // reversed, so the corners keep running the same way round
+    const mirrored = polygon.map(p => ({ ...p, [axis]: max - p[axis] })).reverse();
+    const walls = mirrored.map((_, j) => (2 * n - 2 - j) % n);
+    const first = mirrored.reduce((best, p, k) => p.y < mirrored[best].y || (p.y === mirrored[best].y && p.x < mirrored[best].x) ? k : best, 0);
+    const turn = (list) => list.slice(first).concat(list.slice(0, first));
+    return finishFloorPlanEdit(turn(mirrored), turn(walls));
+  }
+
+  // The largest rectangle of floor that runs back from the front wall
+  // (the room's smallest y), as { x, y, w, d } in feet: the part of the
+  // room a screen on that wall faces. A rectangle room is the whole room;
+  // in an L with its notch at the back it is the deeper arm or the full
+  // width in front of the notch, whichever has more floor.
+  function floorPlanFrontArea(polygon){
+    const xs = [...new Set(polygon.map(p => p.x))].sort((a, b) => a - b);
+    const front = Math.min(...polygon.map(p => p.y));
+    // how far the floor runs back from the front wall in each strip between corners
+    const depth = xs.slice(0, -1).map((x, i) => {
+      const mid = (x + xs[i + 1]) / 2;
+      const crossings = floorPlanWalls(polygon).filter(w => w.horizontal && Math.min(w.a.x, w.b.x) < mid && Math.max(w.a.x, w.b.x) > mid).map(w => w.a.y).sort((a, b) => a - b);
+      return crossings[0] === front ? crossings[1] - front : 0;
+    });
+    let best = null;
+    for(let i = 0; i < depth.length; i++){
+      let d = Infinity;
+      for(let j = i; j < depth.length && depth[j] > 0; j++){
+        d = Math.min(d, depth[j]);
+        const area = (xs[j + 1] - xs[i]) * d;
+        if(!best || area > best.w * best.d) best = { x: xs[i], y: front, w: xs[j + 1] - xs[i], d };
+      }
+    }
+    return best;
+  }
+
   // Grid cell size for the floor-plan solve. Mode shapes below the 300 Hz
   // cutoff have a wavelength of 1.14 m or more, 11 cells at this size.
   const FLOOR_PLAN_CELL_M = 0.1;
@@ -2055,27 +2143,30 @@
   // reports left and front. In a room with room.polygon, the side walls are
   // the first walls straight to the point's left and right, and the end
   // walls the first straight ahead of and behind it, so in an L room the
-  // notch's walls count where they are the nearer.
+  // notch's walls count where they are the nearer; each also gives `index`,
+  // that wall's number in room.polygon.
   function nearestWallDistances(pos, room){
     let left = 0, right = room.w, front = 0, back = room.d;
+    const at = {}; // the polygon wall each of the four came from
     if(room.polygon){
       left = front = -Infinity; right = back = Infinity;
-      for(const wall of floorPlanWalls(room.polygon)){
+      floorPlanWalls(room.polygon).forEach((wall, i) => {
         const { a, b } = wall;
         if(wall.horizontal){
-          if(pos.x < Math.min(a.x, b.x) || pos.x > Math.max(a.x, b.x)) continue;
-          if(a.y <= pos.y) front = Math.max(front, a.y);
-          if(a.y >= pos.y) back = Math.min(back, a.y);
+          if(pos.x < Math.min(a.x, b.x) || pos.x > Math.max(a.x, b.x)) return;
+          if(a.y <= pos.y && a.y > front){ front = a.y; at.front = i; }
+          if(a.y >= pos.y && a.y < back){ back = a.y; at.back = i; }
         } else {
-          if(pos.y < Math.min(a.y, b.y) || pos.y > Math.max(a.y, b.y)) continue;
-          if(a.x <= pos.x) left = Math.max(left, a.x);
-          if(a.x >= pos.x) right = Math.min(right, a.x);
+          if(pos.y < Math.min(a.y, b.y) || pos.y > Math.max(a.y, b.y)) return;
+          if(a.x <= pos.x && a.x > left){ left = a.x; at.left = i; }
+          if(a.x >= pos.x && a.x < right){ right = a.x; at.right = i; }
         }
-      }
+      });
     }
+    const which = (wall, entry) => room.polygon ? { ...entry, index: at[wall] } : entry;
     return {
-      side: pos.x - left <= right - pos.x ? { wall: 'left', distFt: pos.x - left, x: left } : { wall: 'right', distFt: right - pos.x, x: right },
-      end: pos.y - front <= back - pos.y ? { wall: 'front', distFt: pos.y - front, y: front } : { wall: 'back', distFt: back - pos.y, y: back }
+      side: pos.x - left <= right - pos.x ? which('left', { wall: 'left', distFt: pos.x - left, x: left }) : which('right', { wall: 'right', distFt: right - pos.x, x: right }),
+      end: pos.y - front <= back - pos.y ? which('front', { wall: 'front', distFt: pos.y - front, y: front }) : which('back', { wall: 'back', distFt: back - pos.y, y: back })
     };
   }
 
@@ -2736,6 +2827,12 @@
     isConvexCorner,
     cutFloorPlanCorner,
     fillFloorPlanCorner,
+    FLOOR_PLAN_TEMPLATES,
+    floorPlanTemplate,
+    floorPlanFromTemplate,
+    floorPlanTemplateKind,
+    mirrorFloorPlan,
+    floorPlanFrontArea,
     FLOOR_PLAN_PREVIEW_CELL_M,
     floorPlanKey,
     floorPlanWorkerReply,

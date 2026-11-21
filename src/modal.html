@@ -58,7 +58,7 @@ function applyAppearanceAttrs(mode, theme){
 
 <div id="sidebar">
   <div id="guidePanel"></div>
-  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height, via an exact rectangular-room modal solution below 300Hz (bass-focused; wall, floor, and ceiling reflections come from each surface's material, not individual bounces). Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
+  <p class="subtitle">Single-frequency sound pressure field, evaluated at listener ear height, from the room's modes below 300Hz, exact for a rectangular room and solved on a fine grid for any other floor plan with square corners (bass-focused; wall, floor, and ceiling reflections come from each surface's material, not individual bounces). Sources roll off outside their frequency range at a configurable slope (24 dB/octave by default).</p>
 
   <div class="row" style="margin-bottom:14px;">
     <label>Units</label>
@@ -672,11 +672,15 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   // Where a first layout sits in a room: the seat centered and two thirds of
-  // the way back, with the mains at their standard spots around it. The
-  // defaults below are this for the default room, and the setup guide keeps
-  // an untouched layout there while the room is resized (see
-  // setRoomDimKeepingStarterLayout).
-  function starterSeat(r){ return RoomPhysics.clampToFloorPlan(r.w / 2, r.d * 2 / 3, r, 0.2); }
+  // the way back in the floor the front wall faces (the whole room for a
+  // rectangle, see RoomPhysics.floorPlanFrontArea), with the mains at their
+  // standard spots around it. The defaults below are this for the default
+  // room, and the setup guide keeps an untouched layout there while the
+  // room is resized or reshaped (see keepingStarterLayout).
+  function starterSeat(r){
+    const area = RoomPhysics.floorPlanFrontArea(r.polygon);
+    return RoomPhysics.clampToFloorPlan(area.x + area.w / 2, area.y + area.d * 2 / 3, r, 0.2);
+  }
   function defaultSources(){
     return RoomPhysics.standardSpeakerPositions(room, starterSeat(room), ['FL', 'FR']).map(p => newMainSource(p.name, p.x, p.y));
   }
@@ -1423,6 +1427,13 @@ function applyAppearanceAttrs(mode, theme){
   function wallLength(i){
     const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
     return Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+  }
+  // RoomPhysics.nearestWallDistances, with each of the two walls' names as
+  // this list shows them, in lower case for use mid-sentence ("back wall 2").
+  function namedWallDistances(pos){
+    const near = RoomPhysics.nearestWallDistances(pos, room), labels = wallLabels();
+    for(const entry of [near.side, near.end]) entry.label = labels[entry.index].toLowerCase();
+    return near;
   }
   function renderWallList(){
     const list = document.getElementById('wallList');
@@ -4285,13 +4296,15 @@ function applyAppearanceAttrs(mode, theme){
   // The guide's room step: a starter layout nobody has touched (the seat at
   // starterSeat, every main at its standard spot) follows the room as it is
   // resized, so it stays centered. Anything that has been moved stays put.
-  function setRoomDimKeepingStarterLayout(dim, ft){
+  // The same for any change to the room's shape: `change` makes it and
+  // its result is returned.
+  function keepingStarterLayout(change){
     const row = primaryRow(), start = starterSeat(room);
     const seatUntouched = listenerRows.length === 1 && Math.abs(row.x - start.x) < 0.01 && Math.abs(row.y - start.y) < 0.01;
     const mains = sources.filter(s => !isSubSource(s));
     const mainsUntouched = seatUntouched && mainsAtStandardSpots().length === mains.length;
-    const stored = setRoomDim(dim, ft);
-    if(seatUntouched && dim !== 'h'){
+    const result = change();
+    if(seatUntouched){
       Object.assign(row, starterSeat(room));
       if(mainsUntouched){
         for(const p of RoomPhysics.standardSpeakerPositions(room, row, mains.map(s => s.name))){
@@ -4300,7 +4313,10 @@ function applyAppearanceAttrs(mode, theme){
       }
       edited('layout', 'sources');
     }
-    return stored;
+    return result;
+  }
+  function setRoomDimKeepingStarterLayout(dim, ft){
+    return dim === 'h' ? setRoomDim(dim, ft) : keepingStarterLayout(() => setRoomDim(dim, ft));
   }
   // What the pending optimizer suggestion would change, in the terms the
   // setup guide reports. The response at every seat is measured across the
@@ -4345,6 +4361,15 @@ function applyAppearanceAttrs(mode, theme){
     mainChannelNames: MAIN_CHANNEL_NAMES,
     getRoom: () => ({ ...room }),
     setRoomDim: setRoomDimKeepingStarterLayout,
+    // The room's shape: one of RoomPhysics.FLOOR_PLAN_TEMPLATES at its
+    // current overall size, mirrored ('x' left to right, 'y' front to
+    // back), or with wall i's length set (RoomPhysics.setFloorPlanWallLength).
+    // Each returns false, changing nothing, when the room can't take it.
+    setRoomShape: (kind) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.floorPlanFromTemplate(room.polygon, kind))),
+    mirrorRoom: (axis) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.mirrorFloorPlan(room.polygon, axis))),
+    setWallLength: (i, ft) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))),
+    // Each wall's name, as the Walls list shows it.
+    wallLabels,
     getLengthUnit: () => lengthUnit,
     setLengthUnit,
     formatLength,
@@ -4419,7 +4444,7 @@ function applyAppearanceAttrs(mode, theme){
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
-    wallDistances: (pos) => RoomPhysics.nearestWallDistances(pos, room),
+    wallDistances: namedWallDistances,
     applyOptimizerResult,
     clearOptimizerResult,
     // The green-to-red map of how every candidate position scored.
@@ -4429,7 +4454,7 @@ function applyAppearanceAttrs(mode, theme){
     // distance to the main seat.
     getSubPlan: () => sources.filter(isSubSource).map(s => {
       const seat = primaryRow();
-      return { name: s.name, walls: RoomPhysics.nearestWallDistances(s, room), seatDistanceFt: Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) };
+      return { name: s.name, walls: namedWallDistances(s), seatDistanceFt: Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) };
     }),
     savePreset: savePresetAs,
     // Draws the page in the light palette while printing, then puts the
