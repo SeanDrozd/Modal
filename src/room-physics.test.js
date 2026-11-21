@@ -3175,12 +3175,16 @@ test('resizeFloorPlan moves only the farthest wall, never past the next corner',
 
 test('nearestWallDistances in an L room measures to the notch\'s walls where they are nearer, and reports where each wall is', () => {
   const belowNotch = P.nearestWallDistances({ x: 20, y: 10 }, lShapedRoom);
-  assert.deepStrictEqual(belowNotch, { side: { wall: 'right', distFt: 4, x: 24 }, end: { wall: 'back', distFt: 2, y: 12 } });
+  assert.deepStrictEqual(belowNotch, { side: { wall: 'right', distFt: 4, x: 24, index: 1 }, end: { wall: 'back', distFt: 2, y: 12, index: 2 } });
   const besideNotch = P.nearestWallDistances({ x: 10, y: 16 }, lShapedRoom);
-  assert.deepStrictEqual(besideNotch, { side: { wall: 'right', distFt: 4, x: 14 }, end: { wall: 'back', distFt: 4, y: 20 } });
-  // a rectangle's own polygon gives exactly the same as the plain rectangle
+  assert.deepStrictEqual(besideNotch, { side: { wall: 'right', distFt: 4, x: 14, index: 3 }, end: { wall: 'back', distFt: 4, y: 20, index: 4 } });
+  // a rectangle's own polygon gives the same as the plain rectangle, plus
+  // which of its walls (front, right, back, left) each one is
+  const index = { front: 0, right: 1, back: 2, left: 3 };
   for(const pos of [{ x: 2.25, y: 1 }, { x: 16, y: 12 }, { x: 9, y: 6.75 }]){
-    assert.deepStrictEqual(P.nearestWallDistances(pos, { ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }), P.nearestWallDistances(pos, baseRoom));
+    const plain = P.nearestWallDistances(pos, baseRoom);
+    const withIndex = (e) => ({ ...e, index: index[e.wall] });
+    assert.deepStrictEqual(P.nearestWallDistances(pos, { ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }), { side: withIndex(plain.side), end: withIndex(plain.end) });
   }
 });
 
@@ -3358,6 +3362,83 @@ test('floorPlanBracket reports the cell a coordinate is in as well as the two ce
   assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 1.25), { lower: 0, t: 0.75 / 1.5, cell: 1 });
   assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 2.5), { lower: 1, t: 0.5 / 1.5, cell: 1 });
   assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 3.9), { lower: 2, t: 0, cell: 2 });
+});
+
+test('floorPlanTemplate gives the guide\'s four shapes, each a valid floor plan that floorPlanTemplateKind names', () => {
+  assert.deepStrictEqual(P.FLOOR_PLAN_TEMPLATES, ['rectangle', 'L', 'T', 'U']);
+  assert.deepStrictEqual(P.floorPlanTemplate('rectangle', 18, 13.5), rectPolygon(18, 13.5));
+  assert.deepStrictEqual(P.floorPlanTemplate('L', 18, 13.5), lPolygon(18, 13.5, 7, 5.5));
+  assert.deepStrictEqual(P.floorPlanTemplate('T', 18, 13.5), [{ x: 0, y: 0 }, { x: 18, y: 0 }, { x: 18, y: 8 }, { x: 13.5, y: 8 }, { x: 13.5, y: 13.5 }, { x: 4.5, y: 13.5 }, { x: 4.5, y: 8 }, { x: 0, y: 8 }]);
+  assert.deepStrictEqual(P.floorPlanTemplate('U', 18, 13.5), [{ x: 0, y: 0 }, { x: 18, y: 0 }, { x: 18, y: 13.5 }, { x: 12, y: 13.5 }, { x: 12, y: 8 }, { x: 6, y: 8 }, { x: 6, y: 13.5 }, { x: 0, y: 13.5 }]);
+  // every shape at the smallest and largest room sizes, and named back
+  for(const kind of P.FLOOR_PLAN_TEMPLATES){
+    for(const [w, d] of [[6, 6], [18, 13.5], [30, 30], [30, 6]]){
+      const shape = P.floorPlanTemplate(kind, w, d);
+      assert.ok(P.isValidFloorPlan(shape), `${kind} ${w} x ${d}`);
+      assert.strictEqual(P.floorPlanTemplateKind(shape), kind);
+      assert.strictEqual(Math.max(...shape.map(p => p.x)), w);
+      assert.strictEqual(Math.max(...shape.map(p => p.y)), d);
+    }
+  }
+  // the test file's own T (notches at the front) and U shapes, and two
+  // shapes that are none of the four
+  assert.strictEqual(P.floorPlanTemplateKind(tPolygon), 'T');
+  assert.strictEqual(P.floorPlanTemplateKind(uPolygon), 'U');
+  const twoOpposite = P.cutFloorPlanCorner(lPolygon(20, 15, 4, 4), 0, 4).polygon; // notches at opposite corners
+  assert.strictEqual(P.floorPlanTemplateKind(twoOpposite), null);
+  assert.strictEqual(P.floorPlanTemplateKind(P.cutFloorPlanCorner(tPolygon, 0, 2).polygon), null);
+});
+
+test('floorPlanFromTemplate keeps the overall size and gives each new wall a wall from the same side', () => {
+  const toL = P.floorPlanFromTemplate(rectPolygon(18, 13.5), 'L');
+  assert.deepStrictEqual(toL.polygon, lPolygon(18, 13.5, 7, 5.5));
+  assert.deepStrictEqual(toL.walls, [0, 1, 2, 1, 2, 3]); // front, right, back, right, back, left
+  assert.deepStrictEqual(toL.shift, { x: 0, y: 0 });
+  const back = P.floorPlanFromTemplate(lPoly, 'rectangle');
+  assert.deepStrictEqual(back.polygon, rectPolygon(24, 20));
+  assert.deepStrictEqual(back.walls, [0, 1, 2, 5]); // the first back wall in lPoly's list is wall 2
+});
+
+test('mirrorFloorPlan flips a floor plan either way, keeping each wall\'s settings with it', () => {
+  const lr = P.mirrorFloorPlan(lPoly, 'x');
+  assert.ok(P.isValidFloorPlan(lr.polygon));
+  // the notch moves to the back-left corner
+  assert.ok(P.isPointInPolygon(20, 16, lr.polygon) && !P.isPointInPolygon(4, 16, lr.polygon));
+  const sidesBefore = P.floorPlanWalls(lPoly).map(w => w.side);
+  const sidesAfter = P.floorPlanWalls(lr.polygon).map(w => w.side);
+  const swap = { left: 'right', right: 'left', front: 'front', back: 'back' };
+  lr.walls.forEach((old, j) => {
+    assert.strictEqual(sidesAfter[j], swap[sidesBefore[old]]);
+    assert.strictEqual(P.floorPlanWalls(lr.polygon)[j].lengthFt, P.floorPlanWalls(lPoly)[old].lengthFt);
+  });
+  // the list starts at the front wall's left end, like rectanglePolygon
+  for(const flipped of [lr, P.mirrorFloorPlan(lPoly, 'y')]){
+    const minY = Math.min(...flipped.polygon.map(p => p.y));
+    assert.deepStrictEqual(flipped.polygon[0], { x: Math.min(...flipped.polygon.filter(p => p.y === minY).map(p => p.x)), y: minY });
+    assert.strictEqual(P.floorPlanWalls(flipped.polygon)[0].side, 'front');
+  }
+  // the corners run the same way round as before (same signed area)
+  const signedArea = (poly) => poly.reduce((sum, p, i) => { const q = poly[(i + 1) % poly.length]; return sum + p.x * q.y - q.x * p.y; }, 0);
+  assert.strictEqual(signedArea(lr.polygon), signedArea(lPoly));
+  // front to back, then twice back to the same shape
+  const fb = P.mirrorFloorPlan(lPoly, 'y');
+  assert.ok(!P.isPointInPolygon(20, 4, fb.polygon) && P.isPointInPolygon(20, 16, fb.polygon)); // the notch moves to the front-right corner
+  const twice = P.mirrorFloorPlan(fb.polygon, 'y');
+  assert.deepStrictEqual(P.floorPlanKey(twice.polygon), P.floorPlanKey(lPoly));
+});
+
+test('floorPlanFrontArea finds the largest rectangle of floor against the front wall', () => {
+  assert.deepStrictEqual(P.floorPlanFrontArea(rectPolygon(18, 13.5)), { x: 0, y: 0, w: 18, d: 13.5 });
+  // notch at the back right: the full 24 ft width, 12 deep (288), beats the 14 ft wide arm, 20 deep (280)
+  assert.deepStrictEqual(P.floorPlanFrontArea(lPoly), { x: 0, y: 0, w: 24, d: 12 });
+  // notch at the back left, 7 x 6.5 out of 18 x 14.5: the 11 ft wide arm (159.5) beats the full width (144)
+  const backLeft = P.mirrorFloorPlan(lPolygon(18, 14.5, 7, 6.5), 'x').polygon;
+  assert.deepStrictEqual(P.floorPlanFrontArea(backLeft), { x: 7, y: 0, w: 11, d: 14.5 });
+  // the test file's T is wide at the front; turned front to back, only its stem touches the front wall
+  assert.deepStrictEqual(P.floorPlanFrontArea(tPolygon), { x: 0, y: 0, w: 24, d: 8 });
+  assert.deepStrictEqual(P.floorPlanFrontArea(P.mirrorFloorPlan(tPolygon, 'y').polygon), { x: 8, y: 0, w: 8, d: 20 });
+  // a U with its slot at the back: the full width in front of the slot (26 x 7 = 182) against an arm (8 x 18 = 144)
+  assert.deepStrictEqual(P.floorPlanFrontArea(uPolygon), { x: 0, y: 0, w: 26, d: 7 });
 });
 
 // A stand-in for the page's Web Worker: answers each message on a later

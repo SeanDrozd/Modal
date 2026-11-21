@@ -339,6 +339,12 @@ body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-act
 #guidePanel .guide-note { background: var(--panel-2); border-color: var(--border); color: var(--text-dim); }
 .guide-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
 .guide-cards.one-col { grid-template-columns: minmax(0, 1fr); }
+.guide-cards.two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.guide-card svg .guide-floor, .guide-room-picture .guide-floor { fill: color-mix(in srgb, var(--accent) 14%, transparent); stroke: var(--text-dim); stroke-linejoin: round; }
+.guide-room-picture { display: block; width: 100%; max-height: 180px; margin: 4px 0 8px; }
+.guide-room-picture .guide-floor { stroke-width: 0.25; }
+.guide-room-picture text { fill: var(--text); font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+.guide-flip { display: flex; gap: 6px; margin-bottom: 10px; }
 .guide-card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; text-align: left; }
 .guide-card strong { font-size: 14px; }
 .guide-card span { font-size: 12px; color: var(--text-dim); line-height: 1.3; }

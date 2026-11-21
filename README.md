@@ -23,7 +23,8 @@ Symmetric sub placement looks tidy but excites the room's modes symmetrically, o
 
 ## Features
 
-- **Setup guide.** Opens on first launch (skippable, reopen from the header). Seven steps: room, speaker layout (stereo through 9.x), subs you have or plan to buy, seat rows, furniture and no-go areas, optimize, and a printable setup sheet with each sub's distance from two walls and AVR distance advice. Non-rectangular or open rooms get a "results won't be reliable" warning. Less common terms have a "?" definition.
+- **Setup guide.** Opens on first launch (skippable, reopen from the header). Seven steps: room, speaker layout (stereo through 9.x), subs you have or plan to buy, seat rows, furniture and no-go areas, optimize, and a printable setup sheet with each sub's distance from two walls and AVR distance advice. The room step offers rectangle, L, T and U shapes with a picture, then each wall's length. Open plans, sloped ceilings and angled walls get a "results won't be reliable" warning. Less common terms have a "?" definition.
+- **Room shape.** Any floor plan with square corners: a rectangle, an L, T or U, or any notched shape. Drag corners and walls on the map, click a corner to cut or fill a notch, or type each wall's length.
 - **Optimizer.** Scores candidate sub positions across every seat, weighted by row rank and seat position. "Balanced" mode minimizes variation and penalizes deep nulls; "Null avoidance" is for rooms with room correction. Multiple subs are placed greedily, then refined with coordinate-descent passes. New subs keep clear of each other and of each speaker's footprint back to its wall. The result is graded as a major (6 dB or more), modest (2 dB or more), similar, or worse change in score.
 - **Zones and furniture.** Off-limits, allowed-only and preferred zones, plus a furniture palette (couch, TV stand, bed, desk and more). Furniture only excludes sub positions; it is not part of the acoustic model.
 - **Sources and seats.** Any number of mains and subs with level, delay, crossover range and slope, and height. Delays auto time-align to the main seat. Multiple ranked seat rows of 1 to 5 seats.
@@ -33,13 +34,14 @@ Symmetric sub placement looks tidy but excites the room's modes symmetrically, o
 
 ## How it works
 
-Modal computes a single-frequency, steady-state pressure field with an exact rectangular-room modal solution, summing every mode up to 300 Hz (including the pressure-zone term). It is meant for the bass range where room modes dominate, not as a substitute for measurement.
+Modal computes a single-frequency, steady-state pressure field by summing the room's modes up to 300 Hz (including the pressure-zone term). It is meant for the bass range where room modes dominate, not as a substitute for measurement. In a rectangular room the modes are exact:
 
 ```
 p(r, r_s, f) = Σ_n  A_n · ψ_n(r) · ψ_n(r_s) / (k_n² − k² − j·k·δ_n)
 ψ_n(r) = cos(nx·π·x/Lx) · cos(ny·π·y/Ly) · cos(nz·π·z/Lz)
 ```
 
+- **Other floor plans** with square corners have no formula for their modes, so the floor's part of each mode, the x and y cosines above, is solved numerically: the floor is cut into cells about 10 cm across (finer near inside corners) and its modes below 300 Hz are found from the finite-volume Laplacian, with the height cosine unchanged. A new shape solves in the background in about a second, with a coarser preview first.
 - **Damping** per mode comes from the surface absorption at that mode's frequency (Morse/Kuttruff), so axial modes decay more slowly than oblique ones. Drywall is modeled as a resonant absorber, masonry as flat, ceiling tile as a high-frequency ramp.
 - **Frequency range** adapts to the room: it runs to the worst-case Schroeder frequency plus headroom, with T60 estimated from your materials by Eyring's formula.
 - **Frequency response** is averaged like a moving mic: 20 deterministic points in a 2 ft sphere around each seat, averaged by power.
@@ -49,7 +51,7 @@ p(r, r_s, f) = Σ_n  A_n · ψ_n(r) · ψ_n(r_s) / (k_n² − k² − j·k·δ_n
 - **Seat weighting:** each row counts half as much as the one above it; within a row, center seats count fully and the ends count half. The worst null is always found, but its penalty is scaled by that seat's weight.
 - **Delay** is true time delay, like an AVR's distance setting, not a sub's phase switch. The geometric figure ignores the sub's own processing latency, so trust room correction's measured distance over it.
 
-**Not modeled:** furniture, openings and localized treatment (rugs, panels); only the six room surfaces. The heat map is exact-point, so it looks sharper than what you hear. Material values are typical construction, not measurements of your walls.
+**Not modeled:** furniture, openings and localized treatment (rugs, panels); only the walls, floor and ceiling. The heat map is exact-point, so it looks sharper than what you hear. Material values are typical construction, not measurements of your walls.
 
 ## Development
 

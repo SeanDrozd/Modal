@@ -7,12 +7,24 @@
 (function(global){
   const STORE_KEY = 'modal-guide-v1';
 
-  const ROOM_SHAPES = [
-    { id: 'closed', label: 'Closed rectangle', detail: 'Doors closed, or only doorway-sized openings.' },
-    { id: 'open', label: 'Rectangle with a large opening', detail: 'Open to a kitchen, hallway or another room.' },
-    { id: 'irregular', label: 'L-shaped or irregular', detail: 'Any plan that is not a single rectangle.' }
+  // The floor plans the Room step offers (RoomPhysics.FLOOR_PLAN_TEMPLATES).
+  const ROOM_TEMPLATES = [
+    { id: 'rectangle', label: 'Rectangle', detail: 'Four walls.' },
+    { id: 'L', label: 'L-shaped', detail: 'One corner is cut out.' },
+    { id: 'T', label: 'T-shaped', detail: 'Narrower toward the back.' },
+    { id: 'U', label: 'U-shaped', detail: 'A wall juts in at the back.' }
   ];
-  const SHAPE_WARNING = "Modal's model assumes a closed rectangular room. In rooms with large openings or an L shape, the lowest bass modes are set by the combined space, so predicted peak and null locations won't be reliable. Results are shown for reference only.";
+  // What the model leaves out. Any answer but 'closed' puts its
+  // SHAPE_WARNINGS text on the result and the setup sheet.
+  const ROOM_ENCLOSURES = [
+    { id: 'closed', label: 'Closed room', detail: 'Doors closed, or only doorway-sized openings.' },
+    { id: 'open', label: 'Open to another space', detail: 'A wide opening to a kitchen, hallway or another room.' },
+    { id: 'other', label: 'Sloped ceiling or angled walls', detail: 'A vaulted ceiling, a bay window, or walls that are not at right angles.' }
+  ];
+  const SHAPE_WARNINGS = {
+    open: "Modal models a closed room. With a wide opening, the lowest bass modes are set by the whole connected space, so predicted peaks and nulls won't be reliable. If you can, enter the whole connected space as the room instead (it is often an L) and choose Closed room. Results are shown for reference only.",
+    other: "Modal models a flat ceiling and walls that meet at right angles. With a sloped ceiling or angled walls, predicted peaks and nulls won't be reliable. Results are shown for reference only."
+  };
 
   // `count` is how many of the app's standard channels the layout uses, in
   // its own order (FL, FR, C, then surrounds, backs and wides).
@@ -87,7 +99,7 @@
     document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeTerm(); });
     panel.parentElement.addEventListener('scroll', closeTerm);
 
-    // step: index into STEPS. roomShape: a ROOM_SHAPES id. plannedSubs: how
+    // step: index into STEPS. roomShape: a ROOM_ENCLOSURES id. plannedSubs: how
     // many subs to recommend positions for when there are none yet.
     // roomCorrection: a ROOM_CORRECTION id, or null until answered.
     // seatingMarked: the obstacles step has marked the rows' seating once.
@@ -97,6 +109,10 @@
     // longer opens in it.
     let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, roomCorrection: null, seatingMarked: false, viewBefore: null, seenWelcome: false, launchDone: false };
     try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY))); } catch(e){ /* start from the defaults above */ }
+    // Saved before rooms could be L-shaped: that answer was "L-shaped or
+    // irregular", and the room in the model is still a rectangle, so it
+    // keeps its warning until the Room step is answered again.
+    if(state.roomShape === 'irregular') state.roomShape = 'other';
     function save(){
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch(e){ /* progress just won't survive a reload */ }
     }
@@ -205,6 +221,24 @@
     }
 
     // ---- Step 1: room ----
+    // A floor plan as an SVG path, in feet.
+    const planPath = (poly) => 'M' + poly.map(p => `${p.x} ${p.y}`).join('L') + 'Z';
+    const wallLetter = (i) => String.fromCharCode(65 + i);
+    function templatePicture(kind){
+      return `<svg viewBox="-1 -1 20 15.5" aria-hidden="true"><path class="guide-floor" d="${planPath(RoomPhysics.floorPlanTemplate(kind, 18, 13.5))}"/></svg>`;
+    }
+    // The room as it is now, with each wall's letter just inside it.
+    function roomPicture(poly){
+      const w = Math.max(...poly.map(p => p.x)), d = Math.max(...poly.map(p => p.y));
+      const size = Math.max(w, d), pad = size * 0.04;
+      const INWARD = { front: [0, 1], back: [0, -1], left: [1, 0], right: [-1, 0] };
+      const letters = RoomPhysics.floorPlanWalls(poly).map((wall, i) => {
+        const [ix, iy] = INWARD[wall.side];
+        return `<text x="${((wall.a.x + wall.b.x) / 2 + ix * size * 0.06).toFixed(2)}" y="${((wall.a.y + wall.b.y) / 2 + iy * size * 0.06).toFixed(2)}" font-size="${(size * 0.07).toFixed(2)}">${wallLetter(i)}</text>`;
+      }).join('');
+      return `<svg class="guide-room-picture" viewBox="${-pad} ${-pad} ${w + 2 * pad} ${d + 2 * pad}" role="img" aria-label="The room's floor plan, front wall at the top, walls lettered"><path class="guide-floor" d="${planPath(poly)}"/>${letters}</svg>`;
+    }
+
     function renderRoom(body){
       const lim = app.roomLimits;
       const DIMS = [
@@ -215,21 +249,24 @@
       body.innerHTML = `
         <h2 tabindex="-1">Your room</h2>
         <h3>Room shape</h3>
-        <div class="guide-cards one-col" id="guideShapes">${choiceCards(ROOM_SHAPES, 'data-shape', state.roomShape)}</div>
-        <p class="guide-warning" id="guideShapeWarning" hidden>${esc(SHAPE_WARNING)}</p>
+        <p>The floor seen from above, with the front wall at the top. The front wall is the one your screen and front speakers are on.</p>
+        <div class="guide-cards two-col" id="guideTemplates">${choiceCards(ROOM_TEMPLATES.map(t => ({ ...t, extra: templatePicture(t.id) })), 'data-template', null)}</div>
+        <h3>Openings and ceiling</h3>
+        <div class="guide-cards one-col" id="guideShapes">${choiceCards(ROOM_ENCLOSURES, 'data-shape', state.roomShape)}</div>
+        <p class="guide-warning" id="guideShapeWarning" hidden></p>
         <h3>Room dimensions</h3>
-        <p>Measure wall to wall at floor level. The front wall is the one your screen and front speakers are on; it is the top of the map.</p>
-        ${DIMS.map(f => `
-          <div class="guide-field">
-            <label>${f.label}<span>${f.detail}</span></label>
-            <span data-dim="${f.dim}" role="group" aria-label="${f.label}"></span>
-          </div>
-          <p class="guide-warning" data-dim-msg="${f.dim}" hidden></p>`).join('')}`;
+        <div id="guideDims"></div>
+        <div class="guide-field">
+          <label>Ceiling height<span>Floor to ceiling</span></label>
+          <span data-dim="h" role="group" aria-label="Ceiling height"></span>
+        </div>
+        <p class="guide-warning" data-dim-msg="h" hidden></p>`;
 
       const warning = body.querySelector('#guideShapeWarning');
       const syncShape = () => {
-        body.querySelectorAll('#guideShapes button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.shape === state.roomShape)));
-        warning.hidden = state.roomShape === 'closed';
+        pressOnly(body.querySelector('#guideShapes'), b => b.dataset.shape === state.roomShape);
+        warning.hidden = !SHAPE_WARNINGS[state.roomShape];
+        warning.textContent = SHAPE_WARNINGS[state.roomShape] || '';
       };
       body.querySelector('#guideShapes').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
@@ -239,14 +276,16 @@
         syncShape();
       });
       syncShape();
+      body.querySelector('#guideTemplates').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(btn) app.setRoomShape(btn.dataset.template);
+      });
 
-      const room = app.getRoom();
+      // Width, length or height: the app clamps each to its supported
+      // range, and the message under the field says when it did.
       const writers = {};
-      for(const f of DIMS){
-        const holder = body.querySelector(`[data-dim="${f.dim}"]`);
-        const msg = body.querySelector(`[data-dim-msg="${f.dim}"]`);
-        writers[f.dim] = app.lengthField(holder, room[f.dim], (ft) => {
-          // The app clamps to its supported range; say so when it did.
+      function dimField(f, holder, msg, current){
+        writers[f.dim] = app.lengthField(holder, current, (ft) => {
           const stored = app.setRoomDim(f.dim, ft);
           msg.hidden = Math.abs(stored - ft) < 0.005;
           msg.textContent = ft < stored
@@ -255,12 +294,74 @@
           writers[f.dim](stored);
         });
       }
-      return () => {
-        const now = app.getRoom();
-        for(const f of DIMS){
-          if(!body.querySelector(`[data-dim="${f.dim}"]`).contains(document.activeElement)) writers[f.dim](now[f.dim]);
+      dimField(DIMS[2], body.querySelector('[data-dim="h"]'), body.querySelector('[data-dim-msg="h"]'), app.getRoom().h);
+
+      // A rectangle is asked for its width and length; any other shape for
+      // each wall, lettered on a picture of the room. Rebuilt whenever the
+      // walls change, from here or on the map.
+      const dims = body.querySelector('#guideDims');
+      let builtFor = null, wallWriters = [];
+      const wallLength = (i) => RoomPhysics.floorPlanWalls(app.getRoom().polygon)[i].lengthFt;
+      const builtKey = (room) => room.polygon.length === 4 ? 'rectangle' : app.wallLabels().join('|');
+      function buildDims(room){
+        builtFor = builtKey(room);
+        wallWriters = [];
+        if(room.polygon.length === 4){
+          dims.innerHTML = `<p>Measure wall to wall at floor level.</p>` + DIMS.slice(0, 2).map(f => `
+            <div class="guide-field">
+              <label>${f.label}<span>${f.detail}</span></label>
+              <span data-dim="${f.dim}" role="group" aria-label="${f.label}"></span>
+            </div>
+            <p class="guide-warning" data-dim-msg="${f.dim}" hidden></p>`).join('');
+          for(const f of DIMS.slice(0, 2)) dimField(f, dims.querySelector(`[data-dim="${f.dim}"]`), dims.querySelector(`[data-dim-msg="${f.dim}"]`), room[f.dim]);
+          return;
         }
+        const labels = app.wallLabels();
+        dims.innerHTML = `
+          <p>Measure each wall along the floor, corner to corner. Walls on opposite sides of the room have to add up, so a new length can move another wall; the fields always show the room as it is now.</p>
+          <div id="guideRoomPicture"></div>
+          <div class="guide-flip">
+            <button class="small" data-flip="x">Flip left to right</button>
+            <button class="small" data-flip="y">Flip front to back</button>
+          </div>
+          ${labels.map((label, i) => `
+            <div class="guide-field">
+              <label>Wall ${wallLetter(i)}<span>${esc(label)}</span></label>
+              <span data-wall="${i}" role="group" aria-label="Wall ${wallLetter(i)}, ${esc(label)}"></span>
+            </div>`).join('')}
+          <p class="guide-warning" id="guideWallMsg" hidden></p>`;
+        const msg = dims.querySelector('#guideWallMsg');
+        labels.forEach((label, i) => {
+          wallWriters[i] = app.lengthField(dims.querySelector(`[data-wall="${i}"]`), wallLength(i), (ft) => {
+            const fits = app.setWallLength(i, ft);
+            msg.hidden = fits;
+            msg.textContent = `Wall ${wallLetter(i)} can't be ${app.formatLength(ft)} with the other walls as they are. Every wall needs at least ${app.formatLength(1)}, and the room has to stay between ${app.formatLength(lim.minFt)} and ${app.formatLength(lim.maxWidthDepthFt)} across. Check the measurement, or change the walls around it first.`;
+            if(!fits) wallWriters[i](wallLength(i));
+          });
+        });
+        dims.querySelector('.guide-flip').addEventListener('click', (e) => {
+          const btn = e.target.closest('button');
+          if(btn) app.mirrorRoom(btn.dataset.flip);
+        });
+      }
+      const refresh = () => {
+        const now = app.getRoom();
+        const kind = RoomPhysics.floorPlanTemplateKind(now.polygon);
+        pressOnly(body.querySelector('#guideTemplates'), b => b.dataset.template === kind);
+        if(builtFor !== builtKey(now)) buildDims(now);
+        const typing = (el) => el.contains(document.activeElement);
+        if(now.polygon.length === 4){
+          for(const f of DIMS.slice(0, 2)) if(!typing(dims.querySelector(`[data-dim="${f.dim}"]`))) writers[f.dim](now[f.dim]);
+        } else {
+          dims.querySelector('#guideRoomPicture').innerHTML = roomPicture(now.polygon);
+          RoomPhysics.floorPlanWalls(now.polygon).forEach((wall, i) => {
+            if(!typing(dims.querySelector(`[data-wall="${i}"]`))) wallWriters[i](wall.lengthFt);
+          });
+        }
+        if(!typing(body.querySelector('[data-dim="h"]'))) writers.h(now.h);
       };
+      refresh();
+      return refresh;
     }
 
     // ---- Step 2: speakers ----
@@ -497,8 +598,8 @@
     const fmtDb = (db) => `${db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`;
     const fmtSwing = (db) => `±${db.toFixed(0)} dB`;
     const signedDb = (db, digits) => { const shown = Number(db.toFixed(digits)); return `${shown >= 0 ? '+' : '−'}${Math.abs(shown).toFixed(digits)} dB`; }; // rounds first so a tiny negative reads +0.0
-    const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.wall} wall, ${app.formatLength(walls.end.distFt)} from the ${walls.end.wall} wall`;
-    const NOT_RELIABLE = 'Not reliable for this room shape';
+    const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.label}, ${app.formatLength(walls.end.distFt)} from the ${walls.end.label}`;
+    const shapeWarning = () => SHAPE_WARNINGS[state.roomShape] ? `<p class="guide-warning">Not reliable for this room. ${esc(SHAPE_WARNINGS[state.roomShape])}</p>` : '';
     // Current and suggested response at the main seat, as two lines on a
     // log frequency axis.
     function responseChart(o){
@@ -522,7 +623,7 @@
       const b = o.before, a = o.after;
       const nullText = (m) => `${fmtDb(m.stats.worstMinDb - m.stats.avgMean)} at ${o.freqs[m.stats.worstMinIndex].toFixed(0)} Hz`;
       return `
-        ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
+        ${shapeWarning()}
         ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
         ${b ? change('Optimizer score' + term('score'), null, signedDb(o.comparison.gainDb, 1)) : ''}
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
@@ -665,7 +766,7 @@
         const plan = app.getSubPlan();
         const rc = state.roomCorrection;
         const html = `
-          ${state.roomShape !== 'closed' ? `<p class="guide-warning">${NOT_RELIABLE}. ${esc(SHAPE_WARNING)}</p>` : ''}
+          ${shapeWarning()}
           ${plan.length === 0 ? `<p class="guide-warning">No subwoofer is placed yet. Go back to Optimize, run it, and apply the suggestion.</p>` : `
           <ol class="guide-plan">
             <li><strong>Position.</strong>
