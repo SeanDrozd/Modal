@@ -102,6 +102,11 @@ function applyAppearanceAttrs(mode, theme){
         <label>Ceiling height</label>
         <span id="roomHField"></span>
       </div>
+      <div class="row">
+        <label>Shape</label>
+        <button id="editShapeBtn" class="small" aria-pressed="false">Edit shape on map</button>
+      </div>
+      <div class="hint" id="editShapeHint" hidden>Drag a corner or a wall to reshape the room; walls stay square to each other. Click an outside corner to cut a notch into the room there, or an inside corner to fill the notch back in. Each wall's exact length can be typed in under Walls.</div>
       <div class="hint">Width/depth up to 30ft, ceiling height up to 15ft. Beyond that, this tool's sub optimizer and handful of ranked listening positions stop being a meaningful fit for the room.</div>
       <div id="modalInfo"></div>
     </div>
@@ -419,6 +424,8 @@ function applyAppearanceAttrs(mode, theme){
   let optimizerResult = null; // { best, allCandidates } from the last run, or null
   let zoneDrawMode = null; // null | 'offlimit' | 'allowed' | 'preferred' -- which kind of rect the next drag creates
   let zoneEditTarget = null; // { kind, id, mode:'move'|'resize'|'creating', handle?, startX?, startY? }
+  let shapeEditing = false; // "Edit shape on map" is on; see setShapeEditing
+  let shapeDrag = null; // the corner or wall being dragged; see shapeMouseDown
   const drawListeners = []; // called after every draw(); see "Setup guide API" at the end of this script
   // Listening positions: an ordered list of "rows" (a couch, a row of
   // recliners) -- array order IS rank (index 0 = rank 1, most important; see
@@ -587,15 +594,53 @@ function applyAppearanceAttrs(mode, theme){
       const axis = dim === 'w' ? 'x' : 'y';
       room.polygon = RoomPhysics.resizeFloorPlan(room.polygon, axis, Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5))));
       room[dim] = Math.max(...room.polygon.map(p => p[axis]));
-      for(const p of listenerRows.concat(sources)) Object.assign(p, insideRoom(p.x, p.y));
-      const clip = (zones) => zones.map(z => { const r = RoomPhysics.clipRectToRoom(z, room); return r && Object.assign(z, r); }).filter(Boolean);
-      offLimitZones = clip(offLimitZones);
-      allowedZones = clip(allowedZones);
-      preferredZones = clip(preferredZones);
+      keepSceneInRoom(0, 0);
     }
     writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
     if(room[dim] !== before) edited('room');
     return room[dim];
+  }
+
+  // Moves every speaker, seat row and zone by (dx, dy) feet, then keeps it
+  // in the room: a speaker or seat a wall passed moves in with it, a zone is
+  // cut back to the room, and a zone left wholly outside is removed.
+  function keepSceneInRoom(dx, dy){
+    for(const p of listenerRows.concat(sources)) Object.assign(p, insideRoom(p.x + dx, p.y + dy));
+    const clip = (zones) => zones.map(z => {
+      const r = RoomPhysics.clipRectToRoom(Object.assign(z, { x: z.x + dx, y: z.y + dy }), room);
+      return r && Object.assign(z, r);
+    }).filter(Boolean);
+    offLimitZones = clip(offLimitZones);
+    allowedZones = clip(allowedZones);
+    preferredZones = clip(preferredZones);
+  }
+
+  // Puts an edit of the room's shape into effect: the result of
+  // RoomPhysics.moveFloorPlanCorner, moveFloorPlanWall,
+  // setFloorPlanWallLength, cutFloorPlanCorner or fillFloorPlanCorner.
+  // Each wall keeps (or, when new, takes over) the material of the wall
+  // the edit says it continues, and everything in the room keeps its place
+  // against the walls that did not move. Returns false, changing nothing,
+  // when there is no result (not a valid room) or the room's overall width
+  // or depth would leave the range the Width and Depth fields allow.
+  function applyFloorPlanEdit(result){
+    if(!result) return false;
+    const w = Math.max(...result.polygon.map(p => p.x)), d = Math.max(...result.polygon.map(p => p.y));
+    if(Math.min(w, d) < ROOM_MIN_FT || Math.max(w, d) > ROOM_MAX_WD_FT) return false;
+    room.polygon = result.polygon;
+    room.w = w;
+    room.d = d;
+    wallMaterialKeys = result.walls.map(j => wallMaterialKeys[j]);
+    wallCustomAbsorption = result.walls.map(j => wallCustomAbsorption[j]);
+    keepSceneInRoom(result.shift.x, result.shift.y);
+    if(shapeDrag){
+      // the room stays where it is on the map while a drag is under way
+      shapeDrag.layout.offX -= result.shift.x * shapeDrag.layout.scale;
+      shapeDrag.layout.offY -= result.shift.y * shapeDrag.layout.scale;
+    }
+    for(const dim of ['w', 'd']) writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
+    edited('room');
+    return true;
   }
 
   // Optimizer grid step / sub height: session settings (like resolutionScale),
@@ -938,7 +983,7 @@ function applyAppearanceAttrs(mode, theme){
   const themeColors = {};
   function readThemeColors(){
     const cs = getComputedStyle(document.documentElement);
-    for(const name of ['bg', 'border', 'border-strong', 'text', 'text-dim', 'accent', 'floor', 'wall', 'series-1', 'series-2', 'marker']){
+    for(const name of ['bg', 'border', 'border-strong', 'text', 'text-dim', 'accent', 'on-accent', 'floor', 'wall', 'series-1', 'series-2', 'marker']){
       themeColors[name] = cs.getPropertyValue('--' + name).trim();
     }
   }
@@ -1375,6 +1420,10 @@ function applyAppearanceAttrs(mode, theme){
       return same.length > 1 ? `${WALL_LABELS[w.side]} ${same.indexOf(w) + 1}` : WALL_LABELS[w.side];
     });
   }
+  function wallLength(i){
+    const a = room.polygon[i], b = room.polygon[(i + 1) % room.polygon.length];
+    return Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+  }
   function renderWallList(){
     const list = document.getElementById('wallList');
     list.innerHTML = '';
@@ -1388,6 +1437,10 @@ function applyAppearanceAttrs(mode, theme){
             <span class="dot" style="background:${WALL_COLOR}"></span>
             <span style="font-weight:600;font-size:13.5px;">${labels[i]}</span>
           </div>
+        </div>
+        <div class="row">
+          <label>Length</label>
+          ${lengthFieldHtml('wallLength', wallLength(i))}
         </div>
         <div class="range-row">
           <label>Material</label>
@@ -1410,6 +1463,11 @@ function applyAppearanceAttrs(mode, theme){
       const customRow = block.querySelector('[data-role="customRow"]');
       materialSelect.value = wallMaterialKeys[i];
       customRow.style.display = wallMaterialKeys[i] === 'custom' ? 'flex' : 'none';
+      // A new length moves the wall at this wall's far end (its right or
+      // back end); one the room can't take is put back.
+      wireLengthField(block, 'wallLength', (ft, fieldEl) => {
+        if(!applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))) writeLengthFieldValue(fieldEl, wallLength(i));
+      });
 
       materialSelect.addEventListener('change', function(){
         wallMaterialKeys[i] = this.value;
@@ -1786,13 +1844,14 @@ function applyAppearanceAttrs(mode, theme){
   //   'sources'  the source list itself: its sidebar list is rebuilt
   //   'rows'     the listening rows: their sidebar list is rebuilt
   //   'zones'    the zones: their list and the floor coverage warning are rebuilt
-  //   'room'     the room's size: a pending optimizer suggestion, or a running
-  //              search's result, is dropped, and all of the above run
+  //   'room'     the room's size or shape: a pending optimizer suggestion, or a
+  //              running search's result, is dropped, the wall list is rebuilt,
+  //              and all of the above run
   // It then redraws on the next frame, and the redraw records the undo step.
   // An edit with no follow-up (a level, a name, a filter slope) only redraws.
   function edited(...what){
     const has = (kind) => what.includes(kind) || what.includes('room');
-    if(what.includes('room')) sceneChanged();
+    if(what.includes('room')){ sceneChanged(); renderWallList(); }
     if(has('layout')) autoTimeAlign();
     if(has('sources')) renderSrcList();
     else if(has('layout')) syncDelaySlidersFromState(); // cheap, no DOM rebuild: a drag edits the layout on every mousemove
@@ -1869,8 +1928,9 @@ function applyAppearanceAttrs(mode, theme){
     return RoomPhysics.precomputeModalField(activeSources, atFreq, ctx, modes);
   }
   function precomputeField(){
-    if(!sourcesEnabled) return [];
-    return precomputeFieldForSources(sources, freq);
+    // With sources off this is an empty field, still carrying the room's
+    // floor plan so the map knows which pixels are floor.
+    return precomputeFieldForSources(sourcesEnabled ? sources : [], freq);
   }
 
   function dbAtFreq(px, py, pz, sourceList, atFreq){
@@ -2079,6 +2139,7 @@ function applyAppearanceAttrs(mode, theme){
   // and the room's top-left corner. The one definition of that mapping,
   // shared by drawing, pointer hit-testing and the GPU verification.
   function mapLayout(sizeW, sizeH){
+    if(shapeDrag) return shapeDrag.layout; // see shapeMouseDown
     const plotW = sizeW - MAP_MARGIN*2, plotH = sizeH - MAP_MARGIN*2;
     const scale = Math.min(plotW / room.w, plotH / room.d);
     return { scale, offX: MAP_MARGIN + (plotW - room.w*scale)/2, offY: MAP_MARGIN + (plotH - room.d*scale)/2 };
@@ -2159,9 +2220,7 @@ function applyAppearanceAttrs(mode, theme){
   // The 2D canvas (`cv`) always draws overlays on top and, in CPU mode, the
   // field itself. In GPU mode the field is drawn into `cvGL` underneath, so
   // `cv` needs a transparent background so cvGL shows through.
-  // Only a rectangle is drawn on the GPU so far; any other floor plan is
-  // always drawn on the CPU.
-  function usesGPU(){ return renderMode === 'gpu' && gpuAvailable && isRectangleRoom(); }
+  function usesGPU(){ return renderMode === 'gpu' && gpuAvailable; }
   function setCanvasStackVisibility(){
     canvasGL.style.display = (mapView === 'pressure' && usesGPU()) ? 'block' : 'none';
   }
@@ -2210,7 +2269,6 @@ function applyAppearanceAttrs(mode, theme){
   function verifyGPUAgainstCPU(sampleGridSize){
     sampleGridSize = sampleGridSize || 8;
     if(!gl){ return { ok: false, reason: 'WebGL not available' }; }
-    if(!isRectangleRoom()){ return { ok: false, reason: 'the GPU map only draws rectangular rooms so far; this room is drawn on the CPU' }; }
     initGPUProgram();
     if(fieldRenderer.gpuInitFailed || !fieldRenderer.gpuProgram){ return { ok: false, reason: 'GPU shader failed to initialize' }; }
 
@@ -2257,6 +2315,8 @@ function applyAppearanceAttrs(mode, theme){
         const localY = pyTop - offY;
         const roomX = (localX / (w*scale)) * w;
         const roomY = (localY / (d*scale)) * d;
+        // Off the floor of a room that isn't a rectangle the map draws nothing.
+        if(!RoomPhysics.isPointInPolygon(roomX, roomY, room.polygon)) continue;
 
         const cpuDb = fieldDbAtPoint(roomX, roomY, precomputed);
 
@@ -2358,7 +2418,7 @@ function applyAppearanceAttrs(mode, theme){
     const RES = Math.round(RES_BASE * resolutionScale);
     const w = room.w, d = room.d;
     const lambda = RoomPhysics.C / freq; // wavelength (m), for the sidebar readout only -- not used by the modal field computation itself
-    const { sizeW, sizeH } = canvasDimsForRoom(w, d);
+    const { sizeW, sizeH } = shapeDrag ? shapeDrag.size : canvasDimsForRoom(w, d);
     if(canvas.width !== sizeW || canvas.height !== sizeH){
       canvas.width = sizeW;
       canvas.height = sizeH;
@@ -2391,7 +2451,7 @@ function applyAppearanceAttrs(mode, theme){
     }
 
     drawRoomFrame(offX, offY, scale, w, d, floor);
-    if(mapView === 'pressure' && !fieldReady()){
+    if(mapView === 'pressure' && !fieldReady() && !shapeDrag){
       const note = "Working out this room's modes...";
       ctx.font = 'bold 16px sans-serif';
       drawNameChip(note, offX + (w*scale - ctx.measureText(note).width - 12)/2, offY + d*scale/2, '#e8ecf1');
@@ -2465,6 +2525,8 @@ function applyAppearanceAttrs(mode, theme){
       ctx.arc(epx, epy, 3.5, 0, Math.PI*2);
       ctx.fill();
     }
+
+    if(shapeEditing) drawShapeHandles(offX, offY, scale);
 
     updateFreqInfo(lambda);
     redrawFreqResponseCanvas(); // cheap repaint every frame, so the freq marker tracks the slider live
@@ -2705,6 +2767,43 @@ function applyAppearanceAttrs(mode, theme){
     ctx.fillText(text, x + 6, y + 1);
   }
 
+  // While the room's shape is being edited: each wall's length just inside
+  // it, a grip at its middle, and a handle on every corner, filled for an
+  // outside corner (a click cuts a notch) and hollow for an inside one (a
+  // click fills it in).
+  function drawShapeHandles(offX, offY, scale){
+    const poly = room.polygon;
+    const INWARD = { front: [0, 1], back: [0, -1], left: [1, 0], right: [-1, 0] };
+    ctx.save();
+    ctx.font = 'bold 16px sans-serif';
+    RoomPhysics.floorPlanWalls(poly).forEach(wall => {
+      const mx = offX + (wall.a.x + wall.b.x) / 2 * scale, my = offY + (wall.a.y + wall.b.y) / 2 * scale;
+      const [ix, iy] = INWARD[wall.side];
+      ctx.fillStyle = themeColors['accent'];
+      ctx.beginPath();
+      if(wall.horizontal) ctx.roundRect(mx - 18, my - 4, 36, 8, 4); else ctx.roundRect(mx - 4, my - 18, 8, 36, 4);
+      ctx.fill();
+      // the length on an accent plate, set apart from the distance labels
+      const text = formatLength(wall.lengthFt);
+      const half = (ctx.measureText(text).width + 12) / 2;
+      const cx = mx + ix * (half + 14), cy = my + iy * 26;
+      ctx.beginPath(); ctx.roundRect(cx - half, cy - 11, half * 2, 22, 5); ctx.fill();
+      ctx.fillStyle = themeColors['on-accent'];
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, cx, cy + 1);
+    });
+    poly.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(offX + p.x * scale, offY + p.y * scale, 10, 0, Math.PI * 2);
+      ctx.fillStyle = RoomPhysics.isConvexCorner(poly, i) ? themeColors['accent'] : themeColors['floor'];
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = themeColors['accent'];
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   // A source's marker: a speaker cabinet (tweeter over woofer) or a sub (one
   // large driver), filled with the source's own color, plus its channel name
   // on a chip. The glyph's center is the source's position. The chip goes on
@@ -2908,8 +3007,15 @@ function applyAppearanceAttrs(mode, theme){
   function updateEarDiffInfo(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
     const card = document.getElementById('earDiffInfo');
-    card.hidden = activeSources.length === 0 || !fieldReady();
+    card.hidden = activeSources.length === 0;
     if(card.hidden) return;
+    if(!fieldReady()){
+      // Kept in place while a new room shape is worked out, so the map
+      // beside it doesn't change size (under a dragging pointer, say).
+      for(const key of ['left', 'right']) setStat('earDiffInfo', key, '...');
+      setStat('earDiffInfo', 'diff', 'diff: ...').style.color = 'var(--text-dim)';
+      return;
+    }
     const ears = earPositions(primaryRow());
     const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, freq);
     const rightDb = dbAtFreq(ears.right.x, ears.right.y, ears.right.z, activeSources, freq);
@@ -3980,6 +4086,90 @@ function applyAppearanceAttrs(mode, theme){
     return true;
   }
 
+  // ---- Editing the room's shape on the map ----
+  // With "Edit shape on map" on, the map only edits the room: a corner or
+  // a wall is dragged (RoomPhysics.moveFloorPlanCorner/moveFloorPlanWall,
+  // snapped to half a foot or a tenth of a meter), and a click on a corner
+  // cuts a notch there or fills one in. During a drag the map keeps its
+  // size and the room keeps its place on it (shapeDrag.layout, adjusted by
+  // applyFloorPlanEdit), so the corner or wall stays under the pointer; a
+  // room that is not a rectangle shows its plain floor until the drag ends
+  // and its modes are worked out again.
+  const NOTCH_FT = 4; // a click's notch, along each wall (RoomPhysics.cutFloorPlanCorner caps it)
+  function setShapeEditing(on){
+    shapeEditing = on;
+    const btn = document.getElementById('editShapeBtn');
+    btn.setAttribute('aria-pressed', String(on));
+    btn.classList.toggle('active', on);
+    btn.textContent = on ? 'Done editing shape' : 'Edit shape on map';
+    document.getElementById('editShapeHint').hidden = !on;
+    canvas.style.cursor = '';
+    draw();
+  }
+  document.getElementById('editShapeBtn').addEventListener('click', () => setShapeEditing(!shapeEditing));
+  // The corner nearest the pointer within reach, else the nearest wall.
+  function shapeHitAt(evt){
+    const { x, y, cssScale } = getRoomCoords(evt);
+    const reach = hitRadiusFt(evt, 12 / cssScale, cssScale);
+    let hit = null;
+    room.polygon.forEach((p, i) => {
+      const dist = Math.hypot(x - p.x, y - p.y);
+      if(dist < reach && (!hit || dist < hit.dist)) hit = { corner: i, dist };
+    });
+    if(hit) return hit;
+    RoomPhysics.floorPlanWalls(room.polygon).forEach((wall, i) => {
+      const along = wall.horizontal ? x : y, across = Math.abs(wall.horizontal ? y - wall.a.y : x - wall.a.x);
+      const [lo, hi] = wall.horizontal ? [wall.a.x, wall.b.x].sort((p, q) => p - q) : [wall.a.y, wall.b.y].sort((p, q) => p - q);
+      if(along > lo && along < hi && across < reach && (!hit || across < hit.dist)) hit = { wall: i, horizontal: wall.horizontal, dist: across };
+    });
+    return hit;
+  }
+  function shapeMouseDown(evt){
+    const hit = shapeHitAt(evt);
+    if(!hit) return false;
+    const layout = { ...mapLayout(canvas.width, canvas.height) };
+    shapeDrag = { ...hit, layout, size: { sizeW: canvas.width, sizeH: canvas.height }, startX: evt.clientX, startY: evt.clientY, moved: false };
+    return true;
+  }
+  function shapeMouseMove(evt){
+    if(!shapeEditing) return false;
+    if(!shapeDrag){
+      const hit = shapeHitAt(evt);
+      canvas.style.cursor = !hit ? '' : hit.corner != null ? 'move' : hit.horizontal ? 'ns-resize' : 'ew-resize';
+      return true;
+    }
+    // a few pixels of wobble in a click is not a drag
+    if(!shapeDrag.moved && Math.hypot(evt.clientX - shapeDrag.startX, evt.clientY - shapeDrag.startY) < 5) return true;
+    shapeDrag.moved = true;
+    const step = lengthUnit === 'm' ? mToFt(0.1) : 0.5;
+    // the room can grow into the map's margin but no further, while the
+    // map's layout is held; another drag after this one can go further
+    const { scale, offX, offY } = shapeDrag.layout, { sizeW, sizeH } = shapeDrag.size;
+    const pointer = getRoomCoords(evt);
+    const x = Math.max(-offX / scale, Math.min((sizeW - offX) / scale, pointer.x));
+    const y = Math.max(-offY / scale, Math.min((sizeH - offY) / scale, pointer.y));
+    const sx = Math.round(x / step) * step, sy = Math.round(y / step) * step;
+    const poly = room.polygon, i = shapeDrag.corner ?? shapeDrag.wall;
+    if(shapeDrag.corner != null){
+      if(poly[i].x !== sx || poly[i].y !== sy) applyFloorPlanEdit(RoomPhysics.moveFloorPlanCorner(poly, i, sx, sy));
+    } else {
+      const at = shapeDrag.horizontal ? sy : sx;
+      if(poly[i][shapeDrag.horizontal ? 'y' : 'x'] !== at) applyFloorPlanEdit(RoomPhysics.moveFloorPlanWall(poly, i, at));
+    }
+    return true;
+  }
+  function shapeMouseUp(){
+    if(!shapeDrag) return false;
+    const { corner, moved } = shapeDrag;
+    shapeDrag = null; // the map fits the room again
+    if(!moved && corner != null){
+      const poly = room.polygon;
+      applyFloorPlanEdit(RoomPhysics.isConvexCorner(poly, corner) ? RoomPhysics.cutFloorPlanCorner(poly, corner, NOTCH_FT) : RoomPhysics.fillFloorPlanCorner(poly, corner));
+    }
+    scheduleDraw();
+    return true;
+  }
+
   // (x, y) kept just inside the walls.
   function insideRoom(x, y){
     return RoomPhysics.clampToFloorPlan(x, y, room, 0.2);
@@ -4006,7 +4196,9 @@ function applyAppearanceAttrs(mode, theme){
     // thing), so ignore extra fingers and non-primary mouse buttons.
     if(!e.isPrimary || e.button !== 0) return;
     let started;
-    if(zoneDrawMode){
+    if(shapeEditing){
+      started = shapeMouseDown(e);
+    } else if(zoneDrawMode){
       // While actively drawing a new zone, that intent always wins regardless
       // of what's underneath the pointer.
       started = zoneMouseDown(e);
@@ -4024,11 +4216,12 @@ function applyAppearanceAttrs(mode, theme){
     canvas.classList.add('dragging');
   });
   canvas.addEventListener('pointermove', (e) => {
+    if(shapeMouseMove(e)) return;
     if(zoneMouseMove(e)) return;
     if(dragTarget != null) moveTarget(e);
   });
   function endCanvasDrag(){
-    if(!zoneMouseUp()) dragTarget = null;
+    if(!shapeMouseUp() && !zoneMouseUp()) dragTarget = null;
     canvas.classList.remove('dragging');
   }
   canvas.addEventListener('pointerup', endCanvasDrag);

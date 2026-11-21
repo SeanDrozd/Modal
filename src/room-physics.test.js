@@ -3266,6 +3266,100 @@ test('floorPlanModeFrequencies: a rectangle\'s lowest floor modes are its width 
   assert.ok(f.every((v, i) => i === 0 || v >= f[i - 1]));
 });
 
+test('isValidFloorPlan accepts rectangles, L, T and U rooms and rejects broken ones', () => {
+  for(const poly of [rectPolygon(18, 13.5), lPoly, tPolygon, uPolygon, lPoly.slice().reverse()]) assert.strictEqual(P.isValidFloorPlan(poly), true);
+  const bad = {
+    'three corners': [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }],
+    'a slanted wall': [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 18, y: 15 }, { x: 0, y: 15 }],
+    'a wall under 1 ft': lPolygon(24, 20, 23.5, 8),
+    'two walls in line': [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 15 }, { x: 0, y: 15 }],
+    'walls crossing': [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 5, y: 10 }, { x: 5, y: -5 }, { x: 10, y: -5 }, { x: 10, y: 15 }, { x: 0, y: 15 }],
+    'walls touching': [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 15 }, { x: 10, y: 15 }, { x: 10, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 15 }, { x: 0, y: 15 }]
+  };
+  for(const [name, poly] of Object.entries(bad)) assert.strictEqual(P.isValidFloorPlan(poly), false, name);
+});
+
+test('moveFloorPlanWall and moveFloorPlanCorner keep every corner square, and say how far the room moved', () => {
+  const wall = P.moveFloorPlanWall(lPoly, 3, 12); // the notch's side wall, from x = 14 to 12
+  assert.deepStrictEqual(wall, { polygon: lPolygon(24, 20, 12, 8), walls: [0, 1, 2, 3, 4, 5], shift: { x: 0, y: 0 } });
+  const corner = P.moveFloorPlanCorner(lPoly, 3, 12, 10); // the inside corner
+  assert.deepStrictEqual(corner.polygon, lPolygon(24, 20, 12, 10));
+  // moving the front-left corner in moves the front and left walls; the room is moved back to (0, 0)
+  const origin = P.moveFloorPlanCorner(lPoly, 0, 2, 3);
+  assert.deepStrictEqual(origin.polygon, lPolygon(22, 17, 10, 8));
+  assert.deepStrictEqual(origin.shift, { x: -2, y: -3 });
+  // the notch can't be pushed through the room's far wall, or flush with it
+  assert.strictEqual(P.moveFloorPlanWall(lPoly, 2, 20.5), null);
+  assert.strictEqual(P.moveFloorPlanWall(lPoly, 2, 0), null);
+  assert.strictEqual(P.moveFloorPlanCorner(lPoly, 3, 24, 12), null);
+});
+
+test('setFloorPlanWallLength keeps the wall\'s front-left end and moves the wall at its other end', () => {
+  assert.deepStrictEqual(P.setFloorPlanWallLength(rectPolygon(18, 13.5), 0, 20).polygon, rectPolygon(20, 13.5));
+  assert.deepStrictEqual(P.setFloorPlanWallLength(rectPolygon(18, 13.5), 2, 20).polygon, rectPolygon(20, 13.5)); // the back wall runs right to left
+  assert.deepStrictEqual(P.setFloorPlanWallLength(rectPolygon(18, 13.5), 3, 12).polygon, rectPolygon(18, 12));
+  assert.deepStrictEqual(P.setFloorPlanWallLength(lPoly, 4, 12).polygon, lPolygon(24, 20, 12, 8)); // the back wall left of the notch
+  assert.deepStrictEqual(P.setFloorPlanWallLength(lPoly, 3, 5).polygon, lPolygon(24, 17, 10, 5)); // the notch's side wall
+  assert.strictEqual(P.setFloorPlanWallLength(lPoly, 4, 24), null); // would close the notch
+});
+
+test('cutFloorPlanCorner cuts a notch from an outside corner, and its new walls take the settings of the walls they parallel', () => {
+  assert.strictEqual(P.isConvexCorner(lPoly, 2), true);
+  assert.strictEqual(P.isConvexCorner(lPoly, 3), false);
+  const cut = P.cutFloorPlanCorner(rectPolygon(20, 15), 2, 4); // the back-right corner
+  assert.deepStrictEqual(cut.polygon, lPolygon(20, 15, 4, 4));
+  assert.deepStrictEqual(cut.walls, [0, 1, 2, 1, 2, 3]);
+  // capped at a third of each wall
+  assert.deepStrictEqual(P.cutFloorPlanCorner(rectPolygon(9, 6), 2, 4).polygon, lPolygon(9, 6, 3, 2));
+  // the front-left corner: the list still starts there, and nothing moves
+  const front = P.cutFloorPlanCorner(rectPolygon(20, 15), 0, 4);
+  assert.deepStrictEqual(front.polygon, [{ x: 0, y: 4 }, { x: 4, y: 4 }, { x: 4, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 15 }, { x: 0, y: 15 }]);
+  assert.deepStrictEqual(front.walls, [0, 3, 0, 1, 2, 3]);
+  assert.strictEqual(P.cutFloorPlanCorner(lPoly, 3, 4), null); // an inside corner
+});
+
+test('fillFloorPlanCorner squares off an inside corner and merges walls that line up', () => {
+  const fromL = P.fillFloorPlanCorner(lPoly, 3);
+  assert.deepStrictEqual(fromL.polygon, rectPolygon(24, 20));
+  assert.deepStrictEqual(fromL.walls, [0, 1, 4, 5]);
+  // a U's slot: both of its inside corners fill the whole slot
+  for(const corner of [4, 5]){
+    const fromU = P.fillFloorPlanCorner(uPolygon, corner);
+    assert.deepStrictEqual(fromU.polygon, rectPolygon(26, 18));
+    assert.deepStrictEqual(fromU.walls, [0, 1, 2, 7]);
+  }
+  // a T's inside corner fills one side only
+  const fromT = P.fillFloorPlanCorner(tPolygon, 3);
+  assert.deepStrictEqual(fromT.polygon, [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 20 }, { x: 8, y: 20 }, { x: 8, y: 8 }, { x: 0, y: 8 }]);
+  assert.strictEqual(P.fillFloorPlanCorner(lPoly, 2), null); // an outside corner
+  // cutting a corner and filling it again gives the rectangle back
+  const back = P.fillFloorPlanCorner(lPolygon(20, 15, 4, 4), 3);
+  assert.deepStrictEqual(back.polygon, rectPolygon(20, 15));
+});
+
+test('floorPlanCellField blended with floorPlanStencil\'s weights equals computeFieldAtPoint', () => {
+  const ctx = { room: lShapedRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const pre = P.precomputeModalField([{ x: 3, y: 3, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200 }], 63, ctx, P.enumerateModes(ctx));
+  const cells = P.floorPlanCellField(pre, 3.5);
+  assert.strictEqual(cells.length, lPlan.numCells * 2);
+  for(const [x, y] of [[5, 5], [13.97, 11.98], [0.01, 19.99], [20, 6], [10, 17], [23.99, 0.02]]){
+    const { cells: at, weights } = P.floorPlanStencil(lPlan, x, y);
+    let re = 0, im = 0;
+    at.forEach((c, q) => { re += weights[q] * cells[2 * c]; im += weights[q] * cells[2 * c + 1]; });
+    const direct = P.computeFieldAtPoint(x, y, 3.5, pre);
+    approx(re, direct.re, 1e-9 * Math.hypot(direct.re, direct.im) + 1e-9, `re at (${x}, ${y})`);
+    approx(im, direct.im, 1e-9 * Math.hypot(direct.re, direct.im) + 1e-9, `im at (${x}, ${y})`);
+  }
+});
+
+test('floorPlanBracket reports the cell a coordinate is in as well as the two centers around it', () => {
+  const lines = Float64Array.from([0, 1, 3, 4]);
+  assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 0.2), { lower: 0, t: 0, cell: 0 });
+  assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 1.25), { lower: 0, t: 0.75 / 1.5, cell: 1 });
+  assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 2.5), { lower: 1, t: 0.5 / 1.5, cell: 1 });
+  assert.deepStrictEqual(P.floorPlanBracket(lines, 3, 3.9), { lower: 2, t: 0, cell: 2 });
+});
+
 // A stand-in for the page's Web Worker: answers each message on a later
 // tick with floorPlanWorkerReply, and records what it was sent.
 function fakeFloorPlanWorkers(){

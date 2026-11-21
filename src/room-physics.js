@@ -568,6 +568,134 @@
     return polygon.map(p => p[axis] === max ? { ...p, [axis]: target } : { ...p });
   }
 
+  // ---- Editing a floor plan ----
+  // True when `polygon` is a room the solver and the editor accept: at least
+  // four corners, every wall along x or y and at least FLOOR_PLAN_MIN_WALL_FT
+  // long, each wall at a right angle to the next, and no wall touching any
+  // other wall but its two neighbors.
+  function isValidFloorPlan(polygon){
+    const n = polygon.length;
+    if(n < 4) return false;
+    const tol = 1e-9;
+    const walls = polygon.map((a, i) => ({ a, b: polygon[(i + 1) % n] }));
+    for(let i = 0; i < n; i++){
+      const { a, b } = walls[i], next = walls[(i + 1) % n];
+      if(a.x !== b.x && a.y !== b.y) return false;
+      if(Math.abs(b.x - a.x) + Math.abs(b.y - a.y) < FLOOR_PLAN_MIN_WALL_FT - tol) return false;
+      if((a.y === b.y) === (next.a.y === next.b.y)) return false;
+    }
+    for(let i = 0; i < n; i++){
+      for(let j = i + 2; j < n; j++){
+        if(i === 0 && j === n - 1) continue; // neighbors around the end of the list
+        const p = walls[i], q = walls[j];
+        if(Math.max(Math.min(p.a.x, p.b.x), Math.min(q.a.x, q.b.x)) <= Math.min(Math.max(p.a.x, p.b.x), Math.max(q.a.x, q.b.x)) &&
+           Math.max(Math.min(p.a.y, p.b.y), Math.min(q.a.y, q.b.y)) <= Math.min(Math.max(p.a.y, p.b.y), Math.max(q.a.y, q.b.y))) return false;
+      }
+    }
+    return true;
+  }
+
+  // Each edit below returns { polygon, walls, shift } or null when the
+  // result would not be a valid floor plan (isValidFloorPlan). walls[j] is
+  // the index of the old wall whose settings (its material) new wall j
+  // takes. The result is moved so its smallest x and y are 0, and shift
+  // ({ x, y }, feet) is what was added to every coordinate: add it to
+  // anything else placed in the room so it stays put against the walls.
+  function finishFloorPlanEdit(polygon, walls){
+    if(!isValidFloorPlan(polygon)) return null;
+    const shift = { x: 0 - Math.min(...polygon.map(p => p.x)), y: 0 - Math.min(...polygon.map(p => p.y)) };
+    return { polygon: polygon.map(p => ({ x: p.x + shift.x, y: p.y + shift.y })), walls, shift };
+  }
+  const sameWalls = (polygon) => polygon.map((_, i) => i);
+
+  // Moves wall i straight across itself to x = `at` (a wall along y) or
+  // y = `at` (a wall along x). Its two neighbors stretch or shrink to meet it.
+  function moveFloorPlanWall(polygon, i, at){
+    const n = polygon.length, a = polygon[i], b = polygon[(i + 1) % n];
+    const axis = a.y === b.y ? 'y' : 'x';
+    const moved = polygon.map((p, k) => k === i || k === (i + 1) % n ? { ...p, [axis]: at } : { ...p });
+    return finishFloorPlanEdit(moved, sameWalls(polygon));
+  }
+  // Moves corner i to (x, y): the two walls that meet there each move
+  // straight across themselves, so every corner stays a right angle.
+  function moveFloorPlanCorner(polygon, i, x, y){
+    const n = polygon.length, prev = (i - 1 + n) % n;
+    const alongX = polygon[i].y === polygon[(i + 1) % n].y; // wall i runs along x, so wall prev runs along y
+    const moved = polygon.map(p => ({ ...p }));
+    for(const [wall, axis, at] of [[i, alongX ? 'y' : 'x', alongX ? y : x], [prev, alongX ? 'x' : 'y', alongX ? x : y]]){
+      moved[wall][axis] = at;
+      moved[(wall + 1) % n][axis] = at;
+    }
+    return finishFloorPlanEdit(moved, sameWalls(polygon));
+  }
+  // Sets wall i's length by moving the wall at its far end (the end with
+  // the larger x or y), so the end nearer the front-left stays put, the
+  // same way resizeFloorPlan grows a room.
+  function setFloorPlanWallLength(polygon, i, lengthFt){
+    const n = polygon.length, a = polygon[i], b = polygon[(i + 1) % n];
+    const axis = a.y === b.y ? 'x' : 'y';
+    return b[axis] >= a[axis]
+      ? moveFloorPlanWall(polygon, (i + 1) % n, a[axis] + lengthFt)
+      : moveFloorPlanWall(polygon, (i - 1 + n) % n, b[axis] + lengthFt);
+  }
+  // True when corner i is an outside corner (90 degrees inside the room),
+  // false for an inside (270 degree) corner.
+  function isConvexCorner(polygon, i){
+    const n = polygon.length, c = polygon[i], p = polygon[(i - 1 + n) % n], q = polygon[(i + 1) % n];
+    const eps = 1e-6;
+    return isPointInPolygon(c.x + Math.sign(p.x - c.x + q.x - c.x) * eps, c.y + Math.sign(p.y - c.y + q.y - c.y) * eps, polygon);
+  }
+  // Cuts a notch out of outside corner i, `sizeFt` along each of its two
+  // walls (capped at a third of each wall, and at least
+  // FLOOR_PLAN_MIN_WALL_FT): the corner becomes three, and the notch's two
+  // new walls each take the settings of the wall they run parallel to.
+  function cutFloorPlanCorner(polygon, i, sizeFt){
+    const n = polygon.length, prev = (i - 1 + n) % n;
+    if(!isConvexCorner(polygon, i)) return null;
+    const c = polygon[i], p = polygon[prev], q = polygon[(i + 1) % n];
+    const step = (to) => {
+      const len = Math.abs(to.x - c.x) + Math.abs(to.y - c.y);
+      const d = Math.max(FLOOR_PLAN_MIN_WALL_FT, Math.min(sizeFt, len / 3));
+      return { x: Math.sign(to.x - c.x) * d, y: Math.sign(to.y - c.y) * d };
+    };
+    const toP = step(p), toQ = step(q);
+    const corners = [{ x: c.x + toP.x, y: c.y + toP.y }, { x: c.x + toP.x + toQ.x, y: c.y + toP.y + toQ.y }, { x: c.x + toQ.x, y: c.y + toQ.y }];
+    const cut = polygon.slice(0, i).concat(corners, polygon.slice(i + 1)).map(v => ({ ...v }));
+    // new walls, in order: ...prev (shortened), parallel to wall i, parallel to prev, i (shortened)...
+    const walls = sameWalls(polygon).flatMap(k => k === prev ? [prev] : k === i ? [i, prev, i] : [k]);
+    return finishFloorPlanEdit(cut, walls);
+  }
+  // Fills in the notch at inside corner i: the corner and its two
+  // neighbors become the one outside corner that squares them off, and any
+  // walls that then line up merge (the earlier one's settings are kept).
+  function fillFloorPlanCorner(polygon, i){
+    const n = polygon.length;
+    if(isConvexCorner(polygon, i)) return null;
+    const prev = (i - 1 + n) % n, next = (i + 1) % n;
+    const c = polygon[i], p = polygon[prev], q = polygon[next];
+    let pts = polygon.map((v, k) => ({ v: { ...v }, wall: k }));
+    // corner `prev` takes the squared-off position; wall prev's slot is the
+    // one wall `next`'s settings continue in
+    pts[prev] = { v: { x: p.x + q.x - c.x, y: p.y + q.y - c.y }, wall: next };
+    pts = pts.filter((_, k) => k !== i && k !== next);
+    // drop repeated corners, then corners between two walls in line
+    for(let changed = true; changed && pts.length >= 3; ){
+      changed = false;
+      for(let k = 0; k < pts.length && pts.length >= 3; k++){
+        const a = pts[(k - 1 + pts.length) % pts.length].v, b = pts[k].v, d = pts[(k + 1) % pts.length].v;
+        const repeated = b.x === d.x && b.y === d.y;
+        const inLine = (a.x === b.x && b.x === d.x) || (a.y === b.y && b.y === d.y);
+        if(repeated || inLine){
+          // corner k goes; the wall leaving it merges into the wall arriving at it
+          pts.splice(k, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+    return finishFloorPlanEdit(pts.map(e => e.v), pts.map(e => e.wall));
+  }
+
   // Grid cell size for the floor-plan solve. Mode shapes below the 300 Hz
   // cutoff have a wavelength of 1.14 m or more, 11 cells at this size.
   const FLOOR_PLAN_CELL_M = 0.1;
@@ -1078,7 +1206,8 @@
   }
   // The pair of neighboring cell centers around v along one axis: `lower`
   // is the lower cell's index and t (0..1) how far v sits toward the next
-  // center. Before the first center or past the last, t is 0.
+  // center. Before the first center or past the last, t is 0. `cell` is
+  // the index of the cell v is in.
   function centerBracket(lines, n, v){
     let lo = 0, hi = n - 1;
     while(lo < hi){ // the cell containing v
@@ -1087,9 +1216,37 @@
     }
     const center = (i) => (lines[i] + lines[i + 1]) / 2;
     const lower = v < center(lo) ? lo - 1 : lo;
-    if(lower < 0) return { lower: 0, t: 0 };
-    if(lower >= n - 1) return { lower: n - 1, t: 0 };
-    return { lower, t: (v - center(lower)) / (center(lower + 1) - center(lower)) };
+    if(lower < 0) return { lower: 0, t: 0, cell: lo };
+    if(lower >= n - 1) return { lower: n - 1, t: 0, cell: lo };
+    return { lower, t: (v - center(lower)) / (center(lower + 1) - center(lower)), cell: lo };
+  }
+
+  // The field of a precomputeModalField result for a solved floor plan, at
+  // height pz (feet), at every cell center of the plan's grid:
+  // [re0, im0, re1, im1, ...] by cell number. computeFieldAtPoint at any
+  // point equals these values blended with floorPlanStencil's weights (the
+  // sum is linear), so a map can blend four of them per pixel instead of
+  // summing every mode. Each shape's height cosines are summed first.
+  function floorPlanCellField(precomputed, pz){
+    const { numModes, numCells, shapes } = precomputed.floorPlan;
+    const pzM = pz * FT_TO_M;
+    const shapeRe = new Float64Array(numModes), shapeIm = new Float64Array(numModes);
+    for(const mode of precomputed){
+      const cz = Math.cos(mode.invLz * pzM);
+      shapeRe[mode.shape] += mode.coefRe * cz;
+      shapeIm[mode.shape] += mode.coefIm * cz;
+    }
+    const out = new Float64Array(numCells * 2);
+    for(let k = 0; k < numCells; k++){
+      let re = 0, im = 0;
+      for(let m = 0, base = k * numModes; m < numModes; m++){
+        re += shapes[base + m] * shapeRe[m];
+        im += shapes[base + m] * shapeIm[m];
+      }
+      out[2 * k] = re;
+      out[2 * k + 1] = im;
+    }
+    return out;
   }
   // Every floor-plan mode's shape value at a point (feet).
   function floorPlanShapesAt(plan, xFt, yFt){
@@ -2569,6 +2726,16 @@
     FLOOR_PLAN_CELL_M,
     solveFloorPlan,
     floorPlanModeFrequencies,
+    floorPlanStencil,
+    floorPlanBracket: centerBracket,
+    floorPlanCellField,
+    isValidFloorPlan,
+    moveFloorPlanWall,
+    moveFloorPlanCorner,
+    setFloorPlanWallLength,
+    isConvexCorner,
+    cutFloorPlanCorner,
+    fillFloorPlanCorner,
     FLOOR_PLAN_PREVIEW_CELL_M,
     floorPlanKey,
     floorPlanWorkerReply,
