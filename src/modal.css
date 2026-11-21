@@ -287,7 +287,6 @@ canvas.dragging { cursor: grabbing; }
   padding: 8px 10px; line-height: 1.5;
 }
 .stat-chip b { color: var(--accent); }
-.stat-chip:empty { display: none; } /* e.g. earDiffInfo renders '' with no active sources -- don't show an empty box */
 #modalInfo { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin-top: 6px; }
 /* Collapsible sidebar sections -- a chevron toggles .collapsed on the
    parent .section, which hides .section-body. The chevron is its own
