@@ -373,18 +373,9 @@ function applyAppearanceAttrs(mode, theme){
   // this was built from -- only surrounds get named. Once every name here is
   // already in use, nextMainName() falls back to a generic numbered name.
   const MAIN_CHANNEL_NAMES = ['FL','FR','C','SL','SR','SBL','SBR','FWL','FWR'];
-  // Floor construction, as a flat absorption coefficient (low-frequency
-  // floor data is sparse below 125 Hz, so one representative value each).
-  // From the classic coefficient tables (e.g. Everest's Master Handbook of
-  // Acoustics): a wood floor on joists is about 0.15 at 125 Hz, since it
-  // flexes as a mild membrane absorber like drywall; concrete is about 0.01
-  // to 0.02. Floor coverings are not a choice here: carpet, even on a pad,
-  // is a porous absorber that does almost nothing below 200 Hz, so what
-  // sets the floor's bass absorption is what the covering sits on.
+  // Floor construction, as a flat absorption coefficient (low-frequency floor data is sparse below 125 Hz, so one representative value each). From the classic coefficient tables (e.g. Everest's Master Handbook of Acoustics): a wood floor on joists is about 0.15 at 125 Hz, since it flexes as a mild membrane absorber like drywall; concrete is about 0.01 to 0.02. Floor coverings are not a choice here: carpet, even on a pad, is a porous absorber that does almost nothing below 200 Hz, so what sets the floor's bass absorption is what the covering sits on.
   const FLOOR_MATERIALS = { woodJoists: 0.15, slab: 0.02 };
-  // Presets saved before floor construction replaced floor coverings hold
-  // the old carpet values; the carpet lay on some floor, so they load as a
-  // wood floor on joists (see loadConfig).
+  // Presets saved before floor construction replaced floor coverings hold the old carpet values; the carpet lay on some floor, so they load as a wood floor on joists (see loadConfig).
   const LEGACY_CARPET_ABSORPTION = [0.06, 0.10];
 
   // room.polygon is the floor plan: its corners in feet, in order around

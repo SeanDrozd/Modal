@@ -127,16 +127,7 @@
     drywallInsulated: { baseAbsorption: 0.06, peakFreq: 80, peakBoost: 0.34, bandwidth: 55 },
     drywallHollow:    { baseAbsorption: 0.06, peakFreq: 90, peakBoost: 0.25, bandwidth: 40 },
     masonry:          { baseAbsorption: 0.03, peakFreq: 0,  peakBoost: 0,    bandwidth: 1 },
-    // suspendedTile: mineral-fiber lay-in tile in a grid with an air space
-    // above (the E-400 test mounting, a 400 mm plenum). The tile plus the
-    // air behind it absorbs much more bass than the tile alone: Armstrong's
-    // E-400 product-family data lists 0.28 to 0.33 at 125 Hz and 0.35 to 0.39
-    // at 250 Hz for its common mineral-fiber tiles (Fine Fissured, Cirrus,
-    // Ultima; UL Classified Acoustical Performance Summary). The ramp below
-    // is fitted to those two bands (0.30 at 125 Hz, 0.39 at 250 Hz). No
-    // published data goes below 125 Hz, so the low end is an extrapolation
-    // that eases down to about 0.15 at 40 Hz instead of staying at the
-    // 125 Hz value. A shallower plenum than 400 mm absorbs less.
+    // suspendedTile: mineral-fiber lay-in tile in a grid with an air space above (the E-400 test mounting, a 400 mm plenum). The tile plus the air behind it absorbs much more bass than the tile alone: Armstrong's E-400 product-family data lists 0.28 to 0.33 at 125 Hz and 0.35 to 0.39 at 250 Hz for its common mineral-fiber tiles (Fine Fissured, Cirrus, Ultima; UL Classified Acoustical Performance Summary). The ramp below is fitted to those two bands (0.30 at 125 Hz, 0.39 at 250 Hz). No published data goes below 125 Hz, so the low end is an extrapolation that eases down to about 0.15 at 40 Hz instead of staying at the 125 Hz value. A shallower plenum than 400 mm absorbs less.
     suspendedTile:    { shape: 'porousRamp', baseAbsorption: 0.10, midFreq: 100, slope: 0.025, maxAbsorbBoost: 0.30 }
   };
 
