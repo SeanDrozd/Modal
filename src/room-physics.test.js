@@ -177,12 +177,13 @@ test("porousRamp absorption increases monotonically with frequency (opposite tre
   assert.ok(a1 < a2 && a2 < a3, `expected monotonically increasing absorption with frequency: ${a1}, ${a2}, ${a3}`);
 });
 
-test('WALL_MATERIALS.suspendedTile shows only modest absorption within this app\'s typical sub-bass range, more by the top of the range', () => {
+test('WALL_MATERIALS.suspendedTile matches published E-400 tile data at 125 and 250 Hz and eases off below', () => {
   const tile = P.WALL_MATERIALS.suspendedTile;
-  const at40 = P.wallMaterialAbsorptionAtFreq(tile, 40);
-  const at300 = P.wallMaterialAbsorptionAtFreq(tile, 300);
-  assert.ok(at40 < tile.baseAbsorption + tile.maxAbsorbBoost * 0.1, `expected tile to do little at 40Hz (a real, worth-knowing limitation), got ${at40}`);
-  assert.ok(at300 > at40, 'expected more absorption by 300Hz than at 40Hz');
+  const at = f => P.wallMaterialAbsorptionAtFreq(tile, f);
+  // Armstrong E-400 product-family data for common mineral-fiber tiles: 0.28-0.33 at 125 Hz, 0.35-0.39 at 250 Hz.
+  assert.ok(at(125) >= 0.28 && at(125) <= 0.33, `expected 0.28-0.33 at 125Hz, got ${at(125)}`);
+  assert.ok(at(250) >= 0.35 && at(250) <= 0.40, `expected 0.35-0.40 at 250Hz, got ${at(250)}`);
+  assert.ok(at(40) < at(125) && at(40) > 0.1, `expected the extrapolated 40Hz value below the 125Hz value but not negligible, got ${at(40)}`);
 });
 
 console.log('\n-- fieldDbAtPoint: known-configuration sanity checks --');

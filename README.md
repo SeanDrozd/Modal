@@ -42,7 +42,7 @@ p(r, r_s, f) = Σ_n  A_n · ψ_n(r) · ψ_n(r_s) / (k_n² − k² − j·k·δ_n
 ```
 
 - **Other floor plans** with square corners have no formula for their modes, so the floor's part of each mode, the x and y cosines above, is solved numerically: the floor is cut into cells about 10 cm across (finer near inside corners) and its modes below 300 Hz are found from the finite-volume Laplacian, with the height cosine unchanged. A new shape solves in the background in about a second, with a coarser preview first.
-- **Damping** per mode comes from the surface absorption at that mode's frequency (Morse/Kuttruff), so axial modes decay more slowly than oblique ones. Drywall is modeled as a resonant absorber, masonry as flat, ceiling tile as a high-frequency ramp.
+- **Damping** per mode comes from the surface absorption at that mode's frequency (Morse/Kuttruff), so axial modes decay more slowly than oblique ones. Drywall is modeled as a resonant absorber (checked against Bradley 1997), masonry as flat, ceiling tile as a ramp fitted to E-400 tile data, and the floor by its construction (slab or joists), since carpet barely affects bass.
 - **Frequency range** adapts to the room: it runs to the worst-case Schroeder frequency plus headroom, with T60 estimated from your materials by Eyring's formula.
 - **Frequency response** is averaged like a moving mic: 20 deterministic points in a 2 ft sphere around each seat, averaged by power.
 
