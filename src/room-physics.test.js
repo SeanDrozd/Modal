@@ -2495,6 +2495,32 @@ test('fieldDbAtPoint is the field at that point through pressureToDb', () => {
   approx(P.fieldDbAtPoint(9, 6, 3.5, src, 47, ctx), P.pressureToDb(re, im), 1e-12);
 });
 
+test('fieldRowSums gives computeFieldAtPoint\'s field with one term per distinct kx', () => {
+  const ctx = { room: { w: 20, d: 15, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 3, freqLow: 20, freqHigh: 80 },
+               { x: 17, y: 0.5, z: 1.5, levelDb: -2, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const pre = P.precomputeModalField(src, 63, ctx, P.enumerateModes(ctx));
+  const ys = [0, 3.3, 7.5, 15];
+  const { kx, nCols, nRows, sums } = P.fieldRowSums(pre, 3.5, ys);
+  assert.strictEqual(pre.length, 261);
+  assert.strictEqual(nCols, 11, 'nx = 0..10');
+  assert.strictEqual(nRows, ys.length);
+  for(let r = 0; r < ys.length; r++){
+    for(const x of [0, 4.2, 10, 20]){
+      let re = 0, im = 0;
+      for(let c = 0; c < nCols; c++){
+        const cx = Math.cos(kx[c] * x * 0.3048);
+        re += cx * sums[(r*nCols + c)*2];
+        im += cx * sums[(r*nCols + c)*2 + 1];
+      }
+      const want = P.computeFieldAtPoint(x, ys[r], 3.5, pre);
+      const scale = Math.hypot(want.re, want.im);
+      approx(re, want.re, 1e-9 * scale); approx(im, want.im, 1e-9 * scale);
+    }
+  }
+  assert.strictEqual(P.fieldRowSums([], 3.5, ys).nCols, 0);
+});
+
 test('sampleFieldDbRange returns the min and max of an n x n grid that includes the walls', () => {
   const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
   const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
