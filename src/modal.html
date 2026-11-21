@@ -319,9 +319,14 @@ function applyAppearanceAttrs(mode, theme){
       <button id="freqSweepFasterBtn" class="small" title="Faster" style="padding:4px 9px;">+</button>
     </div>
     <div class="stats-row">
-      <div id="freqInfo" class="stat-chip"></div>
-      <div id="schroederInfo" class="stat-chip"></div>
-      <div id="earDiffInfo" class="stat-chip"></div>
+      <!-- Built once; each redraw only updates the data-v values (see
+           setStat), so a text selection in a card survives a sweep or drag. -->
+      <div id="freqInfo" class="stat-chip">Wavelength: <b data-v="wavelength"></b><br>Active sources at <span data-v="hz"></span> Hz: <b data-v="active"></b> of <span data-v="total"></span></div>
+      <!-- The explanation is wrapped in .chip-detail so the compact tablet
+           layout (modal.css) can drop it and keep just the number, leaving
+           the height for the map. -->
+      <div id="schroederInfo" class="stat-chip">Schroeder frequency: <b style="color:var(--accent)"><span data-v="fs"></span> Hz</b> <span class="chip-detail">(estimated from room volume and your configured wall/floor/ceiling materials at <span data-v="hz"></span> Hz, T60 &asymp; <span data-v="t60"></span>s). Below this, distinct room modes dominate; above it, the field gets too dense/diffuse for a single-frequency snapshot to mean much.</span></div>
+      <div id="earDiffInfo" class="stat-chip" hidden>Left ear: <b><span data-v="left"></span> dB</b> &nbsp; Right ear: <b><span data-v="right"></span> dB</b> &nbsp; <span data-v="diff"></span></div>
     </div>
     <div id="legend">
       <div class="segmented" id="mapViewControl" role="group" aria-label="Map view">
@@ -2792,11 +2797,21 @@ function applyAppearanceAttrs(mode, theme){
     el.style.background = `linear-gradient(90deg, ${stops.join(',')})`;
   }
 
+  // Sets one data-v value inside a stat card, and only when it changed:
+  // replacing a card's whole markup on every redraw would drop any text
+  // selection in it.
+  function setStat(cardId, key, text){
+    const el = document.querySelector(`#${cardId} [data-v="${key}"]`);
+    if(el.textContent !== text) el.textContent = text;
+    return el;
+  }
+
   function updateFreqInfo(lambda){
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false && sourceGainAtFreq(s, freq) > 0.05) : [];
-    document.getElementById('freqInfo').innerHTML =
-      `Wavelength: <b>${formatLength(mToFt(lambda))}</b><br>` +
-      `Active sources at ${Math.round(freq)} Hz: <b>${active.length}</b> of ${sources.length}`;
+    setStat('freqInfo', 'wavelength', formatLength(mToFt(lambda)));
+    setStat('freqInfo', 'hz', String(Math.round(freq)));
+    setStat('freqInfo', 'active', String(active.length));
+    setStat('freqInfo', 'total', String(sources.length));
     updateEarDiffInfo();
     updateModalInfo();
     updateWallReadouts();
@@ -2805,18 +2820,17 @@ function applyAppearanceAttrs(mode, theme){
 
   function updateEarDiffInfo(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    if(activeSources.length === 0){
-      document.getElementById('earDiffInfo').innerHTML = '';
-      return;
-    }
+    const card = document.getElementById('earDiffInfo');
+    card.hidden = activeSources.length === 0;
+    if(card.hidden) return;
     const ears = earPositions(primaryRow());
     const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, freq);
     const rightDb = dbAtFreq(ears.right.x, ears.right.y, ears.right.z, activeSources, freq);
     const diff = Math.abs(leftDb - rightDb);
     const color = diff < 0.5 ? 'var(--text-dim)' : (diff < 3 ? 'var(--accent)' : 'var(--bad)');
-    document.getElementById('earDiffInfo').innerHTML =
-      `Left ear: <b>${leftDb.toFixed(1)} dB</b> &nbsp; Right ear: <b>${rightDb.toFixed(1)} dB</b> &nbsp; ` +
-      `<span style="color:${color}">diff: ${diff.toFixed(1)} dB</span>`;
+    setStat('earDiffInfo', 'left', leftDb.toFixed(1));
+    setStat('earDiffInfo', 'right', rightDb.toFixed(1));
+    setStat('earDiffInfo', 'diff', `diff: ${diff.toFixed(1)} dB`).style.color = color;
   }
 
   const axialModes = RoomPhysics.axialModes;
@@ -2826,14 +2840,9 @@ function applyAppearanceAttrs(mode, theme){
   function updateSchroederInfo(){
     const t60 = estimatedT60(room, freq, physicsCtx());
     const fs = schroederFrequency(room, t60);
-    const el = document.getElementById('schroederInfo');
-    // The explanation is wrapped in .chip-detail so the compact tablet layout
-    // (modal.css) can drop it and keep just the number, leaving the height
-    // for the map.
-    el.innerHTML = `Schroeder frequency: <b style="color:var(--accent)">${fs.toFixed(0)} Hz</b> ` +
-      `<span class="chip-detail">(estimated from room volume and your configured wall/floor/ceiling materials at ${Math.round(freq)} Hz, ` +
-      `T60 &asymp; ${t60.toFixed(2)}s). Below this, distinct room modes dominate; above it, ` +
-      `the field gets too dense/diffuse for a single-frequency snapshot to mean much.</span>`;
+    setStat('schroederInfo', 'fs', fs.toFixed(0));
+    setStat('schroederInfo', 'hz', String(Math.round(freq)));
+    setStat('schroederInfo', 't60', t60.toFixed(2));
   }
 
   function updateModalInfo(){
@@ -2854,13 +2863,19 @@ function applyAppearanceAttrs(mode, theme){
       return `<span class="modeFreq" data-freq="${m.f}" style="cursor:pointer; text-decoration:underline dotted; ${isNear ? 'color:var(--bad);font-weight:600;' : ''}" title="Click to jump the frequency slider here">${m.f.toFixed(1)} Hz (${m.axis})</span>`;
     }).join(', ');
 
-    document.getElementById('modalInfo').innerHTML =
-      `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}</div>`;
-
-    document.querySelectorAll('#modalInfo .modeFreq').forEach(el => {
-      el.addEventListener('click', () => jumpToFrequency(parseFloat(el.dataset.freq)));
-    });
+    // Only replaced when the list itself changes (room size, range, or which
+    // mode is highlighted), not on every redraw, so it stays selectable.
+    const html = `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}</div>`;
+    const list = document.getElementById('modalInfo');
+    if(list.dataset.html !== html){
+      list.innerHTML = html;
+      list.dataset.html = html;
+    }
   }
+  document.getElementById('modalInfo').addEventListener('click', (e) => {
+    const mode = e.target.closest('.modeFreq');
+    if(mode) jumpToFrequency(parseFloat(mode.dataset.freq));
+  });
 
   // ---- Frequency response chart ----
   // A log-frequency-axis line plot of RoomPhysics.spatiallyAveragedResponse
