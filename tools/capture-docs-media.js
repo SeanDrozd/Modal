@@ -30,6 +30,10 @@ const sharp = require('sharp');
 const OUT_DIR = path.join(__dirname, '..', 'docs');
 const APP_URL = 'file:///' + path.join(__dirname, '..', 'src', 'modal.html').replace(/\\/g, '/');
 const ROOM = { w: 18, d: 13.5, h: 8 };
+// Where both demos start the two subs: along the front wall, just inside
+// each main (FL and FR sit 4'8" from the side walls), mirrored about the
+// room's center line so the seat gets a symmetric null.
+const SUB_STARTS = [{ x: 6.5, y: 1.5 }, { x: 11.5, y: 1.5 }];
 
 // Reads the canvas's *actual* current resolution from the page instead of
 // assuming a fixed square size -- the canvas resolution tracks the room's
@@ -93,8 +97,11 @@ function downsampleToRaw(buf, scale){
 // so even lossy compression doesn't band on a smooth gradient the way GIF's
 // 256-color nearest-match does -- this is what actually fixes the banding,
 // not a dithering trick layered on top of a palette format.
+// delayMs is one duration for every frame, or an array with one per frame.
+// sharp applies a plain number to the first frame only (every later frame
+// gets its 100 ms default), so it always gets an array here.
 async function encodeWebp(frames, outPath, scale, delayMs){
-  delayMs = delayMs ?? 90;
+  const delay = Array.isArray(delayMs) ? delayMs : frames.map(() => delayMs ?? 90);
   const raws = frames.map((buf) => downsampleToRaw(buf, scale));
   const { w, h } = raws[0];
   // Every frame MUST be exactly w x h -- pageHeight-based stacking assumes a
@@ -124,7 +131,7 @@ async function encodeWebp(frames, outPath, scale, delayMs){
     // not a real defect in the file: it plays back correctly in an actual
     // browser (verified in Edge), which is the format that actually matters
     // here (GitHub README rendering).
-    .webp({ delay: delayMs, quality: 85, loop: 0, minSize: true })
+    .webp({ delay, quality: 85, loop: 0, minSize: true })
     .toFile(outPath);
   const { size } = fs.statSync(outPath);
   console.log(`Saved ${outPath}: ${(size/1024).toFixed(0)}KB, ${w}x${h}, ${frames.length} frames`);
@@ -249,8 +256,8 @@ async function expandSection(page, sectionId){
   // rest of the script -- which is what caused GIF B to end up dragging the
   // off-limits zone instead of a sub, once its bounds later crossed the
   // path this drag "should" have already cleared.
-  await dragSourceFromTo({ x: 2,   y: 12 }, { x: 4.5,  y: 12 }); // sub 1 -> symmetric left
-  await dragSourceFromTo({ x: 3.5, y: 12 }, { x: 13.5, y: 12 }); // sub 2 -> symmetric right (mirror of sub1 about x=9)
+  await dragSourceFromTo({ x: 2,   y: 12 }, SUB_STARTS[0]); // sub 1 -> symmetric left
+  await dragSourceFromTo({ x: 3.5, y: 12 }, SUB_STARTS[1]); // sub 2 -> symmetric right (mirror of sub1 about x=9)
   await page.waitForTimeout(400);
 
   // Enlarge the default off-limits zone (50% of room, centered -- see
@@ -322,15 +329,14 @@ async function expandSection(page, sectionId){
   // rather than an arbitrary fixed frame count/delay -- otherwise the GIF
   // plays faster or slower than what "Sweep" at a given speed actually looks
   // like live. Total GIF playback duration = the real time this sweep would
-  // take in-app at that speed; frame count is just how finely that duration
-  // is sampled (capped so the file doesn't balloon on a wide sweep span).
+  // take in-app at that speed. The frequency slider moves in whole Hz, so
+  // there is one frame per Hz: a finer step would only repeat frames, which
+  // the encoder merges into a visible hitch.
   const SWEEP_HZ_PER_SEC = 15 * 2;
   const realDurationMs = ((sweepHi - sweepLo) / SWEEP_HZ_PER_SEC) * 1000;
-  const NA = Math.max(60, Math.min(240, Math.round(realDurationMs / 25))); // ~40fps, capped (2x the previous ~20fps/120-frame cap -- WebP's small file size leaves plenty of room for it)
-  const delayMs = Math.round(realDurationMs / NA);
+  const delayMs = Math.round(1000 / SWEEP_HZ_PER_SEC);
   const framesA = [];
-  for (let i = 0; i < NA; i++) {
-    const f = sweepLo + (sweepHi - sweepLo) * (i / (NA - 1));
+  for (let f = sweepLo; f <= sweepHi; f++) {
     await setFreq(page, f);
     // The app's own redraw is requestAnimationFrame-coalesced (setFreq
     // dispatches 'input' -> scheduleDraw() -> one rAF later, draw() actually
@@ -363,9 +369,13 @@ async function expandSection(page, sectionId){
   await page.click('#autofitDbRangeBtn'); // fit to the "before" symmetric-null scene; stays fixed through the "after" state too, same reasoning as GIF A
   await page.waitForTimeout(150);
 
+  // Hold frames stay at 100 ms each; the drag animation's frames are
+  // shorter (see animateDragMulti).
   const framesB = [];
-  async function captureB(){
+  const delaysB = [];
+  async function captureB(ms){
     framesB.push(await page.screenshot());
+    delaysB.push(ms || 100);
   }
 
   for (let i = 0; i < 5; i++) await captureB(); // hold on the "before" (bad null) state
@@ -438,10 +448,14 @@ async function expandSection(page, sectionId){
   // then captures a single frame once all of them have been nudged that
   // step -- so the GIF still reads as the subs moving together rather than
   // one finishing its whole journey before the next starts.
-  async function animateDragMulti(moves, steps){
+  // Steps follow a smoothstep ease, so the subs speed up out of their start
+  // spots and settle into their targets instead of starting and stopping
+  // abruptly.
+  async function animateDragMulti(moves, steps, frameMs){
     const current = moves.map(m => ({ ...m.from }));
     for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
+      const u = i / steps;
+      const t = u * u * (3 - 2 * u);
       for (let mi = 0; mi < moves.length; mi++) {
         const { from, to } = moves[mi];
         const ix = from.x + (to.x - from.x) * t;
@@ -455,7 +469,7 @@ async function expandSection(page, sectionId){
         current[mi] = { x: ix, y: iy };
       }
       await page.waitForTimeout(260); // let the debounced freq-response recompute settle
-      await captureB();
+      await captureB(frameMs);
     }
   }
 
@@ -465,19 +479,19 @@ async function expandSection(page, sectionId){
   // for both and keep the shorter one. Otherwise a sub can end up crossing
   // the whole room to the far target while the near one goes unclaimed,
   // which reads as arbitrary rather than "each sub found a nearby wall."
-  const starts = [{ x: 4.5, y: 12 }, { x: 13.5, y: 12 }];
+  const starts = SUB_STARTS;
   if (targets.length >= 2) {
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const straight = dist(starts[0], targets[0]) + dist(starts[1], targets[1]);
     const swapped = dist(starts[0], targets[1]) + dist(starts[1], targets[0]);
     const pairs = swapped < straight ? [targets[1], targets[0]] : [targets[0], targets[1]];
-    await animateDragMulti([{ from: starts[0], to: pairs[0] }, { from: starts[1], to: pairs[1] }], 40);
+    await animateDragMulti([{ from: starts[0], to: pairs[0] }, { from: starts[1], to: pairs[1] }], 72, 50);
   }
 
   for (let i = 0; i < 6; i++) await captureB(); // hold on the "after" (optimized) state
 
   console.log('Captured', framesB.length, 'frames for GIF B');
-  await encodeWebp(framesB, path.join(OUT_DIR, 'optimizer-demo.webp'), 1.0);
+  await encodeWebp(framesB, path.join(OUT_DIR, 'optimizer-demo.webp'), 1.0, delaysB);
 
   if(consoleErrors.length > 0){
     console.error('Console errors during capture:', consoleErrors);
