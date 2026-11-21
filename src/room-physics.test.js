@@ -1107,6 +1107,48 @@ test('comparePlacements grades the change in score', () => {
   assert.strictEqual(P.comparePlacements(s(60, 70), s(58, 70)).verdict, 'worse');
 });
 
+test('checkSubMoves keeps the current subs unless the picked ones grade higher', () => {
+  const room = { w: 18, d: 14, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const main = (id, x) => ({ id, x, y: 1, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true });
+  const sub = (id, x, y) => ({ id, x, y, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true });
+  const base = {
+    seats: [7, 9, 11].map((x, i) => ({ x, y: 9, z: 3.5, weight: i === 1 ? 1 : 0.7 })), reference: { x: 9, y: 9, z: 3.5 },
+    freqs: P.logSpacedFreqs(20, 120, 48), otherSources: [main(1, 4), main(2, 9), main(3, 14)], physicsCtx: ctx, mode: 'balanced'
+  };
+  const a = [sub(11, 1.75, 0.4), sub(12, 2.75, 0.4)], b = [sub(11, 0.5, 13.5), sub(12, 16.5, 13.5)];
+  const grade = (subs) => P.gradePlacement(base.seats, base.reference, base.freqs, base.otherSources.concat(subs), ctx, 'balanced').stats.score;
+  const gain = grade(b) - grade(a);
+  assert.ok(gain < -2, `the back-wall pair grades lower here (${gain.toFixed(2)} dB)`);
+
+  const kept = P.checkSubMoves({ ...base, current: a, picked: b });
+  assert.deepStrictEqual(kept.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  assert.deepStrictEqual(kept.moved, [false, false]);
+  approx(kept.gainDb, gain, 1e-9);
+  assert.notStrictEqual(kept.placedSubs[0], a[0], 'copies, not the caller\'s subs');
+
+  const taken = P.checkSubMoves({ ...base, current: b, picked: a });
+  assert.deepStrictEqual(taken.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  assert.deepStrictEqual(taken.moved, [true, true]);
+  approx(taken.gainDb, -gain, 1e-9);
+
+  const same = P.checkSubMoves({ ...base, current: a, picked: a.map(s => ({ ...s })) });
+  assert.strictEqual(same.gainDb, null, 'nothing moved, nothing graded');
+  assert.deepStrictEqual(same.moved, [false, false]);
+});
+
+test('checkSubMoves grades the picked subs time-aligned when asked, the current ones as they stand', () => {
+  const room = { w: 18, d: 14, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const listener = { x: 9, y: 9, z: 3.5, facing: 0 };
+  const sub = (id, x, y, delayMs) => ({ id, x, y, z: 1, levelDb: 0, delayMs, freqLow: 20, freqHigh: 80, enabled: true });
+  const opts = { seats: [listener], reference: listener, freqs: P.logSpacedFreqs(20, 120, 48), otherSources: [], physicsCtx: ctx, mode: 'balanced', timeAlignTo: listener,
+    current: [sub(1, 0.5, 0.5, 3), sub(2, 17.5, 0.5, 0)], picked: [sub(1, 0.5, 13.5, 3), sub(2, 17.5, 0.5, 0)] };
+  const grade = (sources) => P.gradePlacement([listener], listener, opts.freqs, sources, ctx, 'balanced').stats.score;
+  const expected = grade(P.timeAlignedSources(opts.picked, listener, room)) - grade(opts.current);
+  approx(P.checkSubMoves(opts).gainDb, expected, 1e-9);
+});
+
 console.log('\n-- nearestWallDistances --');
 
 test('nearestWallDistances picks the nearer side wall and the nearer end wall', () => {

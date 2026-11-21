@@ -716,8 +716,10 @@
       const status = body.querySelector('#guideOptimizeStatus');
       const result = body.querySelector('#guideResult');
       // What the last search led to: null (nothing yet), 'none' (no valid
-      // position), 'applied', or the outcome object while a suggestion is pending.
-      let outcome = app.optimizerOutcome();
+      // position), 'applied', 'kept' (nothing measured better than where the
+      // subs are), or the outcome object while a suggestion is pending.
+      const latest = () => app.optimizerUnchanged() ? 'kept' : app.optimizerOutcome();
+      let outcome = latest();
 
       body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
@@ -737,7 +739,7 @@
         if(!body.isConnected) return; // the step was left while the search ran
         runBtn.disabled = false;
         if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
-        outcome = kept ? app.optimizerOutcome() || 'none' : null;
+        outcome = kept ? latest() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
@@ -780,6 +782,8 @@
         else status.textContent = `Evaluated ${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}.`;
         result.innerHTML = outcome === 'none'
           ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
+          : outcome === 'kept'
+          ? `<div class="guide-result">${shapeWarning()}<p class="guide-verdict">${VERDICTS.worse}</p></div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();
