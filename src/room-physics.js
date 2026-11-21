@@ -1465,7 +1465,8 @@
   //   startWorker: () => a Worker (or anything with postMessage, onmessage
   //     and terminate) that answers each message with floorPlanWorkerReply
   //   onSolved: () => void, called when a newer plan for the floor plan
-  //     asked for most recently has arrived
+  //     asked for most recently has arrived, or when its solve failed
+  //     (the worker threw or died: see failed())
   //   cacheSize: how many floor plans to keep (default 6)
   // Only the floor plan asked for most recently is worked on: a full solve
   // of any other is stopped (the worker is replaced), and a preview of any
@@ -1503,10 +1504,11 @@
         running = null;
       }
       const entry = cache.get(wanted);
-      if(!entry || entry.full) return;
+      if(!entry || entry.full || entry.failed) return;
       if(!worker){
         worker = startWorker();
         worker.onmessage = (e) => received(e.data);
+        worker.onerror = (e) => { if(e && e.preventDefault) e.preventDefault(); crashed(); };
       }
       running = { key: wanted, cellM: entry.preview ? FLOOR_PLAN_CELL_M : FLOOR_PLAN_PREVIEW_CELL_M };
       worker.postMessage({ key: wanted, polygon: entry.polygon, cellM: running.cellM });
@@ -1524,6 +1526,22 @@
       work();
       if(entry && key === wanted && onSolved) onSolved();
     }
+    // The running solve threw or the worker died: that floor plan is marked
+    // failed (not tried again while it is kept), anyone waiting for it gets
+    // null, and the next floor plan asked for starts a new worker.
+    function crashed(){
+      const key = running && running.key;
+      running = null;
+      if(worker){ worker.terminate(); worker = null; }
+      const entry = key != null ? cache.get(key) : null;
+      if(entry){
+        entry.failed = true;
+        entry.waiters.forEach(resolve => resolve(null));
+        entry.waiters = [];
+      }
+      work();
+      if(entry && key === wanted && onSolved) onSolved();
+    }
 
     return {
       // The best plan solved so far for this floor plan (full size, else
@@ -1537,7 +1555,13 @@
       // plan is asked for before it is done.
       fullPlanFor(polygon){
         const entry = entryFor(polygon);
-        return entry.full ? Promise.resolve(entry.full) : new Promise(resolve => entry.waiters.push(resolve));
+        return entry.full ? Promise.resolve(entry.full) : entry.failed ? Promise.resolve(null) : new Promise(resolve => entry.waiters.push(resolve));
+      },
+      // True when solving this floor plan failed (its preview may still be
+      // there if only the full-size solve failed).
+      failed(polygon){
+        const entry = cache.get(floorPlanKey(polygon));
+        return !!(entry && entry.failed);
       }
     };
   }
@@ -2380,11 +2404,14 @@
   }
 
   // `rect` ({ x, y, width, height }) cut down to the part of it inside the
-  // room, or null when none of it is.
+  // room's overall width and depth, or null when none of it is on the floor
+  // (in a room with room.polygon, also when it lies wholly in a cut-out).
   function clipRectToRoom(rect, room){
     const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
     const x1 = Math.min(room.w, rect.x + rect.width), y1 = Math.min(room.d, rect.y + rect.height);
-    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+    if(!(x1 > x0 && y1 > y0)) return null;
+    const clipped = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+    return room.polygon && freeFloorFraction(room, [clipped]) > 1 - 1e-9 ? null : clipped;
   }
 
   // In a room with room.polygon, a candidate must also be inside the
@@ -2553,12 +2580,16 @@
 
   // Total number of grid cells scanGridCandidates will walk for a given room and
   // step size, using the identical loop bounds -- kept in sync by construction so
-  // it can never drift from the actual candidate count.
-  function countGridCells(room, gridStepFt){
+  // it can never drift from the actual candidate count. With `onFloorOnly`,
+  // only the cells on the floor (inside the walls of an L, T or U room, not
+  // in its bounding box's cut-outs) are counted.
+  function countGridCells(room, gridStepFt, onFloorOnly){
     const step = gridStepFt || 0.5;
     let n = 0;
     for(let x = step/2; x < room.w; x += step){
-      for(let y = step/2; y < room.d; y += step) n++;
+      for(let y = step/2; y < room.d; y += step){
+        if(!onFloorOnly || isCandidateValid(x, y, room)) n++;
+      }
     }
     return n;
   }

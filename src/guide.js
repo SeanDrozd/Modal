@@ -325,7 +325,8 @@
       syncShape();
       body.querySelector('#guideTemplates').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
-        if(btn) app.setRoomShape(btn.dataset.template);
+        // the shape the room already has keeps its wall lengths
+        if(btn && btn.dataset.template !== RoomPhysics.floorPlanTemplateKind(app.getRoom().polygon)) app.setRoomShape(btn.dataset.template);
       });
 
       // Width, length or height: the app clamps each to its supported
@@ -740,7 +741,7 @@
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
-        if(!kept) status.textContent = app.OPTIMIZER_DROPPED_TEXT;
+        if(!kept) status.textContent = kept === null ? app.SOLVE_FAILED_TEXT : app.OPTIMIZER_DROPPED_TEXT;
         // Bring the card up clear of the sticky footer, but never push its first line off the top.
         const scroller = panel.parentElement, card = result.getBoundingClientRect();
         const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;

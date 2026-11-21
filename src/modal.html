@@ -665,6 +665,8 @@ function applyAppearanceAttrs(mode, theme){
     renderRoomDimFields();
     renderOptimizerLengthFields();
     renderSrcList();
+    renderWallList();
+    renderListenerRowsList();
     draw();
   }
 
@@ -1668,10 +1670,13 @@ function applyAppearanceAttrs(mode, theme){
     const { label, w, d } = FURNITURE_TYPES[type];
     const width = Math.min(w, room.w), height = Math.min(d, room.d);
     const step = (offLimitZones.filter(z => z.furnitureType).length % 6) * 0.5;
+    // centered on the floor nearest the room's middle, so it never drops
+    // into a cut-out of an L, T or U room
+    const center = RoomPhysics.clampToFloorPlan(room.w/2 + step, room.d/2 + step, room, Math.min(width, height)/2);
     offLimitZones.push({
       id: nextId++, name: label, furnitureType: type,
-      x: Math.min(room.w - width, (room.w - width)/2 + step),
-      y: Math.min(room.d - height, (room.d - height)/2 + step),
+      x: Math.max(0, Math.min(room.w - width, center.x - width/2)),
+      y: Math.max(0, Math.min(room.d - height, center.y - height/2)),
       width, height,
       ...at
     });
@@ -2110,7 +2115,7 @@ function applyAppearanceAttrs(mode, theme){
     const numSubs = Math.max(1, Math.round(parseFloat(document.getElementById('optNumSubs').value) || 1));
     const status = document.getElementById('optimizerStatus');
 
-    if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
+    if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
     const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
     const scene = optimizerScene();
@@ -2170,7 +2175,7 @@ function applyAppearanceAttrs(mode, theme){
     const step = optGridStepFt;
     const status = document.getElementById('optimizerStatus');
 
-    if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
+    if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
     const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
 
@@ -2183,7 +2188,7 @@ function applyAppearanceAttrs(mode, theme){
     const existingSubs = scene.sources.filter(isSubSource);
     const otherSources = scene.sources.filter(s => !isSubSource(s));
     if(existingSubs.length === 0){
-      status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
+      optimizerStopped('No existing subs to re-optimize.');
       return;
     }
 
@@ -2330,10 +2335,12 @@ function applyAppearanceAttrs(mode, theme){
 
   // The 2D canvas (`cv`) always draws overlays on top and, in CPU mode, the
   // field itself. In GPU mode the field is drawn into `cvGL` underneath, so
-  // `cv` needs a transparent background so cvGL shows through.
+  // `cv` needs a transparent background so cvGL shows through. While a
+  // new room shape is solved (no field yet) cvGL is hidden, since it still
+  // holds the old room's field.
   function usesGPU(){ return renderMode === 'gpu' && gpuAvailable; }
   function setCanvasStackVisibility(){
-    canvasGL.style.display = (mapView === 'pressure' && usesGPU()) ? 'block' : 'none';
+    canvasGL.style.display = (mapView === 'pressure' && usesGPU() && fieldReady()) ? 'block' : 'none';
   }
   setCanvasStackVisibility();
 
@@ -2563,7 +2570,7 @@ function applyAppearanceAttrs(mode, theme){
 
     drawRoomFrame(offX, offY, scale, w, d, floor);
     if(mapView === 'pressure' && !fieldReady() && !shapeDrag){
-      const note = "Working out this room's modes...";
+      const note = floorPlans.failed(room.polygon) ? "Couldn't work out this room's modes. Try moving a wall slightly." : "Working out this room's modes...";
       ctx.font = 'bold 16px sans-serif';
       drawNameChip(note, offX + (w*scale - ctx.measureText(note).width - 12)/2, offY + d*scale/2, '#e8ecf1');
     }
@@ -3977,8 +3984,10 @@ function applyAppearanceAttrs(mode, theme){
     return optimizerRun;
   }
   // Resolves to false when the result was dropped because the room changed
-  // during the search, true otherwise.
+  // during the search, to null when the room's modes could not be worked
+  // out, true otherwise.
   const OPTIMIZER_DROPPED_TEXT = 'The room changed while the search ran, so its result was dropped. Run it again.';
+  const SOLVE_FAILED_TEXT = "Couldn't work out this room's modes, so there is nothing to search. Try moving a wall slightly.";
   async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
     setOptimizerButtonsDisabled(true);
@@ -3990,6 +3999,10 @@ function applyAppearanceAttrs(mode, theme){
       if(!isRectangleRoom()){
         document.getElementById('optimizerStatus').textContent = "Working out this room's modes...";
         await floorPlans.fullPlanFor(room.polygon);
+        if(floorPlans.failed(room.polygon) && sceneChangeCount === changesAtStart){
+          document.getElementById('optimizerStatus').textContent = SOLVE_FAILED_TEXT;
+          return null;
+        }
       }
       if(sceneChangeCount === changesAtStart) await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
       if(sceneChangeCount !== changesAtStart){
@@ -4017,6 +4030,12 @@ function applyAppearanceAttrs(mode, theme){
   function clearOptimizerResult(){
     resetOptimizerPanel();
     draw();
+  }
+  // A search that stops before it starts: any earlier suggestion goes too,
+  // so Accept can't apply it under the label of the search just clicked.
+  function optimizerStopped(message){
+    clearOptimizerResult();
+    document.getElementById('optimizerStatus').innerHTML = `<span style="color:var(--bad)">${message}</span>`;
   }
   document.getElementById('clearOptimizerBtn').addEventListener('click', clearOptimizerResult);
   function applyOptimizerResult(){
@@ -4296,11 +4315,12 @@ function applyAppearanceAttrs(mode, theme){
     }
     return true;
   }
-  function shapeMouseUp(){
+  function shapeMouseUp(evt){
     if(!shapeDrag) return false;
     const { corner, moved } = shapeDrag;
     shapeDrag = null; // the map fits the room again
-    if(!moved && corner != null){
+    // a press the browser cancelled (palm rejection, a system gesture) is not a click
+    if(!moved && corner != null && evt.type !== 'pointercancel'){
       const poly = room.polygon;
       applyFloorPlanEdit(RoomPhysics.isConvexCorner(poly, corner) ? RoomPhysics.cutFloorPlanCorner(poly, corner, NOTCH_FT) : RoomPhysics.fillFloorPlanCorner(poly, corner));
     }
@@ -4358,8 +4378,8 @@ function applyAppearanceAttrs(mode, theme){
     if(zoneMouseMove(e)) return;
     if(dragTarget != null) moveTarget(e);
   });
-  function endCanvasDrag(){
-    if(!shapeMouseUp() && !zoneMouseUp()) dragTarget = null;
+  function endCanvasDrag(evt){
+    if(!shapeMouseUp(evt) && !zoneMouseUp()) dragTarget = null;
     canvas.classList.remove('dragging');
   }
   canvas.addEventListener('pointerup', endCanvasDrag);
@@ -4442,6 +4462,39 @@ function applyAppearanceAttrs(mode, theme){
     }
     return result;
   }
+  // The guide's Flip: mirrors the walls (RoomPhysics.mirrorFloorPlan) and
+  // what is in the room with them, so seats, subs and furniture stay in the
+  // same part of the room. Left to right, the mains mirror too, each pair's
+  // left and right channels trading places so FL stays on the left, and
+  // seats turn to match. Front to back, the mains stay at the front wall:
+  // those with a standard name go to their standard spots for the mirrored
+  // seat, and seats keep facing the front.
+  const MIRRORED_CHANNEL = { FL: 'FR', FR: 'FL', SL: 'SR', SR: 'SL', SBL: 'SBR', SBR: 'SBL', FWL: 'FWR', FWR: 'FWL' };
+  function mirrorRoomWithContents(axis){
+    const result = RoomPhysics.mirrorFloorPlan(room.polygon, axis);
+    if(!result) return false;
+    const size = axis === 'x' ? room.w : room.d, extent = axis === 'x' ? 'width' : 'height';
+    const mains = sources.filter(s => !isSubSource(s));
+    const moving = listenerRows.concat(sources.filter(isSubSource), axis === 'x' ? mains : []);
+    for(const p of moving) p[axis] = size - p[axis];
+    for(const z of offLimitZones.concat(allowedZones, preferredZones)) z[axis] = size - z[axis] - z[extent];
+    if(axis === 'x'){
+      for(const row of listenerRows) row.facing = (360 - row.facing) % 360;
+      const byName = new Map(mains.map(s => [s.name, s]));
+      for(const [name, other] of Object.entries(MIRRORED_CHANNEL)){
+        const a = byName.get(name), b = byName.get(other);
+        if(a && b && name < other) [a.x, a.y, b.x, b.y] = [b.x, b.y, a.x, a.y];
+      }
+    }
+    if(!applyFloorPlanEdit(result)) return false;
+    if(axis === 'y'){
+      for(const p of RoomPhysics.standardSpeakerPositions(room, primaryRow(), mains.map(s => s.name))){
+        Object.assign(mains.find(s => s.name === p.name), { x: p.x, y: p.y });
+      }
+      edited('layout', 'sources');
+    }
+    return true;
+  }
   function setRoomDimKeepingStarterLayout(dim, ft){
     return dim === 'h' ? setRoomDim(dim, ft) : keepingStarterLayout(() => setRoomDim(dim, ft));
   }
@@ -4493,7 +4546,7 @@ function applyAppearanceAttrs(mode, theme){
     // back), or with wall i's length set (RoomPhysics.setFloorPlanWallLength).
     // Each returns false, changing nothing, when the room can't take it.
     setRoomShape: (kind) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.floorPlanFromTemplate(room.polygon, kind))),
-    mirrorRoom: (axis) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.mirrorFloorPlan(room.polygon, axis))),
+    mirrorRoom: (axis) => keepingStarterLayout(() => mirrorRoomWithContents(axis)),
     setWallLength: (i, ft) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))),
     // Each wall's name, as the Walls list shows it.
     wallLabels,
@@ -4569,14 +4622,15 @@ function applyAppearanceAttrs(mode, theme){
       freqLow: parseFloat(document.getElementById('optFreqLow').value) || 20,
       freqHigh: parseFloat(document.getElementById('optFreqHigh').value) || 120,
       gridStepFt: optGridStepFt, subHeightFt: optSubHeightFt,
-      positions: RoomPhysics.countGridCells(room, optGridStepFt),
+      positions: RoomPhysics.countGridCells(room, optGridStepFt, true),
       seats: allSeatPositions().length
     }),
     setOptimizerMode,
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
     // search runs. Resolves when it is done, to false when the room changed
-    // meanwhile and the result was dropped; see optimizerOutcome. Called
+    // meanwhile and the result was dropped, or to null when the room's
+    // modes could not be worked out; see optimizerOutcome. Called
     // while a search is already running, it joins that one and takes over
     // its progress reports.
     async runOptimizer(newSubs, onProgress){
@@ -4586,6 +4640,7 @@ function applyAppearanceAttrs(mode, theme){
       try { return await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
     },
     OPTIMIZER_DROPPED_TEXT,
+    SOLVE_FAILED_TEXT,
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),

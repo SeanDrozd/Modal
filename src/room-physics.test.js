@@ -1037,6 +1037,11 @@ test('clipRectToRoom cuts a rect back to the room and drops one that lies outsid
   assert.deepStrictEqual(P.clipRectToRoom({ x: -1, y: 8, width: 3, height: 5 }, room), { x: 0, y: 8, width: 2, height: 2 }, 'cut at the left and back walls');
   assert.strictEqual(P.clipRectToRoom({ x: 13, y: 2, width: 3, height: 3 }, room), null, 'wholly outside');
   assert.strictEqual(P.clipRectToRoom({ x: 12, y: 2, width: 3, height: 3 }, room), null, 'only touching the wall');
+  // an L with a 4 x 3 ft notch out of the back right corner (inside corner at (8, 7))
+  const L = { w: 12, d: 10, h: 8, polygon: [{ x: 0, y: 0 }, { x: 12, y: 0 }, { x: 12, y: 7 }, { x: 8, y: 7 }, { x: 8, y: 10 }, { x: 0, y: 10 }] };
+  assert.strictEqual(P.clipRectToRoom({ x: 9, y: 8, width: 2, height: 1.5 }, L), null, 'wholly in the cut-out');
+  assert.strictEqual(P.clipRectToRoom({ x: 8, y: 7, width: 4, height: 3 }, L), null, 'filling the cut-out exactly');
+  assert.deepStrictEqual(P.clipRectToRoom({ x: 6, y: 6, width: 4, height: 3 }, L), { x: 6, y: 6, width: 4, height: 3 }, 'partly on the floor: kept');
 });
 
 console.log('\n-- scoreResponses / seatToSeatVariationDb / comparePlacements --');
@@ -3280,6 +3285,13 @@ test('nearestWallDistances in an L room measures to the notch\'s walls where the
   }
 });
 
+test('countGridCells with onFloorOnly leaves out the cells in a cut-out', () => {
+  // lShapedRoom: 24 x 20 with a 10 x 8 notch, so at 1 ft 480 cells, 80 of them in the notch
+  assert.strictEqual(P.countGridCells(lShapedRoom, 1), 480);
+  assert.strictEqual(P.countGridCells(lShapedRoom, 1, true), 400);
+  assert.strictEqual(P.countGridCells(baseRoom, 0.5, true), P.countGridCells(baseRoom, 0.5));
+});
+
 test('wallsAround gives the first wall each way, a notch wall where it is the nearer that way', () => {
   assert.deepStrictEqual(P.wallsAround({ x: 2.25, y: 1 }, baseRoom), {
     left: { wall: 'left', distFt: 2.25, x: 0 }, right: { wall: 'right', distFt: 15.75, x: 18 },
@@ -3648,6 +3660,31 @@ testAsync('createFloorPlanSolver stops a full solve that is no longer wanted, le
   assert.strictEqual(log.posted.length, before + 1); // only its full solve is sent
 });
 const floorKeyOf = (msg) => msg.key;
+testAsync('createFloorPlanSolver marks a floor plan failed when its solve throws, and keeps working on the next one', async () => {
+  const { log, startWorker } = fakeFloorPlanWorkers();
+  let solved = 0;
+  // the first worker dies on its first message instead of answering
+  const failing = () => {
+    const worker = startWorker();
+    if(log.started === 1) worker.postMessage = (msg) => { log.posted.push(msg); setTimeout(() => worker.onerror({ message: 'boom' }), 0); };
+    return worker;
+  };
+  const solver = P.createFloorPlanSolver({ startWorker: failing, onSolved: () => solved++ });
+  const waiting = solver.fullPlanFor(smallL);
+  assert.strictEqual(await waiting, null);
+  assert.strictEqual(solver.failed(smallL), true);
+  assert.strictEqual(solved, 1);
+  assert.strictEqual(log.terminated, 1);
+  // not tried again, and later waiters get null at once
+  assert.strictEqual(await solver.fullPlanFor(smallL), null);
+  assert.strictEqual(log.posted.length, 1);
+  // another shape gets a new worker and solves
+  const full = await solver.fullPlanFor(smallU);
+  assert.strictEqual(full.cellM, P.FLOOR_PLAN_CELL_M);
+  assert.strictEqual(solver.failed(smallU), false);
+  assert.strictEqual(log.started, 2);
+});
+
 
 testAsync('createFloorPlanSolver keeps only the most recent cacheSize floor plans', async () => {
   const { log, startWorker } = fakeFloorPlanWorkers();
