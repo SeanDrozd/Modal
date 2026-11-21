@@ -732,6 +732,7 @@
       async function run(){
         runBtn.disabled = true;
         result.innerHTML = '';
+        shown = undefined; // the card was just cleared, so the next refresh rebuilds it even for the same outcome as before
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
         const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
           status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
