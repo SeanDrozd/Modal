@@ -574,14 +574,9 @@ function applyAppearanceAttrs(mode, theme){
       offLimitZones = clip(offLimitZones);
       allowedZones = clip(allowedZones);
       preferredZones = clip(preferredZones);
-      renderZoneList();
     }
-    if(room[dim] !== before) sceneChanged();
-    autoTimeAlign();
-    renderSrcList();
-    renderListenerRowsList();
     writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
-    draw();
+    if(room[dim] !== before) edited('room');
     return room[dim];
   }
 
@@ -833,12 +828,12 @@ function applyAppearanceAttrs(mode, theme){
     updateUndoRedoButtons();
   }
   // An edit made within the last 500 ms is still waiting on its debounced
-  // snapshot. Undo and redo record it first, so it is the step that gets
-  // undone (or, for redo, a fresh change that clears the redo branch)
-  // instead of being silently folded into the step before it.
+  // snapshot, or, before its redraw has run, has not scheduled one yet. Undo
+  // and redo record it first, so it is the step that gets undone (or, for
+  // redo, a fresh change that clears the redo branch) instead of being
+  // silently folded into the step before it.
   function flushPendingUndoSnapshot(){
-    if(!undoSnapshotTimer) return;
-    clearTimeout(undoSnapshotTimer);
+    if(undoSnapshotTimer) clearTimeout(undoSnapshotTimer);
     commitUndoSnapshotIfChanged();
   }
   function undo(){
@@ -1170,9 +1165,8 @@ function applyAppearanceAttrs(mode, theme){
       block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
         s.enabled = this.checked;
         block.style.opacity = this.checked ? '1' : '0.5';
-        autoTimeAlign(); syncDelaySlidersFromState(); // the active-source set changed, which time-align depends on
         updateReoptimizeExistingVisibility(); // enabling/disabling a sub changes whether there's anything to re-optimize
-        scheduleDraw();
+        edited('layout'); // the active-source set changed, which time-align depends on
       });
       block.querySelector('[data-field="name"]').addEventListener('input', function(){
         s.name = this.value || ('Source '+s.id);
@@ -1185,15 +1179,13 @@ function applyAppearanceAttrs(mode, theme){
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(sources.length <= 1){ showStatus('Keep at least one source', false); return; }
         sources = sources.filter(x => x.id !== s.id);
-        autoTimeAlign();
-        renderSrcList();
-        draw();
+        edited('layout', 'sources');
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(sources, idx, -1)){ renderSrcList(); scheduleDraw(); }
+        if(moveArrayItem(sources, idx, -1)) edited('sources');
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(sources, idx, 1)){ renderSrcList(); scheduleDraw(); }
+        if(moveArrayItem(sources, idx, 1)) edited('sources');
       });
       const lvl = block.querySelector('[data-field="levelDb"]');
       lvl.addEventListener('input', function(){
@@ -1224,8 +1216,7 @@ function applyAppearanceAttrs(mode, theme){
       });
       wireLengthField(block, 'z', (ft) => {
         s.z = Math.max(0, Math.min(room.h, ft || 0));
-        autoTimeAlign(); syncDelaySlidersFromState();
-        draw();
+        edited('layout');
       });
     });
     updateReoptimizeExistingVisibility();
@@ -1287,16 +1278,10 @@ function applyAppearanceAttrs(mode, theme){
         if(!removeListenerRow(row.id)) showStatus('Keep at least one listening position', false);
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, -1)){
-          autoTimeAlign(); syncDelaySlidersFromState(); // reordering can change which row is rank 1
-          renderListenerRowsList(); scheduleDraw();
-        }
+        if(moveArrayItem(listenerRows, idx, -1)) edited('layout', 'rows'); // reordering can change which row is rank 1
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, 1)){
-          autoTimeAlign(); syncDelaySlidersFromState();
-          renderListenerRowsList(); scheduleDraw();
-        }
+        if(moveArrayItem(listenerRows, idx, 1)) edited('layout', 'rows');
       });
       const seatsInput = block.querySelector('[data-field="seats"]');
       seatsInput.addEventListener('change', function(){
@@ -1316,8 +1301,7 @@ function applyAppearanceAttrs(mode, theme){
       });
       wireLengthField(block, 'z', (ft) => {
         row.z = Math.max(0, Math.min(room.h, ft || 0));
-        autoTimeAlign(); syncDelaySlidersFromState();
-        draw();
+        edited('layout');
       });
     });
   }
@@ -1493,8 +1477,7 @@ function applyAppearanceAttrs(mode, theme){
       width, height,
       ...at
     });
-    renderZoneList();
-    draw();
+    edited('zones');
   }
   (function initFurniturePalette(){
     const palette = document.getElementById('furniturePalette');
@@ -1534,8 +1517,7 @@ function applyAppearanceAttrs(mode, theme){
     if(kind === 'offlimit') offLimitZones = offLimitZones.filter(x => x.id !== id);
     else if(kind === 'allowed') allowedZones = allowedZones.filter(x => x.id !== id);
     else preferredZones = preferredZones.filter(x => x.id !== id);
-    renderZoneList();
-    draw();
+    edited('zones');
   }
   function renderZoneList(){
     updateFloorCoverageWarning();
@@ -1634,9 +1616,7 @@ function applyAppearanceAttrs(mode, theme){
   document.getElementById('addMainBtn').addEventListener('click', () => {
     const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
     sources.push(newMainSource(nextMainName(), Math.min(room.w-1, 2 + n*1.5), 1.5));
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   });
   // Replaces the main speakers with the first `count` standard channels
   // (MAIN_CHANNEL_NAMES order), each at its usual spot for the primary seat
@@ -1645,9 +1625,7 @@ function applyAppearanceAttrs(mode, theme){
   function setMainLayout(count){
     const spots = RoomPhysics.standardSpeakerPositions(room, primaryRow(), MAIN_CHANNEL_NAMES.slice(0, count));
     sources = [...spots.map(p => newMainSource(p.name, p.x, p.y)), ...sources.filter(isSubSource)];
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
     return spots;
   }
 
@@ -1668,9 +1646,7 @@ function applyAppearanceAttrs(mode, theme){
   }
   document.getElementById('addSubBtn').addEventListener('click', () => {
     sources.push(newSubSource());
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   });
   // Adds subs, or removes the most recently added ones, until there are `count`.
   function setSubCount(count){
@@ -1678,9 +1654,7 @@ function applyAppearanceAttrs(mode, theme){
     const dropped = new Set(subs.slice(count).map(s => s.id));
     sources = sources.filter(s => !dropped.has(s.id));
     for(let i = subs.length; i < count; i++) sources.push(newSubSource());
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   }
 
   // The row edits below are shared by the sidebar's list and the setup guide.
@@ -1695,16 +1669,13 @@ function applyAppearanceAttrs(mode, theme){
       y: Math.max(1, room.d - 1.5 - n*1.5),
       z: 3.5, facing: 0, seats: 1, spacingFt: 2
     });
-    renderListenerRowsList();
-    draw();
+    edited('rows');
     return true;
   }
   function removeListenerRow(id){
     if(listenerRows.length <= 1) return false;
     listenerRows = listenerRows.filter(r => r.id !== id);
-    autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
-    renderListenerRowsList();
-    draw();
+    edited('layout', 'rows'); // rank 1 may have changed if this row was it
     return true;
   }
   // Sets a row's seat count, clamped to 1..LISTENER_ROW_MAX_SEATS, and returns what was stored.
@@ -1720,15 +1691,13 @@ function applyAppearanceAttrs(mode, theme){
   document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
     const slope = parseInt(document.getElementById('bulkRolloffSelect').value, 10);
     sources.forEach(s => { s.rolloffDbPerOct = slope; });
-    renderSrcList();
-    draw();
+    edited('sources');
   });
 
   document.getElementById('autoTimeAlignToggle').addEventListener('change', function(){
     autoTimeAlignEnabled = this.checked;
-    if(autoTimeAlignEnabled){ autoTimeAlign(); renderSrcList(); } // snap into alignment immediately, not just on the next move
     saveSessionSettings();
-    draw();
+    edited('layout'); // turning it on snaps into alignment immediately, not just on the next move
   });
 
   // Recomputes every active source's delay so its direct sound arrives at
@@ -1776,6 +1745,30 @@ function applyAppearanceAttrs(mode, theme){
       if(dly) dly.value = s.delayMs;
       if(out) out.textContent = s.delayMs.toFixed(1);
     });
+  }
+
+  // ---- Edits ----
+  // Every edit to the scene ends in one call to edited(), naming what it
+  // changed, and edited() runs every follow-up those changes need, so no
+  // edit site has to remember them:
+  //   'layout'   where a source or seat stands, which sources are active, or
+  //              which row ranks first: automatic time-align runs again
+  //   'sources'  the source list itself: its sidebar list is rebuilt
+  //   'rows'     the listening rows: their sidebar list is rebuilt
+  //   'zones'    the zones: their list and the floor coverage warning are rebuilt
+  //   'room'     the room's size: a pending optimizer suggestion, or a running
+  //              search's result, is dropped, and all of the above run
+  // It then redraws on the next frame, and the redraw records the undo step.
+  // An edit with no follow-up (a level, a name, a filter slope) only redraws.
+  function edited(...what){
+    const has = (kind) => what.includes(kind) || what.includes('room');
+    if(what.includes('room')) sceneChanged();
+    if(has('layout')) autoTimeAlign();
+    if(has('sources')) renderSrcList();
+    else if(has('layout')) syncDelaySlidersFromState(); // cheap, no DOM rebuild: a drag edits the layout on every mousemove
+    if(has('rows')) renderListenerRowsList();
+    if(has('zones')) renderZoneList();
+    scheduleDraw();
   }
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
@@ -3691,9 +3684,8 @@ function applyAppearanceAttrs(mode, theme){
         sources.push(s); // already has a real id assigned when created in runSubOptimizer
       }
     }
-    autoTimeAlign();
-    renderSrcList();
-    clearOptimizerResult();
+    resetOptimizerPanel();
+    edited('layout', 'sources');
   }
   document.getElementById('acceptOptimizerBtn').addEventListener('click', applyOptimizerResult);
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
@@ -3870,8 +3862,7 @@ function applyAppearanceAttrs(mode, theme){
       }
       updateZoneDrawHint();
     }
-    renderZoneList();
-    draw();
+    edited('zones');
     return true;
   }
 
@@ -3885,8 +3876,7 @@ function applyAppearanceAttrs(mode, theme){
   function moveToRoomPoint(id, x, y){
     const target = sources.find(s=>s.id===id) || listenerRows.find(r=>r.id===id);
     if(target) Object.assign(target, insideRoom(x, y));
-    autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
-    scheduleDraw();
+    edited('layout');
   }
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
@@ -4001,9 +3991,7 @@ function applyAppearanceAttrs(mode, theme){
           Object.assign(mains.find(s => s.name === p.name), { x: p.x, y: p.y });
         }
       }
-      autoTimeAlign();
-      renderSrcList();
-      draw();
+      edited('layout', 'sources');
     }
     return stored;
   }
@@ -4082,8 +4070,8 @@ function applyAppearanceAttrs(mode, theme){
     addRow: addListenerRow,
     removeRow: removeListenerRow,
     // These two redraw the sidebar's own row list, which edits rows in place.
-    setRowSeats(id, seats){ setRowSeats(listenerRows.find(r => r.id === id), seats); renderListenerRowsList(); },
-    setRowFacing(id, deg){ listenerRows.find(r => r.id === id).facing = deg; renderListenerRowsList(); draw(); },
+    setRowSeats(id, seats){ setRowSeats(listenerRows.find(r => r.id === id), seats); edited('rows'); },
+    setRowFacing(id, deg){ listenerRows.find(r => r.id === id).facing = deg; edited('rows'); },
     furnitureTypes: Object.entries(FURNITURE_TYPES).map(([type, { label, icon }]) => ({ type, label, icon })),
     addFurniture,
     getZones: () => allZones().map(z => ({ id: z.id, kind: z.kind, name: z.name, isFurniture: !!FURNITURE_TYPES[z.furnitureType], width: z.width, height: z.height })),
