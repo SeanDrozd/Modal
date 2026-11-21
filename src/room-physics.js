@@ -1407,6 +1407,44 @@
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
   }
 
+  // Two subs are interchangeable when everything the physics reads apart from
+  // their position matches, so trading places leaves the room sounding
+  // exactly the same. Delay only counts when time alignment will not
+  // re-derive it.
+  function subSwapKey(s, timeAligned){
+    return JSON.stringify([s.levelDb ?? 0, s.freqLow, s.freqHigh, s.rolloffDbPerOct ?? 24, s.z ?? 3, timeAligned ? 0 : (s.delayMs ?? 0)]);
+  }
+
+  // Given subs at their current positions (`subs`) and the positions a search
+  // picked for them (`placed`, same order), hands the picked positions out
+  // among interchangeable subs (see subSwapKey) so the total distance moved
+  // is as small as possible: a search that refines one sub at a time can
+  // send a far sub to the spot right next to another. The layout the room
+  // hears is unchanged, and a sub that differs from the rest keeps the spot
+  // picked for it. Tries every order within a group, which is fine for the
+  // handful of subs a room holds. Returns copies of `placed`.
+  function assignNearestSpots(subs, placed, timeAligned){
+    const result = placed.map(p => Object.assign({}, p));
+    const groups = new Map();
+    subs.forEach((s, i) => {
+      const key = subSwapKey(s, timeAligned);
+      if(!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(i);
+    });
+    const orders = (items) => items.length <= 1 ? [items]
+      : items.flatMap((item, i) => orders(items.slice(0, i).concat(items.slice(i + 1))).map(rest => [item].concat(rest)));
+    for(const group of groups.values()){
+      if(group.length < 2) continue;
+      let bestOrder = group, bestDist = Infinity;
+      for(const order of orders(group)){
+        const dist = group.reduce((sum, i, j) => sum + Math.hypot(placed[order[j]].x - subs[i].x, placed[order[j]].y - subs[i].y), 0);
+        if(dist < bestDist - 1e-9){ bestDist = dist; bestOrder = order; }
+      }
+      group.forEach((i, j) => { result[i].x = placed[bestOrder[j]].x; result[i].y = placed[bestOrder[j]].y; });
+    }
+    return result;
+  }
+
   // Coordinate-descent polish, as its own reusable entry point: given a set of
   // ALREADY-PLACED subs (however they got there -- a fresh greedy placement
   // above, or a caller's own real current sub positions), revisits each in
@@ -1424,7 +1462,9 @@
   // reproduces identical behavior for that existing use case).
   //
   // Returns { placedSubs, polishResults, moved }, where moved[i] is true if
-  // subs[i]'s position actually changed.
+  // subs[i]'s position actually changed. The final positions are handed out
+  // with assignNearestSpots, so each sub travels to the nearest of the
+  // picked spots it could equally take.
   function polishSubPlacements(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
@@ -1433,7 +1473,6 @@
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
-    const moved = placedSubs.map(() => false);
     if(placedSubs.length >= 2){
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
@@ -1460,7 +1499,6 @@
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
             anyMoved = true;
-            moved[k] = true;
           }
           placedSubs[k].x = roundResult.best.x;
           placedSubs[k].y = roundResult.best.y;
@@ -1469,7 +1507,13 @@
         if(!anyMoved) break; // converged; every later pass would be identical
       }
     }
-    return { placedSubs, polishResults, moved };
+    return finishPolish(subs, placedSubs, polishResults, timeAlignTo);
+  }
+
+  function finishPolish(subs, placedSubs, polishResults, timeAlignTo){
+    const assigned = assignNearestSpots(subs, placedSubs, !!timeAlignTo);
+    const moved = assigned.map((p, i) => p.x !== subs[i].x || p.y !== subs[i].y);
+    return { placedSubs: assigned, polishResults, moved };
   }
 
   // Async/chunked twin of polishSubPlacements, for the same reason
@@ -1487,7 +1531,6 @@
     const modes = precomputedModes || enumerateModes(physicsCtx);
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
-    const moved = placedSubs.map(() => false);
     if(placedSubs.length >= 2){
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
@@ -1507,7 +1550,6 @@
           if(roundResult.best === null) continue;
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
             anyMoved = true;
-            moved[k] = true;
           }
           placedSubs[k].x = roundResult.best.x;
           placedSubs[k].y = roundResult.best.y;
@@ -1516,7 +1558,7 @@
         if(!anyMoved) break;
       }
     }
-    return { placedSubs, polishResults, moved };
+    return finishPolish(subs, placedSubs, polishResults, timeAlignTo);
   }
 
   // Async/chunked twin of optimizeMultipleSubs, for the same reason
@@ -1631,6 +1673,7 @@
     SPEAKER_CLEARANCE_FT,
     speakerKeepOut,
     sourceExclusionPoints,
+    assignNearestSpots,
     NEW_SUB_DEFAULTS,
     scanGridCandidates,
     countGridCells,

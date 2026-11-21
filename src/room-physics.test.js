@@ -1524,6 +1524,48 @@ test('polishSubPlacements scores each sub as itself: its own level and passband,
   assert.strictEqual(result.placedSubs[0].freqHigh, 60);
 });
 
+test('assignNearestSpots hands picked spots to interchangeable subs by least total travel', () => {
+  const sub = (id, x, y, extra) => Object.assign({ id, x, y, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }, extra);
+  const subs = [sub(1, 3, 12.5), sub(2, 14, 12.5)];
+  const placed = [{ id: 1, x: 17.5, y: 1.5, z: 1 }, { id: 2, x: 0.5, y: 11.5, z: 1 }];
+  const swapped = P.assignNearestSpots(subs, placed, false);
+  assert.deepStrictEqual(swapped.map(p => [p.id, p.x, p.y]), [[1, 0.5, 11.5], [2, 17.5, 1.5]], 'identical subs trade spots');
+  assert.deepStrictEqual(placed.map(p => [p.x, p.y]), [[17.5, 1.5], [0.5, 11.5]], 'input is not changed');
+
+  const louder = [subs[0], sub(2, 14, 12.5, { levelDb: 3 })];
+  assert.deepStrictEqual(P.assignNearestSpots(louder, placed, false).map(p => [p.x, p.y]), [[17.5, 1.5], [0.5, 11.5]], 'a sub with its own level keeps its spot');
+
+  const delayed = [sub(1, 3, 12.5, { delayMs: 6 }), sub(2, 14, 12.5, { delayMs: 2.8 })];
+  assert.deepStrictEqual(P.assignNearestSpots(delayed, placed, false).map(p => [p.x, p.y]), [[17.5, 1.5], [0.5, 11.5]], 'different delays count without time alignment');
+  assert.deepStrictEqual(P.assignNearestSpots(delayed, placed, true).map(p => [p.x, p.y]), [[0.5, 11.5], [17.5, 1.5]], 'but not with it, since alignment re-derives them');
+
+  // Three identical subs: every one goes to the spot nearest it.
+  const three = [sub(1, 1, 1), sub(2, 9, 12), sub(3, 17, 1)];
+  const spots = [{ x: 9, y: 13 }, { x: 16, y: 0.5 }, { x: 0.5, y: 0.5 }];
+  assert.deepStrictEqual(P.assignNearestSpots(three, spots, false).map(p => [p.x, p.y]), [[0.5, 0.5], [9, 13], [16, 0.5]]);
+});
+
+test('REGRESSION: polishSubPlacements does not send each sub to the spot by the other one', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const main = (x, y) => ({ x, y, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 200, enabled: true });
+  const subs = [
+    { id: 1, x: 3, y: 12.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 2, x: 14, y: 12.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const result = P.polishSubPlacements({
+    room, otherSources: [main(1.5, 2), main(7, 2), main(12, 2), main(1, 10.1), main(17, 10.1)], subs,
+    freqList: P.optimizerFreqList(20, 120), listenerPositions: [5, 7, 9].map((x, i) => ({ x, y: 9.4, z: 3.5, weight: i === 1 ? 1 : 0.7 })),
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'balanced', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
+  });
+  // The search picks (17.5, 1.5) and (0.5, 11.5); before the fix sub 1 went
+  // across the room to (17.5, 1.5), 31.7 ft of travel in all.
+  assert.deepStrictEqual(result.placedSubs.map(p => [p.x, p.y]), [[0.5, 11.5], [17.5, 1.5]]);
+  const travel = result.placedSubs.reduce((sum, p, i) => sum + Math.hypot(p.x - subs[i].x, p.y - subs[i].y), 0);
+  approx(travel, 14.2, 0.05, 'total travel');
+  assert.deepStrictEqual(result.moved, [true, true]);
+});
+
 test('minSeparationFt is configurable and respected', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
