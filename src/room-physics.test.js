@@ -3293,6 +3293,44 @@ test('wallsAround gives the first wall each way, a notch wall where it is the ne
   assert.deepStrictEqual(P.wallsAround({ x: 10, y: 16 }, lShapedRoom).right, { wall: 'right', distFt: 4, x: 14, index: 3 });
 });
 
+test('floorPlanPathLength is the straight line when it stays on the floor, including along a wall', () => {
+  approx(P.floorPlanPathLength({ x: 1, y: 1 }, { x: 17, y: 12 }, P.rectanglePolygon(18, 13.5)), Math.hypot(16, 11), 1e-9);
+  // in the L (inside corner at (14, 12)), along the notch's side wall x = 14 and its top wall y = 12
+  approx(P.floorPlanPathLength({ x: 14, y: 2 }, { x: 14, y: 19 }, lPoly), 17, 1e-9);
+  approx(P.floorPlanPathLength({ x: 2, y: 12 }, { x: 23, y: 12 }, lPoly), 21, 1e-9);
+});
+
+test('floorPlanPathLength bends round inside corners when the straight line leaves the room', () => {
+  // L: from beside the notch to below it, round (14, 12)
+  approx(P.floorPlanPathLength({ x: 10, y: 18 }, { x: 22, y: 10 }, lPoly), Math.hypot(4, 6) + Math.hypot(8, 2), 1e-9);
+  // U: arm to arm, round both inside corners (7.5, 11) and (14.5, 11)
+  const U = P.floorPlanTemplate('U', 22, 18);
+  approx(P.floorPlanPathLength({ x: 3, y: 15 }, { x: 19, y: 15 }, U), 2 * Math.hypot(4.5, 4) + 7, 1e-9);
+});
+
+test('soundPathFt adds the height difference to the floor path, and is the straight line without a polygon', () => {
+  const U = { w: 22, d: 18, h: 8, polygon: P.floorPlanTemplate('U', 22, 18) };
+  const sub = { x: 19, y: 15, z: 1 }, seat = { x: 3, y: 15, z: 3.5 };
+  approx(P.soundPathFt(sub, seat, U), Math.hypot(2 * Math.hypot(4.5, 4) + 7, 2.5), 1e-9);
+  approx(P.soundPathFt(sub, seat, { w: 22, d: 18, h: 8 }), Math.hypot(16, 2.5), 1e-9);
+  approx(P.soundPathFt(sub, seat), Math.hypot(16, 2.5), 1e-9);
+});
+
+test('timeAlignDelays with a polygon room uses the path round the corner, as an AVR would measure it', () => {
+  const U = { w: 22, d: 18, h: 8, polygon: P.floorPlanTemplate('U', 22, 18) };
+  const seat = { x: 3, y: 15, z: 3.5 };
+  const sources = [{ id: 'near', x: 3, y: 5, z: 3.5 }, { id: 'sub', x: 19, y: 15, z: 3.5 }];
+  const straight = P.timeAlignDelays(sources, seat);
+  const round = P.timeAlignDelays(sources, seat, undefined, U);
+  approx(straight[0].delayMs, (16 - 10) * 0.3048 / P.C * 1000, 1e-9);
+  approx(round[0].delayMs, (2 * Math.hypot(4.5, 4) + 7 - 10) * 0.3048 / P.C * 1000, 1e-9);
+  assert.strictEqual(round[1].delayMs, 0);
+  // a rectangle's polygon changes nothing
+  const rect = { w: 18, d: 13.5, h: 8, polygon: P.rectanglePolygon(18, 13.5) };
+  const pts = [{ id: 1, x: 2, y: 2, z: 3 }, { id: 2, x: 16, y: 11, z: 1 }];
+  assert.deepStrictEqual(P.timeAlignDelays(pts, { x: 9, y: 9, z: 3.5 }, 0.1, rect), P.timeAlignDelays(pts, { x: 9, y: 9, z: 3.5 }, 0.1));
+});
+
 test('speakerKeepOut runs back to a notch wall when that is the nearest wall', () => {
   const r = P.speakerKeepOut({ x: 13, y: 16 }, lShapedRoom); // 1 ft from the notch's side wall x = 14
   assert.deepStrictEqual(r, { x: 12, y: 15, width: 2, height: 2 });

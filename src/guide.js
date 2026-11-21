@@ -825,7 +825,7 @@
                 ? `<p>Re-run room correction after moving the sub and keep the sub distance it sets. These systems measure when the sound actually arrives at the mic, so the distance they set includes the sub's own processing delay (amp and DSP, and more for wireless subs). It will usually read longer than the tape-measured distance. That is expected; don't "correct" it.</p>`
                 : `<p>${rc === 'no' ? 'Without room correction' : 'If you have no room correction'}, start with the geometric distance below. It doesn't include the sub's processing delay, so verify with a measurement mic (REW, for example) if you can.</p>
                    <p>If your AVR has room correction (Audyssey, YPAO, Dirac Live, MCACC, AccuEQ, ARC and the like), run it after moving the sub and keep the sub distance it sets. That figure includes the sub's processing delay and will usually read longer than the tape-measured distance. That is expected; don't "correct" it.</p>`}
-              <ul>${plan.map(p => `<li>${esc(p.name)}: <strong>${esc(app.formatLength(p.seatDistanceFt))}</strong> to the main seat. Geometric distance (tape-measure equivalent).</li>`).join('')}</ul>
+              <ul>${plan.map(p => `<li>${esc(p.name)}: <strong>${esc(app.formatLength(p.seatDistanceFt))}</strong> to the main seat. Geometric distance (tape-measure equivalent)${p.aroundCorner ? ', measured round the corner, since the straight line passes outside the room' : ''}.</li>`).join('')}</ul>
             </li>
           </ol>`}`;
         if(sheet.dataset.html !== html){ sheet.dataset.html = html; sheet.innerHTML = html; }
