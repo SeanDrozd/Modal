@@ -716,18 +716,10 @@
       const status = body.querySelector('#guideOptimizeStatus');
       const result = body.querySelector('#guideResult');
       // What the last search led to: null (nothing yet), 'none' (no valid
-      // position), 'applied', 'kept' (the subs measure better where they
-      // are), or the outcome object while a suggestion is pending.
-      let outcome, keptGainDb;
-      // A suggestion that measures worse than the current placement is no
-      // suggestion: it is dropped, so the map shows no markers for it.
-      function settle(o){
-        if(!o || typeof o !== 'object' || !o.comparison || o.comparison.verdict !== 'worse') return o;
-        keptGainDb = o.comparison.gainDb;
-        app.clearOptimizerResult();
-        return 'kept';
-      }
-      outcome = settle(app.optimizerOutcome());
+      // position), 'applied', 'kept' (nothing measured better than where the
+      // subs are), or the outcome object while a suggestion is pending.
+      const latest = () => app.optimizerUnchanged() ? 'kept' : app.optimizerOutcome();
+      let outcome = latest();
 
       body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
@@ -747,7 +739,7 @@
         if(!body.isConnected) return; // the step was left while the search ran
         runBtn.disabled = false;
         if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
-        outcome = kept ? settle(app.optimizerOutcome()) || 'none' : null;
+        outcome = kept ? latest() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
@@ -791,7 +783,7 @@
         result.innerHTML = outcome === 'none'
           ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
           : outcome === 'kept'
-          ? `<div class="guide-result">${shapeWarning()}<p class="guide-verdict">${VERDICTS.worse}</p><p class="guide-hint">The best placement the search found scored ${Math.abs(keptGainDb).toFixed(1)} dB lower than yours${term('score')}, so there is nothing to move.</p></div>`
+          ? `<div class="guide-result">${shapeWarning()}<p class="guide-verdict">${VERDICTS.worse}</p></div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();

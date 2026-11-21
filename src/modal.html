@@ -2092,6 +2092,14 @@ function applyAppearanceAttrs(mode, theme){
   // result will re-run automatic time-align, so candidates are scored with
   // the delays they will really get.
   // The solved floor plan is not copied: nothing changes it once solved.
+  // How the result card grades a placement (see optimizerOutcome): the
+  // response across the optimizer's band at these frequencies, with the main
+  // row's own center as the reference point.
+  const resultFreqs = (freqLow, freqHigh) => RoomPhysics.logSpacedFreqs(freqLow, freqHigh, 48);
+  function resultReference(){
+    const primary = primaryRow();
+    return { x: primary.x, y: primary.y, z: primary.z };
+  }
   function optimizerScene(){
     const { floorPlan, ...ctx } = physicsCtx();
     const scene = JSON.parse(JSON.stringify({
@@ -2100,6 +2108,7 @@ function applyAppearanceAttrs(mode, theme){
       offLimitZones: offLimitZones.concat(ctx.bassTraps.map(t => RoomPhysics.bassTrapFootprint(room.polygon, t))),
       sources: sourcesEnabled ? sources.filter(s => s.enabled !== false) : [],
       listenerPositions: allSeatPositions(),
+      reference: resultReference(),
       timeAlignTo: autoTimeAlignEnabled ? primaryRow() : undefined
     }));
     if(floorPlan) scene.physicsCtx.floorPlan = floorPlan;
@@ -2184,7 +2193,7 @@ function applyAppearanceAttrs(mode, theme){
     // file. Otherwise this workflow would keep optimizing against sources
     // the rest of the app currently treats as muted.
     const scene = optimizerScene();
-    const { room, offLimitZones, allowedZones, preferredZones, listenerPositions, timeAlignTo } = scene;
+    const { room, offLimitZones, allowedZones, preferredZones, listenerPositions, reference, timeAlignTo } = scene;
     const existingSubs = scene.sources.filter(isSubSource);
     const otherSources = scene.sources.filter(s => !isSubSource(s));
     if(existingSubs.length === 0){
@@ -2193,7 +2202,7 @@ function applyAppearanceAttrs(mode, theme){
     }
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
-    let refinedSubs, lastBest, lastAllCandidates, movedCount;
+    let refinedSubs, lastBest, lastAllCandidates;
 
     if(existingSubs.length === 1){
       const result = await RoomPhysics.optimizeSubPlacementAsync({
@@ -2203,11 +2212,9 @@ function applyAppearanceAttrs(mode, theme){
         excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
-      const moved = result.best !== null && (result.best.x !== existingSubs[0].x || result.best.y !== existingSubs[0].y);
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
       lastBest = result.best;
       lastAllCandidates = result.allCandidates;
-      movedCount = moved ? 1 : 0;
     } else {
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
@@ -2219,9 +2226,24 @@ function applyAppearanceAttrs(mode, theme){
       const lastRound = result.polishResults[result.polishResults.length - 1] || null;
       lastBest = lastRound ? lastRound.best : null;
       lastAllCandidates = lastRound ? lastRound.allCandidates : [];
-      movedCount = result.moved.filter(Boolean).length;
     }
+    // The search scores candidates more coarsely than the result card grades
+    // them, so its pick is only suggested when the card grades it higher too.
+    const check = RoomPhysics.checkSubMoves({
+      seats: listenerPositions, reference, freqs: resultFreqs(freqLow, freqHigh), otherSources,
+      current: existingSubs, picked: refinedSubs, physicsCtx: scene.physicsCtx, mode: optimizerMode, timeAlignTo
+    });
+    refinedSubs = check.placedSubs;
+    const movedCount = check.moved.filter(Boolean).length;
 
+    if(movedCount === 0){
+      // Nothing to suggest: the map keeps the score heatmap but shows no move.
+      optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: [], applyInPlace: true, unchanged: true };
+      status.innerHTML = `<span style="color:var(--good)">No improvement found. The current position${existingSubs.length > 1 ? 's measure' : ' measures'} better than any the search found.</span>`;
+      document.getElementById('optimizerResultRow').style.display = 'flex';
+      draw();
+      return;
+    }
     optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: refinedSubs, applyInPlace: true };
 
     const keptCount = existingSubs.length - movedCount;
@@ -2820,7 +2842,7 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   function drawOptimizerWinner(offX, offY, scale){
-    if(!optimizerResult) return;
+    if(!optimizerResult || optimizerResult.unchanged) return;
     // Prefer showing every placed sub (multi-sub result); fall back to just
     // `best` for older/simple single-round results that don't have placedSubs.
     const points = (optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0)
@@ -4514,11 +4536,11 @@ function applyAppearanceAttrs(mode, theme){
     if(optimizerResult.applyInPlace && !optimizerResult.best) return null;
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
-    const freqs = RoomPhysics.logSpacedFreqs(freqLow, freqHigh, 48);
+    const freqs = resultFreqs(freqLow, freqHigh);
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    const seats = allSeatPositions(), primary = primaryRow();
+    const seats = allSeatPositions();
     // The row's own center is the reference point; see computeFreqResponseData.
-    const reference = { x: primary.x, y: primary.y, z: primary.z };
+    const reference = resultReference();
     const measure = (srcs) => RoomPhysics.gradePlacement(seats, reference, freqs, srcs, physicsCtx(), optimizerMode);
     const after = measure(sourcesWithSuggestion(active));
     const before = active.some(isSubSource) ? measure(active) : null;
@@ -4643,6 +4665,8 @@ function applyAppearanceAttrs(mode, theme){
     SOLVE_FAILED_TEXT,
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
+    // The last search refined the existing subs and found nothing better than where they are.
+    optimizerUnchanged: () => !!(optimizerResult && optimizerResult.unchanged),
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
     wallDistances: namedWallDistances,
     // RoomPhysics.wallsAround, each wall with its name as the Walls list shows it

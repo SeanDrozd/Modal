@@ -2269,6 +2269,28 @@
         : gainDb <= -PLACEMENT_GAIN_DB.modest ? 'worse' : 'similar'
     };
   }
+  // Whether refined positions for existing subs are worth suggesting, judged
+  // the way the result card grades them (gradePlacement over `freqs`) rather
+  // than by the search's own coarser score, which can rank a pick above the
+  // current placement while the card ranks it below. `current` and `picked`
+  // are the same subs in the same order, now and as the search placed them;
+  // `otherSources` are the rest of the active sources. The current placement
+  // is graded as it stands; the picked one with every source time-aligned to
+  // `timeAlignTo` when given, since applying it re-runs automatic time
+  // alignment. Returns { placedSubs, moved, gainDb }: the picked subs when
+  // they grade higher (gainDb > 0), otherwise copies of `current` with
+  // every moved[i] false. gainDb is null when the search moved nothing.
+  function checkSubMoves(options){
+    const { seats, reference, freqs, otherSources, current, picked, physicsCtx, mode, timeAlignTo } = options;
+    const keep = (gainDb) => ({ placedSubs: current.map(s => Object.assign({}, s)), moved: current.map(() => false), gainDb });
+    if(picked.every((p, i) => p.x === current[i].x && p.y === current[i].y && p.z === current[i].z)) return keep(null);
+    let after = otherSources.concat(picked);
+    if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
+    const grade = (sources) => gradePlacement(seats, reference, freqs, sources, physicsCtx, mode).stats;
+    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after));
+    if(gainDb <= 0) return keep(gainDb);
+    return { placedSubs: picked.map(p => Object.assign({}, p)), moved: picked.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
+  }
   // The four walls straight to a point's left, right, front and back, each
   // with the distance to it and where it is: { left: { wall: 'left',
   // distFt, x }, right: { wall: 'right', distFt, x }, front: { wall:
@@ -3039,6 +3061,7 @@
     scoreResponses,
     seatToSeatVariationDb,
     comparePlacements,
+    checkSubMoves,
     wallsAround,
     nearestWallDistances,
     rowFootprintRect,
