@@ -227,6 +227,9 @@
   // the same pressure at every point and is damped like any other mode.
   function enumerateModes(ctx, cutoffFreq){
     cutoffFreq = cutoffFreq ?? MODE_CUTOFF_HZ;
+    // A room that is not a rectangle carries its solved floor plan (see
+    // solveFloorPlan), and its modes come from that instead of the formula.
+    if(ctx.floorPlan) return enumerateFloorPlanModes(ctx, cutoffFreq);
     const { room } = ctx;
     const Lx = room.w * FT_TO_M, Ly = room.d * FT_TO_M, Lz = room.h * FT_TO_M;
     if(!(Lx > 0) || !(Ly > 0) || !(Lz > 0)) return []; // degenerate room -- no modes, not NaN/Infinity
@@ -276,6 +279,7 @@
   // across a frequency sweep).
   function precomputeModalField(sources, freq, ctx, modes){
     const k = 2 * Math.PI * freq / C;
+    const plan = modes.floorPlan; // set for floor-plan modes, see enumerateFloorPlanModes
     const active = [];
     for(const s of sources){
       const freqGain = sourceGainAtFreq(s, freq);
@@ -286,11 +290,13 @@
       const extraPhase = 2 * Math.PI * freq * (s.delayMs / 1000);
       active.push({
         x: s.x * FT_TO_M, y: s.y * FT_TO_M, z: (s.z ?? 3) * FT_TO_M,
-        levelGain, cosPhase: Math.cos(extraPhase), sinPhase: Math.sin(extraPhase)
+        levelGain, cosPhase: Math.cos(extraPhase), sinPhase: Math.sin(extraPhase),
+        // floor-plan modes read the source's shape values from the plan's table, once per source
+        shapes: plan && floorPlanShapesAt(plan, s.x, s.y), cosZ: []
       });
     }
 
-    return modes.map(mode => {
+    const precomputed = modes.map(mode => {
       const Dr = mode.kn * mode.kn - k * k;
       const Di = -k * mode.deltaN;
       const denom = Dr * Dr + Di * Di;
@@ -299,7 +305,9 @@
 
       let sourceRe = 0, sourceIm = 0;
       for(const src of active){
-        const psi = Math.cos(mode.invLx * src.x) * Math.cos(mode.invLy * src.y) * Math.cos(mode.invLz * src.z);
+        const psi = plan
+          ? src.shapes[mode.shape] * (src.cosZ[mode.nz] ?? (src.cosZ[mode.nz] = Math.cos(mode.invLz * src.z)))
+          : Math.cos(mode.invLx * src.x) * Math.cos(mode.invLy * src.y) * Math.cos(mode.invLz * src.z);
         const amp = src.levelGain * psi;
         sourceRe += amp * src.cosPhase;
         sourceIm += amp * src.sinPhase;
@@ -308,14 +316,39 @@
       // coef = An * (sourceRe + j*sourceIm) * (invDr + j*invDi)
       const coefRe = mode.An * (sourceRe * invDr - sourceIm * invDi);
       const coefIm = mode.An * (sourceRe * invDi + sourceIm * invDr);
-      return { invLx: mode.invLx, invLy: mode.invLy, invLz: mode.invLz, coefRe, coefIm };
+      return plan
+        ? { shape: mode.shape, nz: mode.nz, invLz: mode.invLz, coefRe, coefIm }
+        : { invLx: mode.invLx, invLy: mode.invLy, invLz: mode.invLz, coefRe, coefIm };
     });
+    if(plan) precomputed.floorPlan = plan;
+    return precomputed;
   }
 
   // Sums complex pressure at (px,py,pz) from a precomputeModalField result.
   function computeFieldAtPoint(px, py, pz, precomputed){
     const pxM = px * FT_TO_M, pyM = py * FT_TO_M, pzM = pz * FT_TO_M;
     let re = 0, im = 0;
+    const plan = precomputed.floorPlan;
+    if(plan){
+      // Floor-plan modes: each shape is read from the plan's table (a
+      // weighted sum of up to four cells) once, then shared by that shape's
+      // run of height cosines, which sit next to each other in the list.
+      const { cells, weights } = floorPlanStencil(plan, px, py);
+      const { numModes, shapes } = plan;
+      const cosZ = [];
+      for(let i = 0; i < precomputed.length; ){
+        const shape = precomputed[i].shape;
+        let phi = 0;
+        for(let q = 0; q < cells.length; q++) phi += weights[q] * shapes[cells[q] * numModes + shape];
+        for(; i < precomputed.length && precomputed[i].shape === shape; i++){
+          const mode = precomputed[i];
+          const psi = phi * (cosZ[mode.nz] ?? (cosZ[mode.nz] = Math.cos(mode.invLz * pzM)));
+          re += mode.coefRe * psi;
+          im += mode.coefIm * psi;
+        }
+      }
+      return { re, im };
+    }
     for(const mode of precomputed){
       const psi = Math.cos(mode.invLx * pxM) * Math.cos(mode.invLy * pyM) * Math.cos(mode.invLz * pzM);
       re += mode.coefRe * psi;
@@ -393,6 +426,613 @@
       }
     }
     return { min, max };
+  }
+
+  // ---- Rooms that are not rectangles: numeric floor-plan modes ----
+  // A room whose floor plan is any polygon of right-angle corners (an L, a
+  // T, a U, a notch) under a flat ceiling is that floor plan extruded
+  // straight up. Its modes are exactly a floor-plan mode phi_m(x, y) times
+  // the same height cosine a rectangle has, with k_n^2 = lambda_m +
+  // (nz*pi/Lz)^2, where (lambda_m, phi_m) are the eigenpairs of the 2D
+  // Laplacian on the floor plan with rigid (Neumann) walls. Only that 2D
+  // problem has no formula, so solveFloorPlan computes it numerically and
+  // every mode sum in this file then runs unchanged, reading mode shapes
+  // from a table instead of computing cosines (see enumerateModes).
+  //
+  // A room is given as room.polygon: its corners in feet as [{x, y}, ...],
+  // in order around the room (either direction), every wall parallel to
+  // the x or the y axis. Wall i runs from corner i to corner i+1.
+
+  // Area of a polygon [{x, y}, ...], in the square of its own units.
+  function polygonArea(polygon){
+    let twice = 0;
+    for(let i = 0, j = polygon.length - 1; i < polygon.length; j = i++){
+      twice += polygon[j].x * polygon[i].y - polygon[i].x * polygon[j].y;
+    }
+    return Math.abs(twice) / 2;
+  }
+
+  // True when (px, py) is inside the polygon or exactly on its boundary.
+  function isPointInPolygon(px, py, polygon){
+    let inside = false;
+    for(let i = 0, j = polygon.length - 1; i < polygon.length; j = i++){
+      const a = polygon[i], b = polygon[j];
+      const cross = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x);
+      if(cross === 0 && px >= Math.min(a.x, b.x) && px <= Math.max(a.x, b.x) &&
+         py >= Math.min(a.y, b.y) && py <= Math.max(a.y, b.y)) return true;
+      // standard even-odd ray cast toward +x
+      if((a.y > py) !== (b.y > py) && px < a.x + (b.x - a.x) * (py - a.y) / (b.y - a.y)) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Grid cell size for the floor-plan solve. Mode shapes below the 300 Hz
+  // cutoff have a wavelength of 1.14 m or more, 11 cells at this size.
+  const FLOOR_PLAN_CELL_M = 0.1;
+  // Near an inside (270 degree) corner the mode shapes have a singular
+  // gradient, which a uniform grid resolves slowly. Grid lines within
+  // radiusCells cells of such a corner are spaced cellM * (distance /
+  // radius) ^ exponent apart, never closer than cellM * minFraction.
+  const CORNER_REFINE = { radiusCells: 2, exponent: 0.5, minFraction: 0.25 };
+
+  // Grid lines along one axis: every value in `breaks` (the sorted wall
+  // coordinates) is a line, so walls always fall exactly on cell edges, and
+  // each span between two breaks is cut into equal-count cells no wider
+  // than the local target size (see CORNER_REFINE; `refineAt` lists the
+  // coordinates of the inside corners).
+  function floorGridLines(breaks, refineAt, cellM){
+    const refine = CORNER_REFINE, radius = refine.radiusCells * cellM;
+    const lines = [breaks[0]];
+    for(let b = 0; b + 1 < breaks.length; b++){
+      const a = breaks[b], len = breaks[b + 1] - a;
+      // cum[s]: how many cells of the local target size fit in the first s
+      // of `steps` equal pieces of this span
+      const steps = Math.max(16, Math.ceil(32 * len / cellM));
+      const piece = len / steps;
+      const cum = new Float64Array(steps + 1);
+      for(let s = 0; s < steps; s++){
+        const x = a + (s + 0.5) * piece;
+        let fraction = 1;
+        for(const r of refineAt){
+          fraction = Math.min(fraction, Math.pow(Math.abs(x - r) / radius, refine.exponent));
+        }
+        cum[s + 1] = cum[s] + piece / (cellM * Math.max(refine.minFraction, fraction));
+      }
+      const n = Math.max(1, Math.ceil(cum[steps] - 1e-9));
+      for(let i = 1, s = 0; i < n; i++){
+        const target = i * cum[steps] / n;
+        while(cum[s + 1] < target) s++;
+        lines.push(a + (s + (target - cum[s]) / (cum[s + 1] - cum[s])) * piece);
+      }
+      lines.push(breaks[b + 1]);
+    }
+    return Float64Array.from(lines);
+  }
+
+  // The floor plan cut into rectangular cells: grid lines xs/ys in meters,
+  // cellId[j*nx + i] the cell's number or -1 outside the room, and cellI/
+  // cellJ each numbered cell's column and row. Cells are numbered along the
+  // axis with fewer lines first, which keeps neighbors close in number
+  // (a narrow matrix band, see factorShifted).
+  function buildFloorGrid(polygon, cellM){
+    const pts = polygon.map(p => ({ x: p.x * FT_TO_M, y: p.y * FT_TO_M }));
+    const count = pts.length;
+    let twiceArea = 0;
+    for(let i = 0, j = count - 1; i < count; j = i++) twiceArea += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+    const refineX = [], refineY = [];
+    for(let i = 0; i < count; i++){
+      const prev = pts[(i + count - 1) % count], at = pts[i], next = pts[(i + 1) % count];
+      if((at.x === next.x) === (at.y === next.y)) throw new Error('solveFloorPlan: every wall must run along x or y');
+      // a turn against the polygon's own winding is an inside corner
+      const turn = (at.x - prev.x) * (next.y - at.y) - (at.y - prev.y) * (next.x - at.x);
+      if(turn * twiceArea < 0){ refineX.push(at.x); refineY.push(at.y); }
+    }
+    const sortedUnique = (values) => [...new Set(values)].sort((a, b) => a - b);
+    const xs = floorGridLines(sortedUnique(pts.map(p => p.x)), refineX, cellM);
+    const ys = floorGridLines(sortedUnique(pts.map(p => p.y)), refineY, cellM);
+    const nx = xs.length - 1, ny = ys.length - 1;
+    const cellId = new Int32Array(nx * ny).fill(-1);
+    const cellI = [], cellJ = [];
+    const rowsOuter = nx <= ny;
+    for(let outer = 0; outer < (rowsOuter ? ny : nx); outer++){
+      for(let inner = 0; inner < (rowsOuter ? nx : ny); inner++){
+        const i = rowsOuter ? inner : outer, j = rowsOuter ? outer : inner;
+        if(!isPointInPolygon((xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2, pts)) continue;
+        cellId[j * nx + i] = cellI.length;
+        cellI.push(i); cellJ.push(j);
+      }
+    }
+    return { pts, xs, ys, nx, ny, cellId, cellI: Int32Array.from(cellI), cellJ: Int32Array.from(cellJ), numCells: cellI.length };
+  }
+
+  // The rigid-wall Laplacian on the grid as a symmetric matrix A (cell-
+  // centered finite volumes: the flux through the face two cells share is
+  // the difference of their values over the distance between their centers,
+  // and a wall face carries no flux). With cell areas a, the discrete
+  // problem K u = lambda * diag(a) * u is solved in the symmetric form
+  // A v = lambda v, A = a^-1/2 K a^-1/2, v = a^1/2 u. Stored as each row's
+  // diagonal plus its two entries left of the diagonal: lowIdx/lowVal[2k]
+  // for the cell before it along x and [2k+1] along y (index -1 when that
+  // neighbor is a wall). diagX is the x faces' share of the diagonal,
+  // first[k] the lowest column row k reaches and band the widest reach.
+  function floorPlanOperator(grid){
+    const { xs, ys, nx, ny, cellId, cellI, cellJ, numCells: n } = grid;
+    const hx = new Float64Array(n), hy = new Float64Array(n);
+    for(let k = 0; k < n; k++){ hx[k] = xs[cellI[k] + 1] - xs[cellI[k]]; hy[k] = ys[cellJ[k] + 1] - ys[cellJ[k]]; }
+    const diag = new Float64Array(n), diagX = new Float64Array(n);
+    const lowIdx = new Int32Array(2 * n).fill(-1), lowVal = new Float64Array(2 * n);
+    const first = new Int32Array(n);
+    for(let k = 0; k < n; k++) first[k] = k;
+    let band = 0;
+    // joins cell k to its next cell m along x (axis 0) or y (axis 1)
+    const couple = (k, m, axis, faceLen, centerDist) => {
+      const g = faceLen / centerDist, ak = hx[k] * hy[k], am = hx[m] * hy[m];
+      diag[k] += g / ak;
+      diag[m] += g / am;
+      if(axis === 0){ diagX[k] += g / ak; diagX[m] += g / am; }
+      lowIdx[2 * m + axis] = k;
+      lowVal[2 * m + axis] = -g / Math.sqrt(ak * am);
+      if(k < first[m]) first[m] = k;
+      if(m - k > band) band = m - k;
+    };
+    for(let k = 0; k < n; k++){
+      const i = cellI[k], j = cellJ[k];
+      const right = i + 1 < nx ? cellId[j * nx + i + 1] : -1;
+      const up = j + 1 < ny ? cellId[(j + 1) * nx + i] : -1;
+      if(right >= 0) couple(k, right, 0, hy[k], (xs[i + 2] - xs[i]) / 2);
+      if(up >= 0) couple(k, up, 1, hx[k], (ys[j + 2] - ys[j]) / 2);
+    }
+    return { n, hx, hy, diag, diagX, lowIdx, lowVal, first, band };
+  }
+
+  // How far the grid's eigenvalue for unit eigenvector v sits below the
+  // true one, to leading order. The grid's second difference along x is
+  // d2/dx2 + (hx^2/12) d4/dx4 + ..., so with A = Ax + Ay split by axis the
+  // grid eigenvalue is low by (hx^2 |Ax v|^2 + hy^2 |Ay v|^2) / 12
+  // (first-order perturbation theory; the fourth derivative integrates by
+  // parts onto the second because rigid flat walls leave no boundary
+  // term). Adding it back takes a rectangle's eigenvalues from second-order
+  // to fourth-order accurate in the cell size.
+  function gridDispersionShift(op, v){
+    const { n, hx, hy, diag, diagX, lowIdx, lowVal } = op;
+    const ax = new Float64Array(n), ay = new Float64Array(n);
+    for(let k = 0; k < n; k++){
+      ax[k] += diagX[k] * v[k];
+      ay[k] += (diag[k] - diagX[k]) * v[k];
+      const mx = lowIdx[2 * k], my = lowIdx[2 * k + 1];
+      if(mx >= 0){ ax[k] += lowVal[2 * k] * v[mx]; ax[mx] += lowVal[2 * k] * v[k]; }
+      if(my >= 0){ ay[k] += lowVal[2 * k + 1] * v[my]; ay[my] += lowVal[2 * k + 1] * v[k]; }
+    }
+    let shift = 0;
+    for(let k = 0; k < n; k++) shift += hx[k] * hx[k] * ax[k] * ax[k] + hy[k] * hy[k] * ay[k] * ay[k];
+    return shift / 12;
+  }
+
+  // Factors A - sigma*I = L D L^T (L unit lower triangular, D diagonal)
+  // into `store` ({ L, D }, reused between calls), keeping to each row's
+  // own reach first[i] (an envelope factorization: nothing left of a row's
+  // first entry ever fills in). Returns how many entries of D are negative,
+  // which by Sylvester's law of inertia is exactly the number of
+  // eigenvalues of A below sigma, and records the smallest |D| as
+  // store.minPivot (NaN if the factorization broke down).
+  function factorShifted(op, sigma, store){
+    const { n, diag, lowIdx, lowVal, first, band } = op;
+    const { L, D } = store;
+    const B = band + 1;
+    let negatives = 0, minPivot = Infinity;
+    for(let i = 0; i < n; i++){
+      const fi = first[i], rowI = i * B + band - i; // L[i][j] lives at L[rowI + j]
+      L.fill(0, rowI + fi, rowI + i);
+      if(lowIdx[2 * i] >= 0) L[rowI + lowIdx[2 * i]] = lowVal[2 * i];
+      if(lowIdx[2 * i + 1] >= 0) L[rowI + lowIdx[2 * i + 1]] = lowVal[2 * i + 1];
+      // first pass leaves u_j = L[i][j] * D[j] in the row, so the inner loop is a plain dot product
+      for(let j = fi; j < i; j++){
+        const rowJ = j * B + band - j;
+        let sum = L[rowI + j];
+        for(let k = Math.max(fi, first[j]); k < j; k++) sum -= L[rowI + k] * L[rowJ + k];
+        L[rowI + j] = sum;
+      }
+      let d = diag[i] - sigma;
+      for(let j = fi; j < i; j++){
+        const u = L[rowI + j], l = u / D[j];
+        d -= u * l;
+        L[rowI + j] = l;
+      }
+      D[i] = d;
+      if(d < 0) negatives++;
+      if(!(Math.abs(d) >= minPivot)) minPivot = Math.abs(d);
+    }
+    store.minPivot = minPivot;
+    return negatives;
+  }
+
+  // Solves (L D L^T) out = rhs with factorShifted's factors.
+  function solveFactored(op, store, rhs, out){
+    const { n, first, band } = op;
+    const { L, D } = store;
+    const B = band + 1;
+    for(let i = 0; i < n; i++){
+      const rowI = i * B + band - i;
+      let sum = rhs[i];
+      for(let k = first[i]; k < i; k++) sum -= L[rowI + k] * out[k];
+      out[i] = sum;
+    }
+    for(let i = 0; i < n; i++) out[i] /= D[i];
+    for(let i = n - 1; i >= 0; i--){
+      const rowI = i * B + band - i, yi = out[i];
+      for(let k = first[i]; k < i; k++) out[k] -= L[rowI + k] * yi;
+    }
+  }
+
+  // Eigenvalues of a symmetric tridiagonal matrix by the implicit QL method
+  // (EISPACK's tql2). d: the diagonal, replaced by the eigenvalues. e: the
+  // off-diagonal, e[i] joining rows i and i+1, with e[n-1] = 0; destroyed.
+  // z: zRows rows of n numbers, each multiplied by the eigenvector matrix,
+  // so passing the identity (zRows = n) returns the eigenvectors as columns
+  // and passing only its last row (zRows = 1) returns each eigenvector's
+  // last component, which is all a convergence check needs.
+  function tridiagEigen(d, e, n, z, zRows){
+    const EPS = 2.220446049250313e-16;
+    let f = 0, tst1 = 0;
+    for(let l = 0; l < n; l++){
+      tst1 = Math.max(tst1, Math.abs(d[l]) + Math.abs(e[l]));
+      let m = l;
+      while(m < n - 1 && Math.abs(e[m]) > EPS * tst1) m++;
+      if(m > l){
+        do {
+          let g = d[l];
+          let p = (d[l + 1] - g) / (2 * e[l]);
+          let r = Math.sqrt(p * p + 1);
+          if(p < 0) r = -r;
+          d[l] = e[l] / (p + r);
+          d[l + 1] = e[l] * (p + r);
+          const dl1 = d[l + 1];
+          let h = g - d[l];
+          for(let i = l + 2; i < n; i++) d[i] -= h;
+          f += h;
+          p = d[m];
+          let c = 1, c2 = 1, c3 = 1, s = 0, s2 = 0;
+          const el1 = e[l + 1];
+          for(let i = m - 1; i >= l; i--){
+            c3 = c2; c2 = c; s2 = s;
+            g = c * e[i];
+            h = c * p;
+            r = Math.sqrt(p * p + e[i] * e[i]);
+            e[i + 1] = s * r;
+            s = e[i] / r;
+            c = p / r;
+            p = c * d[i] - s * g;
+            d[i + 1] = h + s * (c * g + s * d[i]);
+            for(let k = 0; k < zRows; k++){
+              h = z[k * n + i + 1];
+              z[k * n + i + 1] = s * z[k * n + i] + c * h;
+              z[k * n + i] = c * z[k * n + i] - s * h;
+            }
+          }
+          p = -s * s2 * c3 * el1 * e[l] / dl1;
+          e[l] = s * p;
+          d[l] = c * p;
+        } while(Math.abs(e[l]) > EPS * tst1);
+      }
+      d[l] += f;
+      e[l] = 0;
+    }
+  }
+
+  // One shift-and-invert Lanczos run for eigenpairs of A in [lo, hi): the
+  // Lanczos recurrence on (A - sigma*I)^-1 (factored in `store`), whose
+  // largest eigenvalues theta = 1 / (lambda - sigma) belong to the lambda
+  // nearest sigma and so converge first. Every new vector is orthogonalized
+  // against all earlier ones and against `locked`, eigenvectors already
+  // found in this slice, which keeps the run inside what is still missing.
+  // Stops as soon as `missing` eigenpairs in [lo, hi) have converged, or
+  // when everything it can see in the slice has converged and it has also
+  // converged values beyond both ends of it (it will find no more: Lanczos
+  // from one start vector sees only one eigenvector of a repeated
+  // eigenvalue, so the caller runs again with these locked). Returns
+  // [{ lam, vec }] with unit-length vec.
+  const RITZ_TOL = 1e-8;
+  function lanczosRun(op, store, sigma, lo, hi, missing, noneBelowLo, locked, seed){
+    const n = op.n;
+    const mMax = Math.min(n - locked.length, Math.ceil(2.2 * missing + 30));
+    const V = new Float64Array(mMax * n), alpha = new Float64Array(mMax), beta = new Float64Array(mMax);
+    const w = new Float64Array(n);
+    const dot = (a, b) => { let s = 0; for(let i = 0; i < n; i++) s += a[i] * b[i]; return s; };
+    const removeAlong = (u) => { const s = dot(w, u); for(let i = 0; i < n; i++) w[i] -= s * u[i]; };
+    const row = (k) => V.subarray(k * n, (k + 1) * n);
+
+    // deterministic pseudo-random start (the same room always solves the same way)
+    let state = (seed * 2654435761 + 12345) >>> 0;
+    for(let i = 0; i < n; i++){
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      w[i] = state / 4294967296 - 0.5;
+    }
+    for(const u of locked) removeAlong(u);
+    let norm = Math.sqrt(dot(w, w));
+
+    let m = 0;
+    for(let k = 0; k < mMax; k++){
+      const vk = row(k);
+      for(let i = 0; i < n; i++) vk[i] = w[i] / norm;
+      solveFactored(op, store, vk, w);
+      alpha[k] = dot(w, vk);
+      for(let i = 0; i < n; i++) w[i] -= alpha[k] * vk[i];
+      if(k > 0){ const prev = row(k - 1), b = beta[k - 1]; for(let i = 0; i < n; i++) w[i] -= b * prev[i]; }
+      // full reorthogonalization, repeated once if the first pass removed a lot
+      norm = Math.sqrt(dot(w, w));
+      for(let pass = 0; pass < 2; pass++){
+        for(const u of locked) removeAlong(u);
+        for(let j = 0; j <= k; j++) removeAlong(row(j));
+        const after = Math.sqrt(dot(w, w));
+        const lostALot = after < 0.7 * norm;
+        norm = after;
+        if(!lostALot) break;
+      }
+      beta[k] = norm;
+      m = k + 1;
+      const exhausted = m === mMax || !(norm > 1e-13 * Math.abs(alpha[k]));
+      if(!exhausted && (m < missing || (m - missing) % 4 !== 0)) continue;
+
+      // Ritz values and their residuals |beta_m * (last component)|
+      const theta = alpha.slice(0, m), off = beta.slice(0, m), lastComp = new Float64Array(m);
+      off[m - 1] = 0;
+      lastComp[m - 1] = 1;
+      tridiagEigen(theta, off, m, lastComp, 1);
+      let inSlice = 0, convergedInSlice = 0, convergedBelow = false, convergedAbove = false;
+      for(let i = 0; i < m; i++){
+        const lam = sigma + 1 / theta[i];
+        const converged = Math.abs(norm * lastComp[i]) <= RITZ_TOL * Math.abs(theta[i]);
+        if(lam >= lo && lam < hi){ inSlice++; if(converged) convergedInSlice++; }
+        else if(converged && lam < lo) convergedBelow = true;
+        else if(converged && lam >= hi) convergedAbove = true;
+      }
+      if(exhausted || convergedInSlice >= missing) break;
+      if(inSlice === convergedInSlice && convergedAbove && (noneBelowLo || convergedBelow)) break;
+    }
+
+    // Ritz vectors of the converged values in the slice
+    const d = alpha.slice(0, m), off = beta.slice(0, m);
+    off[m - 1] = 0;
+    const Z = new Float64Array(m * m);
+    for(let i = 0; i < m; i++) Z[i * m + i] = 1;
+    tridiagEigen(d, off, m, Z, m);
+    const out = [];
+    for(let i = 0; i < m; i++){
+      const lam = sigma + 1 / d[i];
+      if(!(lam >= lo && lam < hi)) continue;
+      if(!(Math.abs(norm * Z[(m - 1) * m + i]) <= RITZ_TOL * Math.abs(d[i]))) continue;
+      const vec = new Float64Array(n);
+      for(let k = 0; k < m; k++){
+        const c = Z[k * m + i], vk = row(k);
+        for(let q = 0; q < n; q++) vec[q] += c * vk[q];
+      }
+      out.push({ lam, vec });
+    }
+    return out;
+  }
+
+  // Every eigenpair of A below lamMax, by spectrum slicing: [0, lamMax) is
+  // cut into slices of about SLICE_MODES eigenvalues, the inertia count at
+  // each slice boundary (factorShifted) says exactly how many eigenvalues
+  // the slice holds, and Lanczos runs around the slice's midpoint repeat
+  // until that many are found. Nothing below lamMax can be missed, repeated
+  // eigenvalues included. Returns [{ lam, vec }] in ascending order.
+  const SLICE_MODES = 40;
+  function eigenpairsBelow(op, lamMax){
+    const store = { L: new Float64Array(op.n * (op.band + 1)), D: new Float64Array(op.n), minPivot: 0 };
+    // The factorization does not pivot, so a shift within rounding of an
+    // eigenvalue of A (or of one of its leading blocks) leaves a pivot near
+    // zero and factors too inaccurate to use. That is rare, and stepping
+    // the shift aside by a thousandth of itself cures it (accuracy falls
+    // off with closeness, so a smaller step would leave some error behind).
+    const factorNear = (sigma) => {
+      for(;; sigma *= 1.001){
+        const negatives = factorShifted(op, sigma, store);
+        if(store.minPivot > 1e-7 * sigma) return { sigma, negatives };
+      }
+    };
+    const top = factorNear(lamMax);
+    const slices = Math.max(1, Math.ceil(top.negatives / SLICE_MODES));
+    const pairs = [];
+    let below = 0, lo = -Infinity;
+    for(let s = 0; s < slices; s++){
+      const end = s === slices - 1 ? top : factorNear(lamMax * (s + 1) / slices);
+      const hi = end.sigma, need = end.negatives - below;
+      if(need > 0){
+        const sigma = factorNear((Math.max(lo, 0) + hi) / 2).sigma;
+        const found = [];
+        for(let attempt = 0; found.length < need; attempt++){
+          const got = lanczosRun(op, store, sigma, lo, hi, need - found.length, below === 0, found.map(p => p.vec), s * 16 + attempt);
+          if(got.length === 0) throw new Error('solveFloorPlan: eigenvalue search stalled');
+          for(const p of got) found.push(p);
+        }
+        found.sort((a, b) => a.lam - b.lam);
+        for(const p of found) pairs.push(p);
+      }
+      below = end.negatives;
+      lo = hi;
+    }
+    return pairs;
+  }
+
+  // ---- Solves a floor plan's modes (the slow, once-per-shape step) ----
+  // polygon: the room's corners in feet (see above). opts.cellM: grid cell
+  // size in meters (default FLOOR_PLAN_CELL_M; pass a larger one for a
+  // quick preview). opts.cutoffHz: modes up to this frequency (default
+  // MODE_CUTOFF_HZ). Takes a few tenths of a second to a few seconds, so
+  // callers run it once per room shape (off the main thread in the app),
+  // keep the result, and pass it to every other function as ctx.floorPlan.
+  //
+  // Returns the floor plan's mode table:
+  //   polygon, cellM, cutoffHz: the inputs
+  //   xs, ys, nx, ny: the grid lines in meters; every wall lies on one
+  //   cellId[j*nx + i]: the cell's row in `shapes`, or -1 outside the room
+  //   numCells, areaM2
+  //   numModes, kSquared[m]: each mode's eigenvalue (its wavenumber squared,
+  //     1/m^2), ascending; mode 0 is the uniform mode with kSquared 0
+  //   shapes[cell*numModes + m]: mode m's value at the cell's center,
+  //     scaled so its mean square over the floor is 1
+  //   numWalls, wallWeights[m*numWalls + i]: the integral of mode m's
+  //     square along wall i, in meters (the wall's length for mode 0),
+  //     which is what sets how strongly that wall's material damps the mode
+  function solveFloorPlan(polygon, opts){
+    const cellM = opts?.cellM ?? FLOOR_PLAN_CELL_M;
+    const cutoffHz = opts?.cutoffHz ?? MODE_CUTOFF_HZ;
+    const grid = buildFloorGrid(polygon, cellM);
+    const op = floorPlanOperator(grid);
+    const lamMax = Math.pow(2 * Math.PI * cutoffHz / C, 2);
+    // The grid's eigenvalues all sit a little low, so every true mode under
+    // the cutoff is among those found; correct each, then keep the ones
+    // still under it.
+    const pairs = eigenpairsBelow(op, lamMax)
+      .map(p => ({ lam: Math.max(0, p.lam) + gridDispersionShift(op, p.vec), vec: p.vec }))
+      .filter(p => p.lam < lamMax)
+      .sort((a, b) => a.lam - b.lam);
+    const { xs, ys, nx, ny, cellId, numCells } = grid;
+    const numModes = pairs.length, numWalls = polygon.length;
+    const areaM2 = polygonArea(grid.pts);
+
+    const kSquared = new Float64Array(numModes);
+    const shapes = new Float32Array(numCells * numModes);
+    for(let m = 0; m < numModes; m++){
+      kSquared[m] = pairs[m].lam;
+      const vec = pairs[m].vec;
+      for(let k = 0; k < numCells; k++) shapes[k * numModes + m] = vec[k] * Math.sqrt(areaM2 / (op.hx[k] * op.hy[k]));
+    }
+
+    // Each wall is walked face by face. A shape's value on the wall comes
+    // from the two cells in from that face, as the even parabola through
+    // their centers (a rigid wall has zero slope across it); the nearest
+    // cell's own value would be low by (k * cell)^2 / 8.
+    const wallWeights = new Float64Array(numModes * numWalls);
+    for(let e = 0; e < numWalls; e++){
+      const a = grid.pts[e], b = grid.pts[(e + 1) % numWalls];
+      const alongY = a.x === b.x;
+      const lines = alongY ? ys : xs, from = Math.min(alongY ? a.y : a.x, alongY ? b.y : b.x), to = Math.max(alongY ? a.y : a.x, alongY ? b.y : b.x);
+      const at = (alongY ? xs : ys).indexOf(alongY ? a.x : a.y); // the grid line the wall lies on
+      for(let t = 0; t + 1 < lines.length; t++){
+        if(lines[t] < from || lines[t + 1] > to) continue;
+        const cellAt = (side) => {
+          const i = alongY ? at + side : t, j = alongY ? t : at + side;
+          return i >= 0 && i < nx && j >= 0 && j < ny ? cellId[j * nx + i] : -1;
+        };
+        const inward = cellAt(0) >= 0 ? 1 : -1; // exactly one side of a wall is inside the room
+        const cell = cellAt(inward > 0 ? 0 : -1), next = cellAt(inward > 0 ? 1 : -2);
+        const across = alongY ? xs : ys;
+        const d1 = Math.abs((across[at + inward] - across[at]) / 2);
+        const d2 = Math.abs(across[at + inward] - across[at]) + Math.abs((across[at + 2 * inward] - across[at + inward]) / 2);
+        const c1 = next >= 0 ? d2 * d2 / (d2 * d2 - d1 * d1) : 1, c2 = next >= 0 ? -d1 * d1 / (d2 * d2 - d1 * d1) : 0;
+        const faceLen = lines[t + 1] - lines[t];
+        for(let m = 0; m < numModes; m++){
+          const v = c1 * shapes[cell * numModes + m] + (next >= 0 ? c2 * shapes[next * numModes + m] : 0);
+          wallWeights[m * numWalls + e] += v * v * faceLen;
+        }
+      }
+    }
+
+    return {
+      polygon: polygon.map(p => ({ x: p.x, y: p.y })), cellM, cutoffHz,
+      xs, ys, nx, ny, cellId, numCells, areaM2,
+      numModes, kSquared, shapes, numWalls, wallWeights
+    };
+  }
+
+  // Where to read a floor plan's mode shapes for a point (feet): up to four
+  // cells and their weights, bilinear between the cell centers around the
+  // point. Cells outside the room are left out and the rest reweighted, and
+  // within half a cell of a wall the nearest centers are used as they are,
+  // which matches a rigid wall (zero slope across it). A point outside the
+  // room is first mirrored back in through the nearest point of the walls,
+  // the same even reflection the rectangle's cosines give a point beyond a
+  // wall (the spatial-averaging cloud of a seat near a wall reaches there).
+  function floorPlanStencil(plan, xFt, yFt){
+    if(!isPointInPolygon(xFt, yFt, plan.polygon)){
+      let best = Infinity, qx = xFt, qy = yFt;
+      const poly = plan.polygon;
+      for(let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+        const a = poly[j], b = poly[i];
+        const cx = Math.min(Math.max(xFt, Math.min(a.x, b.x)), Math.max(a.x, b.x));
+        const cy = Math.min(Math.max(yFt, Math.min(a.y, b.y)), Math.max(a.y, b.y));
+        const dist = (cx - xFt) * (cx - xFt) + (cy - yFt) * (cy - yFt);
+        if(dist < best){ best = dist; qx = cx; qy = cy; }
+      }
+      const mx = 2 * qx - xFt, my = 2 * qy - yFt;
+      if(isPointInPolygon(mx, my, poly)){ xFt = mx; yFt = my; } else { xFt = qx; yFt = qy; }
+    }
+    const { xs, ys, nx, ny, cellId } = plan;
+    const bx = centerBracket(xs, nx, xFt * FT_TO_M), by = centerBracket(ys, ny, yFt * FT_TO_M);
+    const cells = [], weights = [];
+    let total = 0;
+    for(let q = 0; q < 4; q++){
+      const wx = q & 1 ? bx.t : 1 - bx.t, wy = q & 2 ? by.t : 1 - by.t;
+      if(!(wx * wy > 0)) continue;
+      const cell = cellId[(by.lower + (q >> 1)) * nx + bx.lower + (q & 1)];
+      if(cell < 0) continue;
+      cells.push(cell); weights.push(wx * wy);
+      total += wx * wy;
+    }
+    for(let q = 0; q < weights.length; q++) weights[q] /= total;
+    return { cells, weights };
+  }
+  // The pair of neighboring cell centers around v along one axis: `lower`
+  // is the lower cell's index and t (0..1) how far v sits toward the next
+  // center. Before the first center or past the last, t is 0.
+  function centerBracket(lines, n, v){
+    let lo = 0, hi = n - 1;
+    while(lo < hi){ // the cell containing v
+      const mid = (lo + hi + 1) >> 1;
+      if(lines[mid] <= v) lo = mid; else hi = mid - 1;
+    }
+    const center = (i) => (lines[i] + lines[i + 1]) / 2;
+    const lower = v < center(lo) ? lo - 1 : lo;
+    if(lower < 0) return { lower: 0, t: 0 };
+    if(lower >= n - 1) return { lower: n - 1, t: 0 };
+    return { lower, t: (v - center(lower)) / (center(lower + 1) - center(lower)) };
+  }
+  // Every floor-plan mode's shape value at a point (feet).
+  function floorPlanShapesAt(plan, xFt, yFt){
+    const { cells, weights } = floorPlanStencil(plan, xFt, yFt);
+    const { numModes, shapes } = plan;
+    const out = new Float64Array(numModes);
+    for(let q = 0; q < cells.length; q++){
+      const base = cells[q] * numModes, wgt = weights[q];
+      for(let m = 0; m < numModes; m++) out[m] += wgt * shapes[base + m];
+    }
+    return out;
+  }
+
+  // enumerateModes for a room with a solved floor plan (ctx.floorPlan):
+  // every floor-plan mode times every height cosine that stays under the
+  // cutoff. Each entry carries `shape` (the floor-plan mode's index into
+  // the plan's tables) and nz in place of a rectangle mode's nx/ny/invLx/
+  // invLy, and the returned array carries the plan itself as .floorPlan.
+  // An and deltaN follow the same formulas as the rectangle's, with the
+  // mode's own integrals: its volume integral is areaM2 * Lz / eps(nz)
+  // (shapes have mean square 1), each wall's surface integral is that
+  // wall's wallWeights entry times Lz / eps(nz), and the floor's and the
+  // ceiling's are areaM2 each. Wall i's absorption is looked up as
+  // ctx.wallMaterials[i].
+  function enumerateFloorPlanModes(ctx, cutoffFreq){
+    const plan = ctx.floorPlan;
+    const Lz = ctx.room.h * FT_TO_M;
+    const modes = [];
+    modes.floorPlan = plan;
+    if(!(Lz > 0)) return modes;
+    const { numModes, numWalls, kSquared, wallWeights, areaM2 } = plan;
+    for(let m = 0; m < numModes; m++){
+      for(let nz = 0; ; nz++){
+        const kz = nz * Math.PI / Lz;
+        const kn = Math.sqrt(kSquared[m] + kz * kz);
+        const fn = C * kn / (2 * Math.PI);
+        if(fn > cutoffFreq) break;
+        const epsZ = epsFactor(nz);
+        let wallSum = 0;
+        for(let i = 0; i < numWalls; i++) wallSum += surfaceAbsorptionAtFreq(i, fn, ctx) * wallWeights[m * numWalls + i];
+        const deltaN = (wallSum / areaM2 + epsZ * (surfaceAbsorptionAtFreq('floor', fn, ctx) + surfaceAbsorptionAtFreq('ceil', fn, ctx)) / Lz) / 8;
+        modes.push({ shape: m, nz, kn, fn, deltaN, An: C * C * epsZ / (areaM2 * Lz), invLz: kz });
+      }
+    }
+    return modes;
   }
 
   // ---- Spherical spatial sampling (moving-mic-style measurement) ----
@@ -681,6 +1321,12 @@
   // uniform-absorption case -- see the cross-check test tying the two together.
   // ctx: { wallAbsorption, floorAbsorption, wallMaterials, ceilingMaterial }
   // -- a subset of enumerateModes' ctx shape is fine; only these fields are read.
+  // A room with room.polygon (see solveFloorPlan) uses the polygon's own
+  // floor area and one wall per polygon edge, wall i's material being
+  // wallMaterials[i].
+  function roomFloorAreaFt2(room){
+    return room.polygon ? polygonArea(room.polygon) : room.w * room.d;
+  }
   function estimatedT60(room, freqForAbsorption, ctx){
     const { wallAbsorption, wallMaterials, ceilingMaterial } = ctx;
     const floorAbsorption = ctx.floorAbsorption ?? wallAbsorption;
@@ -692,14 +1338,22 @@
       return fromMaterial ?? wallAbsorption;
     }
     const w = room.w, d = room.d, h = room.h;
-    const surfaces = [
-      { area: d*h, absorption: wallAbsorptionFor('left') },
-      { area: d*h, absorption: wallAbsorptionFor('right') },
-      { area: w*h, absorption: wallAbsorptionFor('front') },
-      { area: w*h, absorption: wallAbsorptionFor('back') },
-      { area: w*d, absorption: floorAbsorption },
-      { area: w*d, absorption: ceilingAbsorption }
-    ];
+    const floorArea = roomFloorAreaFt2(room);
+    const walls = room.polygon
+      ? room.polygon.map((p, i) => {
+          const q = room.polygon[(i + 1) % room.polygon.length];
+          return { area: Math.hypot(q.x - p.x, q.y - p.y) * h, absorption: wallAbsorptionFor(i) };
+        })
+      : [
+          { area: d*h, absorption: wallAbsorptionFor('left') },
+          { area: d*h, absorption: wallAbsorptionFor('right') },
+          { area: w*h, absorption: wallAbsorptionFor('front') },
+          { area: w*h, absorption: wallAbsorptionFor('back') }
+        ];
+    const surfaces = walls.concat([
+      { area: floorArea, absorption: floorAbsorption },
+      { area: floorArea, absorption: ceilingAbsorption }
+    ]);
     let totalAbsorptionFt2 = 0;
     let totalAreaFt2 = 0;
     for(const s of surfaces){
@@ -708,7 +1362,7 @@
     }
     const totalAreaM2 = totalAreaFt2 * (FT_TO_M ** 2);
     const totalAbsorptionM2 = totalAbsorptionFt2 * (FT_TO_M ** 2);
-    const volumeM3 = (w * d * h) * (FT_TO_M ** 3);
+    const volumeM3 = (floorArea * h) * (FT_TO_M ** 3);
     if(totalAreaM2 <= 0 || volumeM3 <= 0) return 0;
     const avgAlpha = totalAbsorptionM2 / totalAreaM2;
     const eyringDenominator = -totalAreaM2 * Math.log(1 - avgAlpha);
@@ -730,7 +1384,7 @@
   // is assumed by default when the caller doesn't have one.
   function schroederFrequency(room, t60Seconds){
     const t60 = t60Seconds ?? 0.4;
-    const volumeM3 = (room.w * room.d * room.h) * (FT_TO_M ** 3);
+    const volumeM3 = (roomFloorAreaFt2(room) * room.h) * (FT_TO_M ** 3);
     if(volumeM3 <= 0) return 0;
     return 2000 * Math.sqrt(t60 / volumeM3);
   }
@@ -1660,6 +2314,10 @@
     FT_TO_M, C,
     sourceGainAtFreq,
     wallMaterialAbsorptionAtFreq,
+    polygonArea,
+    isPointInPolygon,
+    FLOOR_PLAN_CELL_M,
+    solveFloorPlan,
     WALL_MATERIALS,
     MODE_CUTOFF_HZ,
     enumerateModes,

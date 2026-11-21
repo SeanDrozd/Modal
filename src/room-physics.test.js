@@ -2624,6 +2624,486 @@ test('optimizerFreqList steps about 12 times across the band, never under 2 Hz a
   assert.deepStrictEqual(P.optimizerFreqList(20, 30), [20, 22, 24, 26, 28, 30]);
 });
 
+console.log('\n-- Floor-plan modes for right-angle rooms (polygonArea / isPointInPolygon / solveFloorPlan) --');
+
+// Corners in feet. Wall i runs from corner i to corner i+1.
+const rectPolygon = (w, d) => [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d }, { x: 0, y: d }];
+// A w x d room with an nw x nd notch cut from its far right corner.
+const lPolygon = (w, d, nw, nd) => [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d - nd }, { x: w - nw, y: d - nd }, { x: w - nw, y: d }, { x: 0, y: d }];
+const tPolygon = [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 8 }, { x: 16, y: 8 }, { x: 16, y: 20 }, { x: 8, y: 20 }, { x: 8, y: 8 }, { x: 0, y: 8 }];
+const uPolygon = [{ x: 0, y: 0 }, { x: 26, y: 0 }, { x: 26, y: 18 }, { x: 18, y: 18 }, { x: 18, y: 7 }, { x: 8, y: 7 }, { x: 8, y: 18 }, { x: 0, y: 18 }];
+const cutoffLambda = (hz) => Math.pow(2 * Math.PI * hz / P.C, 2);
+
+// What follows rebuilds the solver's grid operator from the plan's public
+// fields alone (xs, ys, cellId), independently of room-physics.js, so the
+// tests can check the returned shapes against the equations themselves.
+function planCells(plan){
+  const { xs, ys, nx, ny, cellId, numCells } = plan;
+  const area = new Float64Array(numCells), ci = new Int32Array(numCells), cj = new Int32Array(numCells);
+  for(let j = 0; j < ny; j++) for(let i = 0; i < nx; i++){
+    const k = cellId[j * nx + i];
+    if(k >= 0){ ci[k] = i; cj[k] = j; area[k] = (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]); }
+  }
+  return { area, ci, cj };
+}
+// Calls visit(k, m, conductance, axis) for every pair of neighboring cells.
+function forEachFace(plan, visit){
+  const { xs, ys, nx, ny, cellId } = plan;
+  for(let j = 0; j < ny; j++) for(let i = 0; i < nx; i++){
+    const k = cellId[j * nx + i];
+    if(k < 0) continue;
+    const right = i + 1 < nx ? cellId[j * nx + i + 1] : -1, up = j + 1 < ny ? cellId[(j + 1) * nx + i] : -1;
+    if(right >= 0) visit(k, right, (ys[j + 1] - ys[j]) / ((xs[i + 2] - xs[i]) / 2), 0);
+    if(up >= 0) visit(k, up, (xs[i + 1] - xs[i]) / ((ys[j + 2] - ys[j]) / 2), 1);
+  }
+}
+// Mode m's grid eigenvalue (its Rayleigh quotient) and the grid's leading
+// dispersion error for it, so rayleigh + shift should equal kSquared[m].
+function modeRayleighAndShift(plan, m){
+  const { numModes: M, shapes, numCells, areaM2, xs, ys } = plan;
+  const { area, ci, cj } = planCells(plan);
+  const kx = new Float64Array(numCells), ky = new Float64Array(numCells);
+  let energy = 0;
+  forEachFace(plan, (k, n, g, axis) => {
+    const diff = shapes[k * M + m] - shapes[n * M + m];
+    energy += g * diff * diff;
+    (axis === 0 ? kx : ky)[k] += g * diff;
+    (axis === 0 ? kx : ky)[n] -= g * diff;
+  });
+  let shift = 0;
+  for(let k = 0; k < numCells; k++){
+    const hx = xs[ci[k] + 1] - xs[ci[k]], hy = ys[cj[k] + 1] - ys[cj[k]];
+    shift += (hx * hx * kx[k] * kx[k] + hy * hy * ky[k] * ky[k]) / area[k];
+  }
+  return { rayleigh: energy / areaM2, shift: shift / (12 * areaM2) };
+}
+// Largest deviation of the shapes' area-weighted Gram matrix from identity.
+function shapesOrthonormalityError(plan){
+  const { numModes: M, shapes, numCells, areaM2 } = plan;
+  const { area } = planCells(plan);
+  const gram = new Float64Array(M * M);
+  for(let k = 0; k < numCells; k++){
+    for(let p = 0; p < M; p++){
+      const v = shapes[k * M + p] * area[k];
+      for(let q = p; q < M; q++) gram[p * M + q] += v * shapes[k * M + q];
+    }
+  }
+  let worst = 0;
+  for(let p = 0; p < M; p++) for(let q = p; q < M; q++) worst = Math.max(worst, Math.abs(gram[p * M + q] / areaM2 - (p === q ? 1 : 0)));
+  return worst;
+}
+// Weyl's two-term estimate of how many floor-plan modes lie below a cutoff.
+function weylModeCount(polygon, cutoffHz){
+  let perimeterFt = 0;
+  polygon.forEach((p, i) => { const q = polygon[(i + 1) % polygon.length]; perimeterFt += Math.hypot(q.x - p.x, q.y - p.y); });
+  const lam = cutoffLambda(cutoffHz);
+  return P.polygonArea(polygon) * 0.3048 * 0.3048 * lam / (4 * Math.PI) + perimeterFt * 0.3048 * Math.sqrt(lam) / (4 * Math.PI);
+}
+// Every eigenvalue of a small dense symmetric matrix (cyclic Jacobi), ascending.
+function denseSymmetricEigenvalues(a, n){
+  for(let sweep = 0; sweep < 60; sweep++){
+    let off = 0;
+    for(let p = 0; p < n; p++) for(let q = p + 1; q < n; q++) off += a[p * n + q] * a[p * n + q];
+    if(off < 1e-22) break;
+    for(let p = 0; p < n; p++) for(let q = p + 1; q < n; q++){
+      const apq = a[p * n + q];
+      if(apq === 0) continue;
+      const theta = (a[q * n + q] - a[p * n + p]) / (2 * apq);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for(let k = 0; k < n; k++){
+        const akp = a[k * n + p], akq = a[k * n + q];
+        a[k * n + p] = c * akp - s * akq; a[k * n + q] = s * akp + c * akq;
+      }
+      for(let k = 0; k < n; k++){
+        const apk = a[p * n + k], aqk = a[q * n + k];
+        a[p * n + k] = c * apk - s * aqk; a[q * n + k] = s * apk + c * aqk;
+      }
+    }
+  }
+  return Array.from({ length: n }, (_, i) => a[i * n + i]).sort((x, y) => x - y);
+}
+
+test('polygonArea is the shoelace area, whichever way round the corners go', () => {
+  approx(P.polygonArea(rectPolygon(20, 15)), 300, 1e-9);
+  approx(P.polygonArea(lPolygon(24, 20, 10, 8)), 24 * 20 - 80, 1e-9);
+  approx(P.polygonArea(lPolygon(24, 20, 10, 8).reverse()), 24 * 20 - 80, 1e-9);
+  approx(P.polygonArea(tPolygon), 24 * 8 + 8 * 12, 1e-9);
+});
+
+test('isPointInPolygon: inside and on the walls count, the notch and beyond do not', () => {
+  for(const poly of [lPolygon(24, 20, 10, 8), lPolygon(24, 20, 10, 8).reverse()]){
+    assert.strictEqual(P.isPointInPolygon(5, 5, poly), true);
+    assert.strictEqual(P.isPointInPolygon(20, 5, poly), true, 'beside the notch');
+    assert.strictEqual(P.isPointInPolygon(5, 18, poly), true, 'below the notch');
+    assert.strictEqual(P.isPointInPolygon(20, 16, poly), false, 'in the notch');
+    assert.strictEqual(P.isPointInPolygon(-0.01, 5, poly), false);
+    assert.strictEqual(P.isPointInPolygon(24.01, 5, poly), false);
+    assert.strictEqual(P.isPointInPolygon(5, 20.01, poly), false);
+    // every wall and corner, the inside corner and the notch's walls included
+    for(const [x, y] of [[0, 0], [24, 0], [0, 20], [24, 12], [14, 12], [14, 20], [0, 7], [24, 3], [12, 0], [7, 20], [14, 15], [19, 12]]){
+      assert.strictEqual(P.isPointInPolygon(x, y, poly), true, `(${x}, ${y}) is on a wall`);
+    }
+  }
+});
+
+// Solved once and shared by the tests below.
+const rectRoom = { w: 20, d: 15, h: 8 };
+const rectPlan = P.solveFloorPlan(rectPolygon(20, 15));
+const lRoom = { w: 24, d: 20, h: 8 };
+const lPoly = lPolygon(24, 20, 10, 8);
+const lPlan = P.solveFloorPlan(lPoly, { cellM: 0.15 });
+
+test('solveFloorPlan: the grid puts a line on every wall, even at awkward sizes, with no cell over cellM', () => {
+  const poly = lPolygon(23.37, 19.13, 9.71, 7.29);
+  const plan = P.solveFloorPlan(poly, { cellM: 0.2, cutoffHz: 120 });
+  for(const p of poly){
+    assert.ok(plan.xs.includes(p.x * 0.3048), `x = ${p.x} ft is a grid line`);
+    assert.ok(plan.ys.includes(p.y * 0.3048), `y = ${p.y} ft is a grid line`);
+  }
+  for(const lines of [plan.xs, plan.ys]){
+    for(let i = 0; i + 1 < lines.length; i++) assert.ok(lines[i + 1] - lines[i] > 0 && lines[i + 1] - lines[i] <= 0.2 + 1e-12);
+  }
+  // the cells tile the room exactly: their areas add up to the polygon's, and each center is inside it
+  const { area, ci, cj } = planCells(plan);
+  approx(area.reduce((a, b) => a + b, 0), P.polygonArea(poly) * 0.3048 * 0.3048, 1e-9);
+  approx(plan.areaM2, P.polygonArea(poly) * 0.3048 * 0.3048, 1e-9);
+  for(let k = 0; k < plan.numCells; k++){
+    const x = (plan.xs[ci[k]] + plan.xs[ci[k] + 1]) / 2 / 0.3048, y = (plan.ys[cj[k]] + plan.ys[cj[k] + 1]) / 2 / 0.3048;
+    assert.ok(P.isPointInPolygon(x, y, poly));
+  }
+  assert.strictEqual(plan.cellId.filter(id => id >= 0).length, plan.numCells);
+  assert.deepStrictEqual(plan.polygon, poly);
+});
+
+test('solveFloorPlan: grid lines crowd toward an inside corner, and a rectangle (no inside corner) gets an even grid', () => {
+  const widths = (lines) => Array.from({ length: lines.length - 1 }, (_, i) => lines[i + 1] - lines[i]);
+  const rw = widths(rectPlan.xs);
+  approx(Math.min(...rw), Math.max(...rw), 1e-12, 'even grid for a rectangle');
+  // the inside corner of lPoly is at x = 14 ft, y = 12 ft
+  const at = lPlan.xs.indexOf(14 * 0.3048), lw = widths(lPlan.xs);
+  assert.ok(at > 0);
+  assert.ok(lw[at] < 0.5 * lPlan.cellM && lw[at - 1] < 0.5 * lPlan.cellM, `cells beside the corner are ${lw[at - 1]} and ${lw[at]} m`);
+  assert.ok(lw[at] >= 0.24 * lPlan.cellM, 'never below a quarter of cellM');
+  assert.ok(lw[0] > 0.9 * lPlan.cellM && lw[lw.length - 1] > 0.9 * lPlan.cellM, 'full-size cells away from it');
+});
+
+test('solveFloorPlan rejects a wall that is not parallel to x or y', () => {
+  assert.throws(() => P.solveFloorPlan([{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 18, y: 15 }, { x: 0, y: 15 }]), /along x or y/);
+});
+
+test('solveFloorPlan on a rectangle reproduces the formula\'s floor modes: same count, eigenvalues within 0.1%', () => {
+  const Lx = 20 * 0.3048, Ly = 15 * 0.3048;
+  const exact = [];
+  for(let a = 0; a < 40; a++) for(let b = 0; b < 40; b++) exact.push(Math.pow(a * Math.PI / Lx, 2) + Math.pow(b * Math.PI / Ly, 2));
+  exact.sort((x, y) => x - y);
+  const below = exact.filter(v => v < cutoffLambda(300)).length;
+  assert.strictEqual(below, 76);
+  // the solver may also keep a mode within its own error of the cutoff
+  assert.ok(rectPlan.numModes >= below && rectPlan.numModes <= below + 1, `${rectPlan.numModes} modes`);
+  assert.ok(rectPlan.kSquared[0] < 1e-9, 'mode 0 is the uniform mode');
+  for(let k = 0; k < rectPlan.numCells; k += 97) approx(rectPlan.shapes[k * rectPlan.numModes], rectPlan.shapes[0], 1e-5);
+  approx(Math.abs(rectPlan.shapes[0]), 1, 1e-5, 'mean square 1');
+  for(let m = 1; m < rectPlan.numModes; m++){
+    approx(rectPlan.kSquared[m], exact[m], 1e-3 * exact[m], `mode ${m}`);
+    assert.ok(rectPlan.kSquared[m] >= rectPlan.kSquared[m - 1], 'ascending');
+  }
+});
+
+test('solveFloorPlan: the returned shapes satisfy the grid equations, are orthonormal, and kSquared is their grid eigenvalue plus the dispersion correction', () => {
+  for(const plan of [rectPlan, lPlan]){
+    assert.ok(shapesOrthonormalityError(plan) < 1e-6);
+    for(let m = 0; m < plan.numModes; m += 7){
+      const { rayleigh, shift } = modeRayleighAndShift(plan, m);
+      approx(rayleigh + shift, plan.kSquared[m], 1e-6 * Math.max(1, plan.kSquared[m]), `mode ${m}`);
+      assert.ok(shift >= 0 && shift < 0.1 * Math.max(1, plan.kSquared[m]), 'the correction is small');
+    }
+  }
+});
+
+test('solveFloorPlan misses no mode: its modes are the lowest eigenvalues of the grid operator, solved densely, one for one', () => {
+  // A coarse grid keeps the dense solve small, and the 20 x 16 ft room has
+  // enough modes under 300 Hz to need more than one slice of the spectrum.
+  const plan = P.solveFloorPlan(lPolygon(20, 16, 8, 6), { cellM: 0.38 });
+  const n = plan.numCells;
+  assert.ok(n > 150 && n < 400, `${n} cells`);
+  const { area } = planCells(plan);
+  const dense = new Float64Array(n * n);
+  forEachFace(plan, (k, m, g) => {
+    dense[k * n + k] += g / area[k];
+    dense[m * n + m] += g / area[m];
+    dense[k * n + m] = dense[m * n + k] = -g / Math.sqrt(area[k] * area[m]);
+  });
+  const all = denseSymmetricEigenvalues(dense, n);
+  const found = Array.from({ length: plan.numModes }, (_, m) => modeRayleighAndShift(plan, m).rayleigh).sort((x, y) => x - y);
+  // On a grid this coarse the dispersion correction is large, and it lifts
+  // the upper grid eigenvalues over the cutoff (those modes are then
+  // dropped). It adds at most about (h * v)^2 / 12 to a grid eigenvalue v,
+  // so with twice that as margin every v below `safe` must be among the
+  // solver's modes, in order and with nothing in between.
+  const lamMax = cutoffLambda(300), c = 0.38 * 0.38 / 6;
+  const safe = (Math.sqrt(1 + 4 * c * lamMax) - 1) / (2 * c);
+  let matched = 0;
+  for(const v of all.filter(x => x < lamMax)){
+    if(matched < found.length && Math.abs(found[matched] - v) <= 1e-6 * Math.max(1, v)) matched++;
+    else assert.ok(v > safe, `grid eigenvalue ${v} has no mode (modes are required up to ${safe})`);
+  }
+  assert.strictEqual(matched, plan.numModes, 'every mode is a grid eigenvalue');
+  assert.ok(all.filter(v => v < safe).length > 45, 'more than one 40-mode slice of the spectrum is checked');
+});
+
+test('solveFloorPlan converges on the standard L-shape benchmark, repeated eigenvalue included', () => {
+  // Three unit squares in an L: Neumann eigenvalues 1.4756218450,
+  // 3.5340313683, pi^2 (twice), 11.3894793979. The first has the strongest
+  // inside-corner singularity and converges slowest.
+  const u = 1 / 0.3048;
+  const unitL = [{ x: 0, y: 0 }, { x: 2 * u, y: 0 }, { x: 2 * u, y: u }, { x: u, y: u }, { x: u, y: 2 * u }, { x: 0, y: 2 * u }];
+  const exact = [1.4756218450, 3.5340313683, Math.PI * Math.PI, Math.PI * Math.PI, 11.3894793979];
+  const cutoffHz = P.C * Math.sqrt(15) / (2 * Math.PI); // eigenvalues below 15
+  const errorsAt = (cellM) => {
+    const plan = P.solveFloorPlan(unitL, { cellM, cutoffHz });
+    assert.strictEqual(plan.numModes, 7, 'the uniform mode, the five above and one more below 15');
+    return exact.map((e, i) => Math.abs(plan.kSquared[i + 1] - e) / e);
+  };
+  const coarse = errorsAt(0.1), fine = errorsAt(0.05);
+  assert.ok(coarse[0] < 0.005 && fine[0] < 0.002, `singular mode off by ${coarse[0]} then ${fine[0]}`);
+  for(let i = 1; i < 5; i++) assert.ok(coarse[i] < 0.002 && fine[i] < 0.0003, `mode ${i + 1} off by ${coarse[i]} then ${fine[i]}`);
+  for(let i = 0; i < 5; i++) assert.ok(fine[i] < 0.5 * coarse[i], `mode ${i + 1} at least halves its error`);
+});
+
+test('solveFloorPlan solves T and U rooms completely: orthonormal shapes and the mode count Weyl\'s law predicts', () => {
+  for(const poly of [tPolygon, uPolygon]){
+    const plan = P.solveFloorPlan(poly, { cellM: 0.15 });
+    assert.strictEqual(plan.numWalls, 8);
+    assert.ok(Math.abs(plan.numModes - weylModeCount(poly, 300)) <= 3, `${plan.numModes} modes, Weyl ${weylModeCount(poly, 300)}`);
+    assert.ok(shapesOrthonormalityError(plan) < 1e-6);
+    for(let m = 1; m < plan.numModes; m++) assert.ok(plan.kSquared[m] >= plan.kSquared[m - 1] && plan.kSquared[m] < cutoffLambda(300));
+  }
+  assert.ok(Math.abs(lPlan.numModes - weylModeCount(lPoly, 300)) <= 3);
+});
+
+test('solveFloorPlan gives the same modes whichever corner the polygon starts at and whichever way round it goes', () => {
+  const turned = lPoly.slice(2).concat(lPoly.slice(0, 2)).reverse();
+  const other = P.solveFloorPlan(turned, { cellM: 0.15 });
+  assert.strictEqual(other.numModes, lPlan.numModes);
+  for(let m = 0; m < lPlan.numModes; m++) approx(other.kSquared[m], lPlan.kSquared[m], 1e-7);
+});
+
+test('solveFloorPlan options: cellM sets the grid (a coarser preview has fewer cells), cutoffHz the highest mode', () => {
+  assert.strictEqual(P.FLOOR_PLAN_CELL_M, 0.1);
+  assert.strictEqual(rectPlan.cellM, 0.1);
+  assert.strictEqual(rectPlan.cutoffHz, P.MODE_CUTOFF_HZ);
+  const preview = P.solveFloorPlan(rectPolygon(20, 15), { cellM: 0.2, cutoffHz: 150 });
+  assert.ok(preview.numCells < rectPlan.numCells / 3);
+  assert.ok(preview.numModes > 15 && preview.numModes < rectPlan.numModes / 3);
+  assert.ok(preview.kSquared[preview.numModes - 1] < cutoffLambda(150));
+  for(let m = 1; m < preview.numModes; m++) approx(preview.kSquared[m], rectPlan.kSquared[m], 3e-3 * rectPlan.kSquared[m]);
+});
+
+test('solveFloorPlan stays accurate when a spectrum shift lands exactly on an eigenvalue', () => {
+  // A 12 x 9 ft rectangle at this cell size has an even 36 x 27 grid, whose
+  // (a, b) mode has the grid eigenvalue onMode below. With 40 modes or
+  // fewer under the cutoff the spectrum is one slice, shifted to half the
+  // cutoff's eigenvalue, so a cutoff at twice onMode puts the shift exactly
+  // on that mode, where the factorization would divide by nearly zero.
+  // Without the guard in eigenpairsBelow these three cases throw, miscount
+  // and return eigenvalues off by 4% respectively.
+  const Lx = 12 * 0.3048, Ly = 9 * 0.3048, h = Lx / 36;
+  for(const [a, b] of [[4, 0], [3, 0], [2, 3]]){
+    const onMode = 4 / (h * h) * (Math.pow(Math.sin(a * Math.PI * h / (2 * Lx)), 2) + Math.pow(Math.sin(b * Math.PI * h / (2 * Ly)), 2));
+    const cutoffHz = P.C * Math.sqrt(2 * onMode) / (2 * Math.PI);
+    const plan = P.solveFloorPlan(rectPolygon(12, 9), { cellM: h + 1e-9, cutoffHz });
+    assert.strictEqual(plan.nx, 36);
+    assert.ok(plan.numModes > 10 && plan.numModes <= 40, `${plan.numModes} modes`);
+    // a slightly higher cutoff shifts elsewhere and must find the same modes
+    const nearby = P.solveFloorPlan(rectPolygon(12, 9), { cellM: h + 1e-9, cutoffHz: cutoffHz * 1.001 });
+    assert.ok(nearby.numModes >= plan.numModes && nearby.numModes <= plan.numModes + 1);
+    for(let m = 0; m < plan.numModes; m++) approx(plan.kSquared[m], nearby.kSquared[m], 1e-8, `mode ${m} with the shift on (${a}, ${b})`);
+    assert.ok(shapesOrthonormalityError(plan) < 1e-6);
+  }
+});
+
+test('solveFloorPlan wallWeights: the uniform mode weighs each wall by its length, and a rectangle\'s modes match cos^2 integrals', () => {
+  const lengthsFt = lPoly.map((p, i) => { const q = lPoly[(i + 1) % lPoly.length]; return Math.hypot(q.x - p.x, q.y - p.y); });
+  assert.strictEqual(lPlan.numWalls, 6);
+  for(let i = 0; i < 6; i++) approx(lPlan.wallWeights[i], lengthsFt[i] * 0.3048, 1e-5, `wall ${i}`);
+  // Mode 1 of the 20 x 15 ft rectangle is sqrt(2) cos(pi x / Lx): it is 2 all along the walls at x = 0 and x = Lx (walls 3 and 1), and averages 1 along walls 0 and 2.
+  const W = rectPlan.numWalls, Lx = 20 * 0.3048, Ly = 15 * 0.3048;
+  approx(rectPlan.wallWeights[1 * W + 1], 2 * Ly, 1e-3 * Ly);
+  approx(rectPlan.wallWeights[1 * W + 3], 2 * Ly, 1e-3 * Ly);
+  approx(rectPlan.wallWeights[1 * W + 0], Lx, 1e-3 * Lx);
+  approx(rectPlan.wallWeights[1 * W + 2], Lx, 1e-3 * Lx);
+});
+
+console.log('\n-- Floor-plan modes in the room\'s mode sums (enumerateModes / precomputeModalField / computeFieldAtPoint with ctx.floorPlan) --');
+
+test('enumerateModes with ctx.floorPlan: every floor mode times every height cosine under the cutoff, carrying the plan', () => {
+  const ctx = { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const modes = P.enumerateModes(ctx);
+  assert.strictEqual(modes.floorPlan, lPlan);
+  const Lz = 8 * 0.3048;
+  let expected = 0;
+  for(let m = 0; m < lPlan.numModes; m++){
+    for(let nz = 0; P.C * Math.sqrt(lPlan.kSquared[m] + Math.pow(nz * Math.PI / Lz, 2)) / (2 * Math.PI) <= 300; nz++) expected++;
+  }
+  assert.strictEqual(modes.length, expected);
+  for(const mode of modes){
+    approx(mode.kn, Math.sqrt(lPlan.kSquared[mode.shape] + mode.invLz * mode.invLz), 1e-12);
+    approx(mode.invLz, mode.nz * Math.PI / Lz, 1e-12);
+    approx(mode.fn, P.C * mode.kn / (2 * Math.PI), 1e-9);
+    assert.ok(mode.fn <= 300);
+    approx(mode.An, P.C * P.C * (mode.nz === 0 ? 1 : 2) / (lPlan.areaM2 * Lz), 1e-9);
+  }
+  // the uniform mode's height series is the rectangle's: nz * c / (2 Lz)
+  const vertical = modes.filter(m => m.shape === 0).map(m => m.fn);
+  vertical.forEach((fn, nz) => approx(fn, nz * P.C / (2 * Lz), 1e-4));
+  assert.strictEqual(P.enumerateModes(ctx, 100).every(m => m.fn <= 100), true);
+  assert.deepStrictEqual(Array.from(P.enumerateModes({ room: { w: 24, d: 20, h: 0 }, wallAbsorption: 0.05, floorPlan: lPlan })), []);
+});
+
+test('enumerateModes with ctx.floorPlan: uniform absorption gives the uniform mode the Sabine rate, and wall i\'s material is wallMaterials[i]', () => {
+  const alpha = 0.05, Lz = 8 * 0.3048;
+  const perimeterM = (24 + 12 + 10 + 8 + 14 + 20) * 0.3048;
+  const base = P.enumerateModes({ room: lRoom, wallAbsorption: alpha, floorPlan: lPlan });
+  // (1/8) * alpha * S / V with S = perimeter * Lz + 2 * area, V = area * Lz
+  approx(base[0].deltaN, alpha * (perimeterM * Lz + 2 * lPlan.areaM2) / (8 * lPlan.areaM2 * Lz), 1e-6);
+  // wall 3 is the 8 ft wall of the notch; making it masonry (0.03) removes exactly its share
+  const mats = [null, null, null, P.WALL_MATERIALS.masonry, null, null];
+  const changed = P.enumerateModes({ room: lRoom, wallAbsorption: alpha, wallMaterials: mats, floorPlan: lPlan });
+  approx(base[0].deltaN - changed[0].deltaN, (alpha - 0.03) * 8 * 0.3048 / (8 * lPlan.areaM2), 1e-7);
+  // the floor and the ceiling keep their own settings
+  const lossy = P.enumerateModes({ room: lRoom, wallAbsorption: alpha, floorAbsorption: 0.25, floorPlan: lPlan });
+  approx(lossy[0].deltaN - base[0].deltaN, (0.25 - alpha) / (8 * Lz), 1e-9);
+});
+
+test('a rectangle solved as a floor plan matches the rectangle formula: per-mode damping within 0.2% with mixed materials', () => {
+  // 17.3 x 12.1 ft has no repeated floor modes, so the two mode lists pair up by frequency.
+  const room = { w: 17.3, d: 12.1, h: 9 }, W = P.WALL_MATERIALS;
+  const plan = P.solveFloorPlan(rectPolygon(17.3, 12.1), { cutoffHz: 200 });
+  const shared = { room, wallAbsorption: 0.05, floorAbsorption: 0.1, ceilingMaterial: W.suspendedTile };
+  // polygon walls in order: y = 0 (front), x = w (right), y = d (back), x = 0 (left)
+  const formula = P.enumerateModes(Object.assign({ wallMaterials: { front: W.masonry, right: W.drywallInsulated, back: W.drywallHollow } }, shared), 200);
+  const numeric = P.enumerateModes(Object.assign({ wallMaterials: [W.masonry, W.drywallInsulated, W.drywallHollow, null], floorPlan: plan }, shared), 200);
+  formula.sort((a, b) => a.fn - b.fn); numeric.sort((a, b) => a.fn - b.fn);
+  assert.ok(numeric.length >= formula.length && numeric.length <= formula.length + 2);
+  for(let i = 0; i < formula.length - 2; i++){
+    approx(numeric[i].fn, formula[i].fn, 5e-4 * formula[i].fn + 1e-3, `fn of mode ${i}`);
+    approx(numeric[i].deltaN, formula[i].deltaN, 2e-3 * formula[i].deltaN, `deltaN of mode ${i} at ${formula[i].fn} Hz`);
+  }
+});
+
+test('a rectangle solved as a floor plan matches the rectangle formula: frequency response within 0.05 dB on average, 15 to 200 Hz', () => {
+  const src = [{ x: 5, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 },
+               { x: 15, y: 0.75, z: 1, levelDb: -3, delayMs: 2, freqLow: 20, freqHigh: 120 }];
+  const freqs = P.logSpacedFreqs(15, 200, 80);
+  const formula = P.spatiallyAveragedResponse(10, 9, 3.5, freqs, src, { room: rectRoom, wallAbsorption: 0.05 }, {});
+  const numeric = P.spatiallyAveragedResponse(10, 9, 3.5, freqs, src, { room: rectRoom, wallAbsorption: 0.05, floorPlan: rectPlan }, {});
+  const diffs = formula.map((r, i) => Math.abs(r.db - numeric[i].db));
+  const mean = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+  assert.ok(mean < 0.05, `mean difference ${mean} dB`);
+  assert.ok(Math.max(...diffs) < 0.3, `largest difference ${Math.max(...diffs)} dB`);
+});
+
+test('computeFieldAtPoint with floor-plan modes: a point beyond a wall reads its mirror image, as the rectangle\'s cosines do', () => {
+  const src = [{ x: 5, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const formulaCtx = { room: rectRoom, wallAbsorption: 0.05 }, numericCtx = { room: rectRoom, wallAbsorption: 0.05, floorPlan: rectPlan };
+  for(const freq of [35, 62, 97]){
+    const formula = P.precomputeModalField(src, freq, formulaCtx, P.enumerateModes(formulaCtx));
+    const numeric = P.precomputeModalField(src, freq, numericCtx, P.enumerateModes(numericCtx));
+    assert.strictEqual(numeric.floorPlan, rectPlan);
+    const points = [[-1.5, 6], [21.2, 9], [8, -0.8], [8, 16.4], [-1, -1], [10, 7]];
+    // tolerance: 2% of the field's typical size over these points (a point near a null is small against it)
+    const typical = points.reduce((sum, [x, y]) => sum + magOf(P.computeFieldAtPoint(x, y, 3.5, formula)), 0) / points.length;
+    for(const [x, y] of points){
+      const want = P.computeFieldAtPoint(x, y, 3.5, formula), got = P.computeFieldAtPoint(x, y, 3.5, numeric);
+      approx(got.re, want.re, 0.02 * typical, `re at (${x}, ${y}), ${freq} Hz`);
+      approx(got.im, want.im, 0.02 * typical, `im at (${x}, ${y}), ${freq} Hz`);
+    }
+    // inside the room the mirror plays no part: (-1.5, 6) reads exactly what (1.5, 6) reads
+    assert.deepStrictEqual(P.computeFieldAtPoint(-1.5, 6, 3.5, numeric), P.computeFieldAtPoint(1.5, 6, 3.5, numeric));
+  }
+  assert.deepStrictEqual(P.computeFieldAtPoint(5, 5, 3.5, []), { re: 0, im: 0 });
+});
+
+test('floor-plan modes in an L room: swapping source and listener gives the same pressure (reciprocity)', () => {
+  const ctx = { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const modes = P.enumerateModes(ctx);
+  const a = { x: 3.1, y: 2.2, z: 1 }, b = { x: 9.3, y: 17.4, z: 3.5 }; // b is in the arm below the notch
+  const source = (p) => [{ x: p.x, y: p.y, z: p.z, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  for(const freq of [28, 55, 110, 180]){
+    const ab = P.computeFieldAtPoint(b.x, b.y, b.z, P.precomputeModalField(source(a), freq, ctx, modes));
+    const ba = P.computeFieldAtPoint(a.x, a.y, a.z, P.precomputeModalField(source(b), freq, ctx, modes));
+    approx(ab.re, ba.re, 1e-9 * magOf(ab)); approx(ab.im, ba.im, 1e-9 * magOf(ab));
+    assert.ok(magOf(ab) > 0);
+  }
+});
+
+test('floor-plan modes in an L room: a point in the notch reads its mirror image in the room, and the bounding rectangle is a poor stand-in', () => {
+  const ctx = { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const src = [{ x: 6, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const pre = P.precomputeModalField(src, 48, ctx, P.enumerateModes(ctx));
+  // (15, 14) is 1 ft into the notch past the wall x = 14; (20, 12.5) is 0.5 ft into it past y = 12
+  assert.deepStrictEqual(P.computeFieldAtPoint(15, 14, 3.5, pre), P.computeFieldAtPoint(13, 14, 3.5, pre));
+  assert.deepStrictEqual(P.computeFieldAtPoint(20, 12.5, 3.5, pre), P.computeFieldAtPoint(20, 11.5, 3.5, pre));
+  const range = P.sampleFieldDbRange(pre, lRoom, 3.5, 12);
+  assert.ok(Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min);
+
+  const freqs = P.logSpacedFreqs(15, 200, 60);
+  const lResp = P.spatiallyAveragedResponse(12, 10, 3.5, freqs, src, ctx, {});
+  const boxResp = P.spatiallyAveragedResponse(12, 10, 3.5, freqs, src, { room: lRoom, wallAbsorption: 0.05 }, {});
+  const meanDiff = lResp.reduce((sum, r, i) => sum + Math.abs(r.db - boxResp[i].db), 0) / freqs.length;
+  assert.ok(meanDiff > 2, `treating the L as its 24 x 20 ft box is off by ${meanDiff} dB on average`);
+});
+
+test('floor-plan modes: the coarse preview grid stays close to the full one in an L room', () => {
+  const full = P.solveFloorPlan(lPoly);
+  const src = [{ x: 6, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const freqs = P.logSpacedFreqs(15, 120, 60);
+  const coarse = P.spatiallyAveragedResponse(12, 10, 3.5, freqs, src, { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan }, {});
+  const fine = P.spatiallyAveragedResponse(12, 10, 3.5, freqs, src, { room: lRoom, wallAbsorption: 0.05, floorPlan: full }, {});
+  const diffs = coarse.map((r, i) => Math.abs(r.db - fine[i].db));
+  const mean = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+  assert.ok(mean < 0.15, `0.15 m against 0.1 m grid: ${mean} dB on average below 120 Hz`);
+  assert.ok(Math.max(...diffs) < 1.5, `largest ${Math.max(...diffs)} dB`);
+});
+
+test('the sub optimizer runs on floor-plan modes and scores the spots as the rectangle formula does', () => {
+  const mains = [{ x: 5, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  const options = (physicsCtx) => ({
+    room: rectRoom, otherSources: mains, freqList: P.optimizerFreqList(20, 120), physicsCtx, gridStepFt: 2.5,
+    listenerPositions: [{ x: 10, y: 9, z: 3.5 }, { x: 12, y: 9, z: 3.5 }], candidateTemplate: P.NEW_SUB_DEFAULTS
+  });
+  const formula = P.optimizeSubPlacement(options({ room: rectRoom, wallAbsorption: 0.05 }));
+  const numeric = P.optimizeSubPlacement(options({ room: rectRoom, wallAbsorption: 0.05, floorPlan: rectPlan }));
+  assert.strictEqual(numeric.allCandidates.length, formula.allCandidates.length);
+  // Listeners here are single points, so a spot whose response has a deep
+  // null moves more than the rest: within 0.1 dB for the typical spot,
+  // 1.5 dB for any, over scores that span 20 dB.
+  const diffs = formula.allCandidates.map((c, i) => Math.abs(numeric.allCandidates[i].score - c.score)).sort((a, b) => a - b);
+  assert.ok(diffs.length >= 40);
+  assert.ok(diffs[diffs.length >> 1] < 0.1, `median score difference ${diffs[diffs.length >> 1]} dB`);
+  assert.ok(diffs[diffs.length - 1] < 1.5, `largest score difference ${diffs[diffs.length - 1]} dB`);
+  approx(numeric.best.score, formula.best.score, 0.1);
+  assert.deepStrictEqual([numeric.best.x, numeric.best.y], [formula.best.x, formula.best.y]);
+});
+
+test('estimatedT60 and schroederFrequency use a polygon room\'s own floor area and walls', () => {
+  const asRect = { w: 20, d: 15, h: 8 }, asPolygon = { w: 20, d: 15, h: 8, polygon: rectPolygon(20, 15) };
+  const ctx = { wallAbsorption: 0.1, floorAbsorption: 0.2, ceilingMaterial: P.WALL_MATERIALS.suspendedTile };
+  approx(P.estimatedT60(asPolygon, 60, ctx), P.estimatedT60(asRect, 60, ctx), 1e-12);
+  approx(P.schroederFrequency(asPolygon, 0.4), P.schroederFrequency(asRect, 0.4), 1e-12);
+
+  // L room: 400 ft^2 of floor and an 88 ft perimeter, flat absorption 0.1
+  const lShaped = { w: 24, d: 20, h: 8, polygon: lPoly };
+  const m2 = 0.3048 * 0.3048, volume = 400 * 8 * m2 * 0.3048, surface = (88 * 8 + 2 * 400) * m2;
+  approx(P.estimatedT60(lShaped, 60, { wallAbsorption: 0.1 }), 0.161 * volume / (-surface * Math.log(1 - 0.1)), 1e-9);
+  approx(P.schroederFrequency(lShaped, 0.4), 2000 * Math.sqrt(0.4 / volume), 1e-9);
+  // wall 3 (the notch's 8 ft wall) made masonry: its 64 ft^2 absorb 0.03 instead of 0.1
+  const mats = [null, null, null, P.WALL_MATERIALS.masonry, null, null];
+  const avgAlpha = (0.1 * (88 * 8 + 800) - 0.07 * 64) / (88 * 8 + 800);
+  approx(P.estimatedT60(lShaped, 60, { wallAbsorption: 0.1, wallMaterials: mats }), 0.161 * volume / (-surface * Math.log(1 - avgAlpha)), 1e-9);
+});
+
 (async () => {
   for(const { name, fn } of pendingAsync){
     try {
