@@ -1912,7 +1912,7 @@ function applyAppearanceAttrs(mode, theme){
   // the next move.
   // The delay automatic time-align gives each of these sources, id -> ms.
   function alignedDelays(activeSources){
-    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow(), RoomPhysics.TIME_ALIGN_STEP_MS); // the 0.1 ms slider step
+    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow(), RoomPhysics.TIME_ALIGN_STEP_MS, room); // the 0.1 ms slider step
     return new Map(results.map(r => [r.id, r.delayMs]));
   }
   function autoTimeAlign(){
@@ -4601,11 +4601,12 @@ function applyAppearanceAttrs(mode, theme){
     // The green-to-red map of how every candidate position scored.
     getScoreHeatmap: () => document.getElementById('showHeatmapToggle').checked,
     setScoreHeatmap(on){ document.getElementById('showHeatmapToggle').checked = on; draw(); },
-    // Each sub with its nearest side and end wall and its straight-line
-    // distance to the main seat.
+    // Each sub with its nearest side and end wall and its distance to the
+    // main seat, round an inside corner when the straight line would pass
+    // outside the room (aroundCorner).
     getSubPlan: () => sources.filter(isSubSource).map(s => {
-      const seat = primaryRow();
-      return { name: s.name, walls: namedWallDistances(s), seatDistanceFt: Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) };
+      const seat = primaryRow(), seatDistanceFt = RoomPhysics.soundPathFt(s, seat, room);
+      return { name: s.name, walls: namedWallDistances(s), seatDistanceFt, aroundCorner: seatDistanceFt > Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) + 0.01 };
     }),
     savePreset: savePresetAs,
     // Draws the page in the light palette while printing, then puts the

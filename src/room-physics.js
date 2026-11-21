@@ -1653,6 +1653,60 @@
     return { freqs, perCenterDb };
   }
 
+  // ---- Shortest path inside a floor plan ----
+  // True when the straight segment from a to b stays on the floor (inside
+  // the polygon or along a wall). The segment is cut wherever it meets a
+  // wall's line within that wall, and the middle of each piece is tested.
+  function floorPlanSegmentClear(a, b, polygon){
+    const ts = [0, 1], dx = b.x - a.x, dy = b.y - a.y, eps = 1e-9;
+    floorPlanWalls(polygon).forEach(({ a: p, b: q, horizontal }) => {
+      const [d, from, at, lo, hi, other, otherFrom] = horizontal
+        ? [dy, a.y, p.y, Math.min(p.x, q.x), Math.max(p.x, q.x), dx, a.x]
+        : [dx, a.x, p.x, Math.min(p.y, q.y), Math.max(p.y, q.y), dy, a.y];
+      if(Math.abs(d) < eps) return;
+      const t = (at - from) / d, along = otherFrom + other * t;
+      if(t > 0 && t < 1 && along >= lo - eps && along <= hi + eps) ts.push(t);
+    });
+    ts.sort((u, v) => u - v);
+    for(let k = 1; k < ts.length; k++){
+      if(ts[k] - ts[k - 1] < eps) continue;
+      const t = (ts[k] + ts[k - 1]) / 2, x = a.x + dx * t, y = a.y + dy * t;
+      if(!isPointInPolygon(x, y, polygon) && floorPlanClearance(x, y, polygon) > 1e-6) return false;
+    }
+    return true;
+  }
+  // Length in feet of the shortest path from a to b ({x, y} in feet) that
+  // stays inside `polygon`: the straight line when nothing is in the way,
+  // otherwise the path that bends round the room's inside corners (the
+  // only places a shortest path inside a polygon bends), found with
+  // Dijkstra over the corners each point can see.
+  function floorPlanPathLength(a, b, polygon){
+    if(floorPlanSegmentClear(a, b, polygon)) return Math.hypot(b.x - a.x, b.y - a.y);
+    const nodes = [a].concat(polygon.filter((_, i) => !isConvexCorner(polygon, i)), [b]);
+    const dist = nodes.map((_, i) => i === 0 ? 0 : Infinity), done = nodes.map(() => false);
+    for(;;){
+      let i = -1;
+      dist.forEach((d, k) => { if(!done[k] && d < Infinity && (i < 0 || d < dist[i])) i = k; });
+      if(i < 0) return Infinity;
+      if(i === nodes.length - 1) return dist[i];
+      done[i] = true;
+      nodes.forEach((n, k) => {
+        if(done[k] || !floorPlanSegmentClear(nodes[i], n, polygon)) return;
+        dist[k] = Math.min(dist[k], dist[i] + Math.hypot(n.x - nodes[i].x, n.y - nodes[i].y));
+      });
+    }
+  }
+  // Distance in feet that sound travels from a source to a listener ({x,
+  // y, z} in feet): the straight line, or in a room with room.polygon the
+  // shortest path round any inside corner in the way. The walls are
+  // vertical, so the height difference adds to that path as it does to a
+  // straight line (the path unfolds flat).
+  function soundPathFt(source, listener, room){
+    const dz = (source.z ?? 0) - (listener.z ?? 0);
+    const flat = room && room.polygon ? floorPlanPathLength(source, listener, room.polygon) : Math.hypot(source.x - listener.x, source.y - listener.y);
+    return Math.hypot(flat, dz);
+  }
+
   // ---- Time alignment: delay each source so all arrive at a point together ----
   // Real speaker/sub distances from the listener differ, so their direct
   // sound arrives at different times -- AVR "speaker distance" settings (or
@@ -1663,15 +1717,12 @@
   // sources: array of {id, x, y, z}. listener: {x, y, z}. Returns
   // [{id, delayMs}, ...], one entry per input source, in order. With
   // `stepMs`, each delay is rounded to that step (TIME_ALIGN_STEP_MS is the
-  // app's delay resolution).
+  // app's delay resolution). With a `room` that has room.polygon, each
+  // distance is the path round any inside corner in the way (soundPathFt),
+  // as an AVR's auto-setup microphone would measure it.
   const TIME_ALIGN_STEP_MS = 0.1;
-  function timeAlignDelays(sources, listener, stepMs){
-    const distM = sources.map(s => {
-      const dx = (s.x - listener.x) * FT_TO_M;
-      const dy = (s.y - listener.y) * FT_TO_M;
-      const dz = ((s.z ?? 0) - listener.z) * FT_TO_M;
-      return Math.sqrt(dx*dx + dy*dy + dz*dz);
-    });
+  function timeAlignDelays(sources, listener, stepMs, room){
+    const distM = sources.map(s => soundPathFt(s, listener, room) * FT_TO_M);
     const maxDist = distM.length ? Math.max(...distM) : 0;
     const perMs = stepMs ? 1 / stepMs : 0; // steps per ms: 10 for the 0.1 ms step, so rounded values stay clean decimals
     return sources.map((s, i) => {
@@ -1680,9 +1731,10 @@
     });
   }
   // Copies of `sources`, each with the delay automatic time alignment to
-  // `listener` gives it, at the app's delay resolution.
-  function timeAlignedSources(sources, listener){
-    const delays = timeAlignDelays(sources, listener, TIME_ALIGN_STEP_MS);
+  // `listener` gives it, at the app's delay resolution (see timeAlignDelays
+  // for `room`).
+  function timeAlignedSources(sources, listener, room){
+    const delays = timeAlignDelays(sources, listener, TIME_ALIGN_STEP_MS, room);
     return sources.map((s, i) => Object.assign({}, s, { delayMs: delays[i].delayMs }));
   }
 
@@ -2482,7 +2534,7 @@
         let candidate = Object.assign({}, candidateTemplate, { x, y, z });
         let others = otherSources;
         if(timeAlignTo){
-          others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo);
+          others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo, room);
           candidate = others.pop();
         }
         const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
@@ -2937,6 +2989,8 @@
     schroederFrequency,
     TIME_ALIGN_STEP_MS,
     timeAlignDelays,
+    floorPlanPathLength,
+    soundPathFt,
     timeAlignedSources,
     earPositions,
     fieldDbAtEars,
