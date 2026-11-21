@@ -1971,7 +1971,7 @@ function applyAppearanceAttrs(mode, theme){
         room, otherSources, freqList, listenerPositions,
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
-        excludePoints: RoomPhysics.sourceExclusionPoints(otherSources), candidateTemplate: existingSubs[0], timeAlignTo,
+        excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
       const moved = result.best !== null && (result.best.x !== existingSubs[0].x || result.best.y !== existingSubs[0].y);
@@ -3747,21 +3747,22 @@ function applyAppearanceAttrs(mode, theme){
     return null;
   }
 
+  // The source or row marker nearest the pointer, within the hit radius.
+  // Nearest rather than first in list order: a sub standing within the
+  // radius of a speaker is still the one grabbed when the press lands on it.
+  // Only a row's own center point is hit-testable/draggable -- individual
+  // seats are derived (RoomPhysics.rowSeatPositions), not independently
+  // placed. Ids come from the same shared `nextId` counter as sources/
+  // zones, so a matched id is unambiguous -- moveTarget below checks
+  // `sources` first, then `listenerRows`, same as any other id-keyed list.
   function hitTest(evt){
     const {x,y,cssScale} = getRoomCoords(evt);
-    const radiusFt = hitRadiusFt(evt, 0.8, cssScale);
-    for(const s of sources){
-      if(Math.sqrt((x-s.x)**2+(y-s.y)**2) < radiusFt) return s.id;
+    let nearest = null, nearestDist = hitRadiusFt(evt, 0.8, cssScale);
+    for(const p of sources.concat(listenerRows)){
+      const d = Math.hypot(x - p.x, y - p.y);
+      if(d < nearestDist){ nearest = p.id; nearestDist = d; }
     }
-    // Only a row's own center point is hit-testable/draggable -- individual
-    // seats are derived (RoomPhysics.rowSeatPositions), not independently
-    // placed. Ids come from the same shared `nextId` counter as sources/
-    // zones, so a matched id is unambiguous -- moveTarget below checks
-    // `sources` first, then `listenerRows`, same as any other id-keyed list.
-    for(const r of listenerRows){
-      if(Math.sqrt((x-r.x)**2+(y-r.y)**2) < radiusFt) return r.id;
-    }
-    return null;
+    return nearest;
   }
 
   // The placeholder size a zone has from the press until the first drag

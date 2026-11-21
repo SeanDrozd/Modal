@@ -956,25 +956,34 @@ test('isCandidateValid with NO allowed zones allows anywhere in-room (not off-li
   assert.strictEqual(P.isCandidateValid(9, 9, room, [], []), true);
 });
 
-test('isCandidateValid: an exclude point with its own clearanceFt is cleared by that much, not by minSeparationFt', () => {
+test('isCandidateValid: an exclude point with its own keepOut blocks that rectangle, not the minSeparationFt square', () => {
   const room = { w: 18, d: 13.5, h: 8 };
-  const speaker = [{ x: 9, y: 9, clearanceFt: 1 }];
-  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker, 4), false, 'inside the 2x2ft box');
-  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], speaker, 4), true, 'just outside the box, well inside 4ft');
+  const speaker = [{ x: 9, y: 9, keepOut: { x: 8, y: 8, width: 2, height: 5.5 } }];
+  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker, 4), false, 'inside the rectangle');
+  assert.strictEqual(P.isCandidateValid(9.25, 13.25, room, [], [], speaker, 4), false, 'between the speaker and the back wall');
+  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], speaker, 4), true, 'just outside it, well inside 4ft');
+  assert.strictEqual(P.isCandidateValid(9.25, 7.75, room, [], [], speaker, 4), true, 'in front of the speaker, just outside it');
   assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker), false, 'still applies with no minSeparationFt at all');
   assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], [{ x: 9, y: 9 }], 4), false, 'a plain point keeps minSeparationFt');
 });
 
-test('isSubSource / sourceExclusionPoints: subs keep the full separation, mains get SPEAKER_CLEARANCE_FT', () => {
+test('speakerKeepOut: a 2 ft wide box around the speaker, stretched back to its nearest wall', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  assert.strictEqual(P.SPEAKER_CLEARANCE_FT, 1);
+  assert.deepStrictEqual(P.speakerKeepOut({ x: 13.5, y: 1.5 }, room), { x: 12.5, y: 0, width: 2, height: 2.5 }, 'front right: back to the front wall');
+  assert.deepStrictEqual(P.speakerKeepOut({ x: 0.5, y: 8 }, room), { x: 0, y: 7, width: 1.5, height: 2 }, 'side surround: back to the left wall');
+  assert.deepStrictEqual(P.speakerKeepOut({ x: 17, y: 6 }, room), { x: 16, y: 5, width: 2, height: 2 }, 'right wall');
+  assert.deepStrictEqual(P.speakerKeepOut({ x: 9, y: 12 }, room), { x: 8, y: 11, width: 2, height: 2.5 }, 'back wall');
+});
+
+test('isSubSource / sourceExclusionPoints: subs keep the full separation, mains get their keepOut rectangle', () => {
   assert.strictEqual(P.isSubSource({ freqHigh: 80 }), true);
   assert.strictEqual(P.isSubSource({ freqHigh: 150 }), true);
   assert.strictEqual(P.isSubSource({ freqHigh: 20000 }), false);
-  assert.strictEqual(P.SPEAKER_CLEARANCE_FT, 1, 'a 2x2ft box');
-  const points = P.sourceExclusionPoints([
-    { x: 1, y: 2, freqLow: 80, freqHigh: 20000 },
-    { x: 3, y: 4, freqLow: 20, freqHigh: 80 }
-  ]);
-  assert.deepStrictEqual(points, [{ x: 1, y: 2, clearanceFt: 1 }, { x: 3, y: 4 }]);
+  const room = { w: 18, d: 13.5, h: 8 };
+  const main = { x: 4, y: 1.5, freqLow: 80, freqHigh: 20000 };
+  const points = P.sourceExclusionPoints([main, { x: 3, y: 4, freqLow: 20, freqHigh: 80 }], room);
+  assert.deepStrictEqual(points, [{ x: 4, y: 1.5, keepOut: P.speakerKeepOut(main, room) }, { x: 3, y: 4 }]);
 });
 
 console.log('\n-- freeFloorFraction --');
@@ -1368,8 +1377,8 @@ test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre
   // search into an allowed zone tight around an existing source makes this
   // concrete: an existing SUB keeps the full sub-to-sub separation, so its
   // 4ft square exclusion leaves no valid candidate inside a 4x4ft zone
-  // centered on it; a MAIN keeps a 2x2ft box, which fills a zone just
-  // inside that box.
+  // centered on it; a MAIN keeps its keepOut rectangle, which fills a zone
+  // just inside its 2x2ft core.
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51 };
   const base = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, enabled: true };
@@ -1388,7 +1397,7 @@ test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre
     `expected no valid candidate inside a main speaker's 2x2ft box, but placed a sub at (${insideMainBox.placedSubs[0]?.x},${insideMainBox.placedSubs[0]?.y})`);
 });
 
-test('a main speaker only blocks a 2x2ft box, so a sub can stand right beside it', () => {
+test('a main speaker only blocks a 2ft wide box back to its nearest wall, so a sub can stand right beside or in front of it', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51 };
   const main = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
@@ -1401,8 +1410,10 @@ test('a main speaker only blocks a 2x2ft box, so a sub can stand right beside it
   const sub = result.placedSubs[0];
   assert.ok(Math.abs(sub.x - main.x) >= P.SPEAKER_CLEARANCE_FT || Math.abs(sub.y - main.y) >= P.SPEAKER_CLEARANCE_FT,
     `expected the sub outside the main's box, got (${sub.x},${sub.y})`);
-  // 64 cells in the zone, minus the 16 inside the 2x2ft box.
-  assert.strictEqual(result.roundResults[0].allCandidates.length, 48);
+  // The nearest wall is the back wall (4.5ft away), so the box runs x 8 to 10, y 8 to 13.5.
+  // 64 cells in the zone, minus the 4 columns x 6 rows (y 8.25 to 10.75) of it inside the zone.
+  assert.strictEqual(result.roundResults[0].allCandidates.length, 40);
+  assert.ok(result.roundResults[0].allCandidates.some(c => c.x === 9.25 && c.y === 7.75), 'directly in front of the speaker is open');
 });
 
 test('REGRESSION: a small room full of speakers still has somewhere to search (12x10ft with a 7-speaker layout)', () => {
@@ -1481,7 +1492,7 @@ test('scanGridCandidates: nullAvoidance\'s spread penalty counts other subs only
     excludePoints, minSeparationFt: 3, mode: 'nullAvoidance'
   })].filter(Boolean);
   const alone = scan([]);
-  const nearSpeaker = scan([{ x: 2, y: 1.5, clearanceFt: P.SPEAKER_CLEARANCE_FT }]);
+  const nearSpeaker = scan([{ x: 2, y: 1.5, keepOut: P.speakerKeepOut({ x: 2, y: 1.5 }, room) }]);
   const nearSub = scan([{ x: 2, y: 1.5 }]);
   assert.ok(alone.length > 0 && nearSpeaker.length === alone.length && nearSub.length === alone.length);
   alone.forEach((c, i) => {

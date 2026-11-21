@@ -1111,12 +1111,16 @@
     // least minSeparationFt away in straight-line distance too, since one of
     // the two axis offsets alone already reaches that value.
     //
-    // A point that carries its own `clearanceFt` (a main speaker, see
-    // sourceExclusionPoints) is cleared by that much instead of by
-    // minSeparationFt.
+    // A point that carries its own `keepOut` rectangle (a main speaker, see
+    // sourceExclusionPoints) blocks the inside of that rectangle instead of
+    // the minSeparationFt square.
     for(const p of (excludePoints || [])){
-      const clearance = p.clearanceFt ?? minSeparationFt;
-      if(clearance > 0 && Math.abs(px - p.x) < clearance && Math.abs(py - p.y) < clearance) return false;
+      const r = p.keepOut;
+      if(r){
+        if(px > r.x && px < r.x + r.width && py > r.y && py < r.y + r.height) return false;
+      } else if(minSeparationFt > 0 && Math.abs(px - p.x) < minSeparationFt && Math.abs(py - p.y) < minSeparationFt){
+        return false;
+      }
     }
     return true;
   }
@@ -1126,13 +1130,27 @@
 
   // What a sub search has to keep clear of each existing source. A sub keeps
   // the search's full sub-to-sub separation (a plain { x, y } point, which
-  // also counts toward nullAvoidance's spread penalty). A main speaker only
-  // needs room for its own cabinet: SPEAKER_CLEARANCE_FT on each axis, a
-  // 2 x 2 ft box, and no spread penalty, since a sub next to a speaker is an
-  // ordinary placement.
+  // also counts toward nullAvoidance's spread penalty). A main speaker
+  // blocks its keepOut rectangle (speakerKeepOut) instead, with no spread
+  // penalty, since a sub beside a speaker is an ordinary placement.
+  function sourceExclusionPoints(sources, room){
+    return sources.map(s => isSubSource(s) ? { x: s.x, y: s.y } : { x: s.x, y: s.y, keepOut: speakerKeepOut(s, room) });
+  }
+  // The floor a main speaker takes from a sub search: SPEAKER_CLEARANCE_FT
+  // on each side of it (a 2 ft wide box), stretched back to the wall nearest
+  // it, since the gap between a speaker and its wall has no room for a sub.
+  // A rect { x, y, width, height }.
   const SPEAKER_CLEARANCE_FT = 1;
-  function sourceExclusionPoints(sources){
-    return sources.map(s => isSubSource(s) ? { x: s.x, y: s.y } : { x: s.x, y: s.y, clearanceFt: SPEAKER_CLEARANCE_FT });
+  function speakerKeepOut(s, room){
+    const c = SPEAKER_CLEARANCE_FT;
+    let x0 = s.x - c, x1 = s.x + c, y0 = s.y - c, y1 = s.y + c;
+    const { side, end } = nearestWallDistances(s, room);
+    const wall = side.distFt <= end.distFt ? side.wall : end.wall;
+    if(wall === 'left') x0 = 0;
+    else if(wall === 'right') x1 = room.w;
+    else if(wall === 'front') y0 = 0;
+    else y1 = room.d;
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
 
   // The sub a search places when it is adding a new one. Candidates are
@@ -1198,8 +1216,8 @@
     // re-enumerating them once per sub too.
     const modes = precomputedModes || enumerateModes(physicsCtx);
     // Only other subs count toward nullAvoidance's spread penalty; a point
-    // with its own clearance is a main speaker (see sourceExclusionPoints).
-    const spreadPoints = (excludePoints || []).filter(p => p.clearanceFt == null);
+    // with its own keepOut is a main speaker (see sourceExclusionPoints).
+    const spreadPoints = (excludePoints || []).filter(p => !p.keepOut);
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
@@ -1345,9 +1363,9 @@
     // run. Without this, a newly-placed sub could land at or very near an
     // existing source's exact position, since isCandidateValid only ever
     // excludes points already in this list. An existing sub keeps the full
-    // separation; a main speaker only its own cabinet's clearance (see
+    // separation; a main speaker only its keepOut rectangle (see
     // sourceExclusionPoints).
-    const placedPositions = sourceExclusionPoints(otherSources);
+    const placedPositions = sourceExclusionPoints(otherSources, room);
     const roundResults = []; // one optimizeSubPlacement result per sub placed, for diagnostics/visualization
     let currentOtherSources = otherSources.slice();
 
@@ -1428,7 +1446,7 @@
           // what stops it from excluding/penalizing itself against its own
           // pre-polish position.
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others);
+          const excludePoints = sourceExclusionPoints(others, room);
           // Scored as this sub itself (its own level and passband), so a
           // refined position is judged for the sub that will stand there.
           const roundResult = optimizeSubPlacement({
@@ -1475,7 +1493,7 @@
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others);
+          const excludePoints = sourceExclusionPoints(others, room);
           const roundResult = await optimizeSubPlacementAsync({
             room, otherSources: others, freqList, listenerPositions,
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
@@ -1519,7 +1537,7 @@
     const modes = enumerateModes(physicsCtx);
 
     const placedSubs = [];
-    const placedPositions = sourceExclusionPoints(otherSources);
+    const placedPositions = sourceExclusionPoints(otherSources, room);
     const roundResults = [];
     let currentOtherSources = otherSources.slice();
 
@@ -1611,6 +1629,7 @@
     isCandidateValid,
     isSubSource,
     SPEAKER_CLEARANCE_FT,
+    speakerKeepOut,
     sourceExclusionPoints,
     NEW_SUB_DEFAULTS,
     scanGridCandidates,
