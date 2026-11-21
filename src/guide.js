@@ -21,6 +21,24 @@
     { id: 'open', label: 'Open to another space', detail: 'A wide opening to a kitchen, hallway or another room.' },
     { id: 'other', label: 'Sloped ceiling or angled walls', detail: 'A vaulted ceiling, a bay window, or walls that are not at right angles.' }
   ];
+  // What the room is built from: each choice is a material key the app takes (see setConstruction).
+  const CONSTRUCTION = [
+    { part: 'walls', title: 'Walls', items: [
+      { id: 'drywallInsulated', label: 'Drywall, insulated', detail: 'Drywall on studs with insulation inside, typical of outside walls.' },
+      { id: 'drywallHollow', label: 'Drywall, hollow', detail: 'Drywall on studs with empty cavities, typical of inside walls.' },
+      { id: 'masonry', label: 'Concrete or masonry', detail: 'Poured concrete, block or brick, as in most basements.' }
+    ] },
+    { part: 'floor', title: 'Floor', items: [
+      { id: 'woodJoists', label: 'Wood floor on joists', detail: 'Any covering, carpet included, over a wood subfloor.' },
+      { id: 'slab', label: 'Concrete slab', detail: 'Any covering, carpet included, over concrete.' }
+    ] },
+    { part: 'ceiling', title: 'Ceiling', items: [
+      { id: 'drywallInsulated', label: 'Drywall, insulated above', detail: 'An attic or insulated joists above.' },
+      { id: 'drywallHollow', label: 'Drywall, floor above', detail: 'Another floor of the house above, no insulation.' },
+      { id: 'masonry', label: 'Concrete', detail: 'A concrete slab above.' },
+      { id: 'suspendedTile', label: 'Suspended tile', detail: 'A drop ceiling of acoustic tiles in a grid.' }
+    ] }
+  ];
   const SHAPE_WARNINGS = {
     open: "Modal models a closed room. With a wide opening, the lowest bass modes are set by the whole connected space, so predicted peaks and nulls won't be reliable. If you can, enter the whole connected space as the room instead (it is often an L) and choose Closed room. Results are shown for reference only.",
     other: "Modal models a flat ceiling and walls that meet at right angles. With a sloped ceiling or angled walls, predicted peaks and nulls won't be reliable. Results are shown for reference only."
@@ -260,7 +278,26 @@
           <label>Ceiling height<span>Floor to ceiling</span></label>
           <span data-dim="h" role="group" aria-label="Ceiling height"></span>
         </div>
-        <p class="guide-warning" data-dim-msg="h" hidden></p>`;
+        <p class="guide-warning" data-dim-msg="h" hidden></p>
+        <h3>Construction</h3>
+        <p>What the room is built from sets how much bass it absorbs, and with it how tall the peaks are and how long they ring. Carpet and furniture barely matter at these frequencies.</p>
+        ${CONSTRUCTION.map(c => `
+          <h4>${c.title}</h4>
+          <div class="guide-cards ${c.part === 'walls' ? 'one-col' : 'two-col'}" data-construction="${c.part}">${choiceCards(c.items, 'data-material', null)}</div>`).join('')}
+        <p class="guide-note" id="guideMixedWalls" hidden>Your walls are set one by one under Walls. Choosing here sets them all.</p>`;
+
+      const syncConstruction = () => {
+        const now = app.getConstruction();
+        body.querySelectorAll('[data-construction]').forEach(group => pressOnly(group, b => b.dataset.material === now[group.dataset.construction]));
+        body.querySelector('#guideMixedWalls').hidden = now.walls !== null;
+      };
+      body.querySelectorAll('[data-construction]').forEach(group => group.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        app.setConstruction(group.dataset.construction, btn.dataset.material);
+        syncConstruction();
+      }));
+      syncConstruction();
 
       const warning = body.querySelector('#guideShapeWarning');
       const syncShape = () => {
@@ -359,6 +396,7 @@
           });
         }
         if(!typing(body.querySelector('[data-dim="h"]'))) writers.h(now.h);
+        syncConstruction();
       };
       refresh();
       return refresh;

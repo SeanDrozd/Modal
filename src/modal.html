@@ -4460,6 +4460,24 @@ function applyAppearanceAttrs(mode, theme){
     setWallLength: (i, ft) => keepingStarterLayout(() => applyFloorPlanEdit(RoomPhysics.setFloorPlanWallLength(room.polygon, i, ft))),
     // Each wall's name, as the Walls list shows it.
     wallLabels,
+    // What the walls, floor and ceiling are built from, as material keys: walls is null when they differ, floor null when it is Custom.
+    getConstruction: () => ({
+      walls: wallMaterialKeys.every(k => k === wallMaterialKeys[0]) ? wallMaterialKeys[0] : null,
+      floor: Object.keys(FLOOR_MATERIALS).find(k => Math.abs(FLOOR_MATERIALS[k] - floorAbsorption) < 1e-9) || null,
+      ceiling: ceilingMaterialKey
+    }),
+    // Sets every wall's material, the floor's construction or the ceiling's material (part 'walls', 'floor' or 'ceiling').
+    setConstruction(part, key){
+      if(part === 'walls'){ wallMaterialKeys = wallMaterialKeys.map(() => key); renderWallList(); }
+      if(part === 'floor'){
+        floorAbsorption = FLOOR_MATERIALS[key];
+        document.getElementById('floorAbsorption').value = floorAbsorption;
+        document.getElementById('floorAbsorptionVal').textContent = floorAbsorption.toFixed(2);
+        syncFloorMaterialDropdown();
+      }
+      if(part === 'ceiling'){ ceilingMaterialKey = key; syncCeilingUI(); }
+      scheduleDraw();
+    },
     getLengthUnit: () => lengthUnit,
     setLengthUnit,
     formatLength,
