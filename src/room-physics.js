@@ -11,6 +11,10 @@
     module.exports = mod; // Node / CommonJS (test harness)
   } else {
     root.RoomPhysics = mod; // browser global
+    // The page starts its floor-plan worker from this source text (see
+    // createFloorPlanSolver), since a page opened from disk cannot start a
+    // worker from a script file.
+    mod.SOURCE = '(' + factory + ')';
   }
 })(typeof self !== 'undefined' ? self : this, function(){
 
@@ -411,7 +415,8 @@
   }
   // The quietest and loudest level on an n x n grid over the floor plan at
   // height z (walls included), from one precomputeModalField result. A cheap
-  // stand-in for the full render when only the range is needed.
+  // stand-in for the full render when only the range is needed. Grid points
+  // outside a room.polygon are skipped.
   function sampleFieldDbRange(precomputed, room, z, n){
     n = n ?? 10;
     let min = Infinity, max = -Infinity;
@@ -419,6 +424,7 @@
       const py = (j/(n-1)) * room.d;
       for(let i = 0; i < n; i++){
         const px = (i/(n-1)) * room.w;
+        if(room.polygon && !isPointInPolygon(px, py, room.polygon)) continue;
         const { re, im } = computeFieldAtPoint(px, py, z, precomputed);
         const db = pressureToDb(re, im);
         if(db < min) min = db;
@@ -464,6 +470,102 @@
       if((a.y > py) !== (b.y > py) && px < a.x + (b.x - a.x) * (py - a.y) / (b.y - a.y)) inside = !inside;
     }
     return inside;
+  }
+
+  // The four corners of a w x d rectangle, in the order the app keeps a
+  // room's corners: from the front-left corner (0, 0) along the front wall,
+  // so walls 0 to 3 are the front, right, back and left walls.
+  function rectanglePolygon(w, d){
+    return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: d }, { x: 0, y: d }];
+  }
+  // A room's floor plan: its polygon, or for a plain { w, d } room the
+  // rectangle from (0, 0).
+  function floorPlanOf(room){
+    return room.polygon || rectanglePolygon(room.w, room.d);
+  }
+
+  // Each wall of a floor plan, in polygon order: its end corners a and b,
+  // whether it runs along x (`horizontal`), its length, and which side of
+  // the room it bounds, 'front' | 'back' | 'left' | 'right'. A wall along x
+  // with the room on its +y side is a front wall, one with the room on its
+  // -y side a back wall, and likewise along y for left and right. An L room
+  // has two front-facing walls, the front wall and the notch's inner wall.
+  function floorPlanWalls(polygon){
+    return polygon.map((a, i) => {
+      const b = polygon[(i + 1) % polygon.length];
+      const horizontal = a.y === b.y;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, eps = 1e-6;
+      const side = horizontal
+        ? (isPointInPolygon(mx, my + eps, polygon) ? 'front' : 'back')
+        : (isPointInPolygon(mx + eps, my, polygon) ? 'left' : 'right');
+      return { a, b, horizontal, lengthFt: Math.abs(b.x - a.x) + Math.abs(b.y - a.y), side };
+    });
+  }
+
+  // How far a point is from the nearest wall of a floor plan, measured as
+  // the larger of its x and y offsets from the nearest point of each wall
+  // (the distance a square centered on the point can grow before it touches
+  // a wall). Every wall runs along x or y, so this is the clearance a
+  // rectangular object such as a sub cabinet has.
+  function floorPlanClearance(px, py, polygon){
+    let best = Infinity;
+    for(let i = 0; i < polygon.length; i++){
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+      const across = a.y === b.y ? Math.abs(py - a.y) : Math.abs(px - a.x);
+      const along = a.y === b.y ? Math.max(0, Math.min(a.x, b.x) - px, px - Math.max(a.x, b.x)) : Math.max(0, Math.min(a.y, b.y) - py, py - Math.max(a.y, b.y));
+      best = Math.min(best, Math.max(across, along));
+    }
+    return best;
+  }
+
+  // The point nearest (x, y) that is inside the room and at least insetFt
+  // (default 0) from every wall in the floorPlanClearance sense. A
+  // rectangle clamps each axis. In any other floor plan the allowed area's
+  // edges lie on lines insetFt in from each wall, so the nearest allowed
+  // point is the point itself, its projection onto one of those lines or a
+  // crossing of two of them, whichever is nearest and allowed.
+  function clampToFloorPlan(x, y, room, insetFt){
+    const inset = insetFt ?? 0;
+    const poly = room.polygon;
+    if(!poly || poly.length === 4){
+      const xs = poly ? poly.map(p => p.x) : [0, room.w], ys = poly ? poly.map(p => p.y) : [0, room.d];
+      return {
+        x: Math.max(Math.min(...xs) + inset, Math.min(Math.max(...xs) - inset, x)),
+        y: Math.max(Math.min(...ys) + inset, Math.min(Math.max(...ys) - inset, y))
+      };
+    }
+    const allowed = (px, py) => isPointInPolygon(px, py, poly) && floorPlanClearance(px, py, poly) >= inset - 1e-9;
+    if(allowed(x, y)) return { x, y };
+    const rows = [], cols = []; // the inset lines: { at, from, to }
+    for(const wall of floorPlanWalls(poly)){
+      const { a, b } = wall;
+      if(wall.horizontal) rows.push({ at: a.y + (wall.side === 'front' ? inset : -inset), from: Math.min(a.x, b.x) - inset, to: Math.max(a.x, b.x) + inset });
+      else cols.push({ at: a.x + (wall.side === 'left' ? inset : -inset), from: Math.min(a.y, b.y) - inset, to: Math.max(a.y, b.y) + inset });
+    }
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const candidates = rows.map(r => ({ x: clamp(x, r.from, r.to), y: r.at }))
+      .concat(cols.map(c => ({ x: c.at, y: clamp(y, c.from, c.to) })));
+    for(const r of rows) for(const c of cols) candidates.push({ x: c.at, y: r.at });
+    let best = null, bestDist = Infinity;
+    for(const p of candidates){
+      const dist = (p.x - x) ** 2 + (p.y - y) ** 2;
+      if(dist < bestDist && allowed(p.x, p.y)){ best = p; bestDist = dist; }
+    }
+    return best || { x, y };
+  }
+
+  // The shortest wall the room editor allows, in feet.
+  const FLOOR_PLAN_MIN_WALL_FT = 1;
+  // A floor plan stretched or shrunk along 'x' or 'y' to `size` feet by
+  // moving its farthest wall (every corner on the room's largest x or y),
+  // so every other wall keeps its place and length. It never moves past
+  // FLOOR_PLAN_MIN_WALL_FT beyond the next-farthest corner, so the shape
+  // stays the same.
+  function resizeFloorPlan(polygon, axis, size){
+    const values = polygon.map(p => p[axis]);
+    const max = Math.max(...values);
+    const target = Math.max(size, Math.max(...values.filter(v => v < max)) + FLOOR_PLAN_MIN_WALL_FT);
+    return polygon.map(p => p[axis] === max ? { ...p, [axis]: target } : { ...p });
   }
 
   // Grid cell size for the floor-plan solve. Mode shapes below the 300 Hz
@@ -1033,6 +1135,111 @@
       }
     }
     return modes;
+  }
+
+  // The resonance frequency (Hz) of each of a solved floor plan's modes
+  // other than the uniform one, lowest first: the modes with no height
+  // component, the floor plan's counterpart of a rectangle's width and
+  // depth axial modes.
+  function floorPlanModeFrequencies(plan){
+    return Array.from(plan.kSquared.subarray(1), k2 => C * Math.sqrt(k2) / (2 * Math.PI));
+  }
+
+  // ---- Solving floor plans off the page's main thread ----
+  // A full solve takes about 0.4 s for a typical L room and up to about
+  // 2 s for the largest, so the page runs it in a Web Worker, first at the
+  // preview cell size (about a third of the time, within a fraction of a dB
+  // below 120 Hz) and then at full size, and keeps recent results.
+  const FLOOR_PLAN_PREVIEW_CELL_M = 0.15;
+  // Identifies a floor plan in the solver's cache.
+  function floorPlanKey(polygon){
+    return polygon.map(p => p.x + ',' + p.y).join(' ');
+  }
+  // What the worker does with each message the solver sends it
+  // ({ key, polygon, cellM }): solve, and send back { key, cellM, plan }.
+  function floorPlanWorkerReply(msg){
+    return { key: msg.key, cellM: msg.cellM, plan: solveFloorPlan(msg.polygon, { cellM: msg.cellM }) };
+  }
+  // Keeps the floor plans the page asks for solved, one at a time in one
+  // worker. options:
+  //   startWorker: () => a Worker (or anything with postMessage, onmessage
+  //     and terminate) that answers each message with floorPlanWorkerReply
+  //   onSolved: () => void, called when a newer plan for the floor plan
+  //     asked for most recently has arrived
+  //   cacheSize: how many floor plans to keep (default 6)
+  // Only the floor plan asked for most recently is worked on: a full solve
+  // of any other is stopped (the worker is replaced), and a preview of any
+  // other finishes first, since it is short.
+  function createFloorPlanSolver(options){
+    const { startWorker, onSolved } = options;
+    const cacheSize = options.cacheSize ?? 6;
+    const cache = new Map(); // key -> { polygon, preview, full, waiters }, least recently asked first
+    let worker = null, running = null, wanted = null;
+
+    function entryFor(polygon){
+      const key = floorPlanKey(polygon);
+      let entry = cache.get(key);
+      if(entry) cache.delete(key);
+      else entry = { key, polygon: polygon.map(p => ({ x: p.x, y: p.y })), preview: null, full: null, waiters: [] };
+      cache.set(key, entry);
+      if(wanted && wanted !== key){
+        // nobody needs the floor plan before this one any more
+        const before = cache.get(wanted);
+        if(before){ before.waiters.forEach(resolve => resolve(null)); before.waiters = []; }
+      }
+      wanted = key;
+      for(const k of cache.keys()){
+        if(cache.size <= cacheSize) break;
+        if(k !== wanted && k !== running?.key) cache.delete(k);
+      }
+      work();
+      return entry;
+    }
+    function work(){
+      if(running){
+        if(running.key === wanted || running.cellM === FLOOR_PLAN_PREVIEW_CELL_M) return;
+        worker.terminate();
+        worker = null;
+        running = null;
+      }
+      const entry = cache.get(wanted);
+      if(!entry || entry.full) return;
+      if(!worker){
+        worker = startWorker();
+        worker.onmessage = (e) => received(e.data);
+      }
+      running = { key: wanted, cellM: entry.preview ? FLOOR_PLAN_CELL_M : FLOOR_PLAN_PREVIEW_CELL_M };
+      worker.postMessage({ key: wanted, polygon: entry.polygon, cellM: running.cellM });
+    }
+    function received({ key, cellM, plan }){
+      running = null;
+      const entry = cache.get(key);
+      if(entry){
+        if(cellM === FLOOR_PLAN_CELL_M){
+          entry.full = plan;
+          entry.waiters.forEach(resolve => resolve(plan));
+          entry.waiters = [];
+        } else entry.preview = plan;
+      }
+      work();
+      if(entry && key === wanted && onSolved) onSolved();
+    }
+
+    return {
+      // The best plan solved so far for this floor plan (full size, else
+      // the preview), or null while there is none yet. Makes it the floor
+      // plan being worked on.
+      planFor(polygon){
+        const entry = entryFor(polygon);
+        return entry.full || entry.preview;
+      },
+      // Resolves to the full-size plan, or to null if a different floor
+      // plan is asked for before it is done.
+      fullPlanFor(polygon){
+        const entry = entryFor(polygon);
+        return entry.full ? Promise.resolve(entry.full) : new Promise(resolve => entry.waiters.push(resolve));
+      }
+    };
   }
 
   // ---- Spherical spatial sampling (moving-mic-style measurement) ----
@@ -1685,13 +1892,33 @@
     };
   }
   // The nearer side wall and the nearer end wall to a point, with the
-  // distance to each: { side: { wall: 'left' | 'right', distFt }, end:
-  // { wall: 'front' | 'back', distFt } }. The front wall is y = 0 and the
-  // left wall x = 0; a point exactly midway reports left and front.
+  // distance to each and where that wall is: { side: { wall: 'left' |
+  // 'right', distFt, x }, end: { wall: 'front' | 'back', distFt, y } }. The
+  // front wall is y = 0 and the left wall x = 0; a point exactly midway
+  // reports left and front. In a room with room.polygon, the side walls are
+  // the first walls straight to the point's left and right, and the end
+  // walls the first straight ahead of and behind it, so in an L room the
+  // notch's walls count where they are the nearer.
   function nearestWallDistances(pos, room){
+    let left = 0, right = room.w, front = 0, back = room.d;
+    if(room.polygon){
+      left = front = -Infinity; right = back = Infinity;
+      for(const wall of floorPlanWalls(room.polygon)){
+        const { a, b } = wall;
+        if(wall.horizontal){
+          if(pos.x < Math.min(a.x, b.x) || pos.x > Math.max(a.x, b.x)) continue;
+          if(a.y <= pos.y) front = Math.max(front, a.y);
+          if(a.y >= pos.y) back = Math.min(back, a.y);
+        } else {
+          if(pos.y < Math.min(a.y, b.y) || pos.y > Math.max(a.y, b.y)) continue;
+          if(a.x <= pos.x) left = Math.max(left, a.x);
+          if(a.x >= pos.x) right = Math.min(right, a.x);
+        }
+      }
+    }
     return {
-      side: pos.x <= room.w - pos.x ? { wall: 'left', distFt: pos.x } : { wall: 'right', distFt: room.w - pos.x },
-      end: pos.y <= room.d - pos.y ? { wall: 'front', distFt: pos.y } : { wall: 'back', distFt: room.d - pos.y }
+      side: pos.x - left <= right - pos.x ? { wall: 'left', distFt: pos.x - left, x: left } : { wall: 'right', distFt: right - pos.x, x: right },
+      end: pos.y - front <= back - pos.y ? { wall: 'front', distFt: pos.y - front, y: front } : { wall: 'back', distFt: back - pos.y, y: back }
     };
   }
 
@@ -1703,24 +1930,34 @@
   // recommended 90 to 110) and surround backs at 150 (inside 135 to 150).
   const SPEAKER_AZIMUTH_DEG = { FL: -30, FR: 30, C: 0, SL: -100, SR: 100, SBL: -150, SBR: 150, FWL: -60, FWR: 60 };
   // Where each named channel would normally stand for a given seat: along
-  // the line from the listener at the channel's azimuth, at the point where
-  // that line reaches a rectangle `insetFt` (default 1.5) in from the walls.
-  // A seat closer to a wall than the inset is treated as sitting on that
-  // rectangle. Returns [{ name, x, y }] in the order given; names with no
-  // entry in SPEAKER_AZIMUTH_DEG are skipped.
+  // the line from the listener at the channel's azimuth, at the first point
+  // on that line `insetFt` (default 1.5) from a wall (floorPlanClearance),
+  // which in a rectangle is where it reaches a rectangle inset that far.
+  // A seat closer to a wall than the inset is first moved to the nearest
+  // point that is not (clampToFloorPlan). Returns [{ name, x, y }] in the
+  // order given; names with no entry in SPEAKER_AZIMUTH_DEG are skipped.
   function standardSpeakerPositions(room, listener, names, insetFt){
     const inset = insetFt ?? 1.5;
-    const x0 = inset, x1 = room.w - inset, y0 = inset, y1 = room.d - inset;
-    const lx = Math.min(x1, Math.max(x0, listener.x)), ly = Math.min(y1, Math.max(y0, listener.y));
+    const { x: lx, y: ly } = clampToFloorPlan(listener.x, listener.y, room, inset);
+    // Each wall's no-go box: the wall grown by the inset on every side.
+    const boxes = floorPlanWalls(floorPlanOf(room)).map(({ a, b }) => ({
+      x0: Math.min(a.x, b.x) - inset, x1: Math.max(a.x, b.x) + inset,
+      y0: Math.min(a.y, b.y) - inset, y1: Math.max(a.y, b.y) + inset
+    }));
+    // The interval of t over which lx + d*t lies between lo and hi.
+    const slab = (l, d, lo, hi) => d > 0 ? [(lo - l) / d, (hi - l) / d] : d < 0 ? [(hi - l) / d, (lo - l) / d] : (l >= lo && l <= hi ? [-Infinity, Infinity] : [Infinity, -Infinity]);
     const positions = [];
     for(const name of names){
       if(!(name in SPEAKER_AZIMUTH_DEG)) continue;
       const az = SPEAKER_AZIMUTH_DEG[name] * Math.PI / 180;
       const dx = Math.sin(az), dy = -Math.cos(az);
-      // distance along the ray to the first edge of the inset rectangle it meets
-      const tx = dx > 0 ? (x1 - lx) / dx : dx < 0 ? (x0 - lx) / dx : Infinity;
-      const ty = dy > 0 ? (y1 - ly) / dy : dy < 0 ? (y0 - ly) / dy : Infinity;
-      const t = Math.min(tx, ty);
+      // distance along the ray to the first no-go box it enters
+      let t = Infinity;
+      for(const box of boxes){
+        const [ax, bx] = slab(lx, dx, box.x0, box.x1), [ay, by] = slab(ly, dy, box.y0, box.y1);
+        const enter = Math.max(ax, ay), exit = Math.min(bx, by);
+        if(exit > enter && exit > 0) t = Math.min(t, Math.max(0, enter));
+      }
       positions.push({ name, x: lx + dx * t, y: ly + dy * t });
     }
     return positions;
@@ -1746,6 +1983,8 @@
   // over the grid cells their edges cut the floor into (coordinate
   // compression), each cell being either wholly inside some rect or wholly
   // outside all of them.
+  // A room with room.polygon counts only the floor inside it: the polygon's
+  // corners are added to the cell edges, and a cell outside it is skipped.
   function freeFloorFraction(room, zones){
     const rects = [];
     for(const z of zones){
@@ -1753,18 +1992,20 @@
       const y0 = Math.max(0, z.y), y1 = Math.min(room.d, z.y + z.height);
       if(x1 > x0 && y1 > y0) rects.push({ x0, x1, y0, y1 });
     }
-    const xs = [...new Set(rects.flatMap(r => [r.x0, r.x1]))].sort((a, b) => a - b);
-    const ys = [...new Set(rects.flatMap(r => [r.y0, r.y1]))].sort((a, b) => a - b);
+    const poly = room.polygon || [];
+    const xs = [...new Set(rects.flatMap(r => [r.x0, r.x1]).concat(poly.map(p => p.x)))].sort((a, b) => a - b);
+    const ys = [...new Set(rects.flatMap(r => [r.y0, r.y1]).concat(poly.map(p => p.y)))].sort((a, b) => a - b);
     let covered = 0;
     for(let i = 0; i < xs.length - 1; i++){
       for(let j = 0; j < ys.length - 1; j++){
         const cx = (xs[i] + xs[i+1]) / 2, cy = (ys[j] + ys[j+1]) / 2;
+        if(room.polygon && !isPointInPolygon(cx, cy, room.polygon)) continue;
         if(rects.some(r => cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1)){
           covered += (xs[i+1] - xs[i]) * (ys[j+1] - ys[j]);
         }
       }
     }
-    return 1 - covered / (room.w * room.d);
+    return 1 - covered / roomFloorAreaFt2(room);
   }
 
   // `rect` ({ x, y, width, height }) cut down to the part of it inside the
@@ -1775,8 +2016,11 @@
     return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
   }
 
+  // In a room with room.polygon, a candidate must also be inside the
+  // polygon and not on one of its walls.
   function isCandidateValid(px, py, room, offLimitZones, allowedZones, excludePoints, minSeparationFt){
     if(px < 0 || px > room.w || py < 0 || py > room.d) return false;
+    if(room.polygon && !(isPointInPolygon(px, py, room.polygon) && floorPlanClearance(px, py, room.polygon) > 0)) return false;
     for(const zone of (offLimitZones || [])){
       if(isPointInRect(px, py, zone)) return false;
     }
@@ -1837,10 +2081,10 @@
     let x0 = s.x - c, x1 = s.x + c, y0 = s.y - c, y1 = s.y + c;
     const { side, end } = nearestWallDistances(s, room);
     const wall = side.distFt <= end.distFt ? side.wall : end.wall;
-    if(wall === 'left') x0 = 0;
-    else if(wall === 'right') x1 = room.w;
-    else if(wall === 'front') y0 = 0;
-    else y1 = room.d;
+    if(wall === 'left') x0 = side.x;
+    else if(wall === 'right') x1 = side.x;
+    else if(wall === 'front') y0 = end.y;
+    else y1 = end.y;
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
 
@@ -2316,8 +2560,19 @@
     wallMaterialAbsorptionAtFreq,
     polygonArea,
     isPointInPolygon,
+    rectanglePolygon,
+    floorPlanWalls,
+    floorPlanClearance,
+    clampToFloorPlan,
+    FLOOR_PLAN_MIN_WALL_FT,
+    resizeFloorPlan,
     FLOOR_PLAN_CELL_M,
     solveFloorPlan,
+    floorPlanModeFrequencies,
+    FLOOR_PLAN_PREVIEW_CELL_M,
+    floorPlanKey,
+    floorPlanWorkerReply,
+    createFloorPlanSolver,
     WALL_MATERIALS,
     MODE_CUTOFF_HZ,
     enumerateModes,
