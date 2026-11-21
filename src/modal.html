@@ -399,7 +399,13 @@ function applyAppearanceAttrs(mode, theme){
   // 125Hz, so a single representative value is what's practical here.
   const FLOOR_MATERIALS = { hardwood: 0.15, thinCarpet: 0.06, thickCarpet: 0.10 };
 
-  let room = { w: 18, d: 13.5, h: 8 };
+  // room.polygon is the floor plan: its corners in feet, in order around
+  // the room, every wall along x or y (see RoomPhysics.solveFloorPlan). A
+  // rectangle is its four corners from (0, 0) (RoomPhysics.rectanglePolygon).
+  // w and d are always the polygon's largest x and y, the size of the box
+  // the room fits in, which is what the map and the optimizer's grid span.
+  function defaultRoom(){ return { w: 18, d: 13.5, h: 8, polygon: RoomPhysics.rectanglePolygon(18, 13.5) }; }
+  let room = defaultRoom();
   let sources = [];
   let sourcesEnabled = true;
   let offLimitZones = [];
@@ -436,8 +442,10 @@ function applyAppearanceAttrs(mode, theme){
   function allSeatPositions(){ return RoomPhysics.seatPositions(listenerRows); }
   let freq = 60;
   let wallAbsorption = 0.06; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
-  let wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
-  let wallCustomAbsorption = { left: 0.06, right: 0.06, front: 0.06, back: 0.06 }; // used per-wall only when that wall's material key is 'custom'
+  // One entry per wall of room.polygon, in its order (wall i runs from
+  // corner i to corner i + 1).
+  let wallMaterialKeys = Array(4).fill('drywallInsulated');
+  let wallCustomAbsorption = Array(4).fill(0.06); // used per-wall only when that wall's material key is 'custom'
   let ceilingMaterialKey = 'drywallInsulated';
   let ceilingCustomAbsorption = 0.06; // used only when ceilingMaterialKey is 'custom'
   let floorAbsorption = 0.15; // defaults to "hardwood/tile"; see FLOOR_MATERIALS
@@ -573,7 +581,12 @@ function applyAppearanceAttrs(mode, theme){
       room.h = Math.min(ROOM_MAX_H_FT, Math.max(ROOM_MIN_FT, ft || 8));
       for(const p of listenerRows.concat(sources)){ if(p.z > room.h) p.z = room.h; }
     } else {
-      room[dim] = Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5)));
+      // Moves the room's farthest wall in that direction; in a room that is
+      // not a rectangle the size can't drop below the rest of the shape
+      // (RoomPhysics.resizeFloorPlan).
+      const axis = dim === 'w' ? 'x' : 'y';
+      room.polygon = RoomPhysics.resizeFloorPlan(room.polygon, axis, Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5))));
+      room[dim] = Math.max(...room.polygon.map(p => p[axis]));
       for(const p of listenerRows.concat(sources)) Object.assign(p, insideRoom(p.x, p.y));
       const clip = (zones) => zones.map(z => { const r = RoomPhysics.clipRectToRoom(z, room); return r && Object.assign(z, r); }).filter(Boolean);
       offLimitZones = clip(offLimitZones);
@@ -618,7 +631,7 @@ function applyAppearanceAttrs(mode, theme){
   // defaults below are this for the default room, and the setup guide keeps
   // an untouched layout there while the room is resized (see
   // setRoomDimKeepingStarterLayout).
-  function starterSeat(r){ return { x: r.w / 2, y: r.d * 2 / 3 }; }
+  function starterSeat(r){ return RoomPhysics.clampToFloorPlan(r.w / 2, r.d * 2 / 3, r, 0.2); }
   function defaultSources(){
     return RoomPhysics.standardSpeakerPositions(room, starterSeat(room), ['FL', 'FR']).map(p => newMainSource(p.name, p.x, p.y));
   }
@@ -700,6 +713,9 @@ function applyAppearanceAttrs(mode, theme){
   function loadConfig(cfg){
     sceneChanged();
     room = JSON.parse(JSON.stringify(cfg.room));
+    // Presets saved before rooms could take any right-angle shape have no
+    // polygon: they are the w x d rectangle.
+    if(!room.polygon) room.polygon = RoomPhysics.rectanglePolygon(room.w, room.d);
     sources = JSON.parse(JSON.stringify(cfg.sources));
     // Older presets predate the explicit isMain flag (which sources form the
     // front L/R triangle) -- if none of them have it, infer it the same way
@@ -746,17 +762,17 @@ function applyAppearanceAttrs(mode, theme){
     for(const r of listenerRows){ if(r.id >= nextId) nextId = r.id + 1; }
     // Older presets predate per-wall materials -- default every wall to
     // 'drywallInsulated' (same as a fresh install) rather than leaving it unset.
-    wallMaterialKeys = JSON.parse(JSON.stringify(cfg.wallMaterialKeys || { left:'drywallInsulated', right:'drywallInsulated', front:'drywallInsulated', back:'drywallInsulated' }));
+    // Presets saved before rooms could take any right-angle shape keep each
+    // of the four walls' settings by name ({ left, right, front, back });
+    // they become one entry per polygon wall, the front wall first.
+    const perWall = (byName) => Array.isArray(byName) ? byName.slice() : RoomPhysics.floorPlanWalls(room.polygon).map(w => byName[w.side]);
+    wallMaterialKeys = cfg.wallMaterialKeys ? perWall(cfg.wallMaterialKeys) : room.polygon.map(() => 'drywallInsulated');
     if(cfg.wallCustomAbsorption){
-      wallCustomAbsorption = JSON.parse(JSON.stringify(cfg.wallCustomAbsorption));
+      wallCustomAbsorption = perWall(cfg.wallCustomAbsorption);
     } else if(cfg.wallCustomReflect){
-      wallCustomAbsorption = {};
-      for(const wallName of Object.keys(cfg.wallCustomReflect)){
-        const r = cfg.wallCustomReflect[wallName];
-        wallCustomAbsorption[wallName] = 1 - r * r;
-      }
+      wallCustomAbsorption = perWall(cfg.wallCustomReflect).map(r => 1 - r * r);
     } else {
-      wallCustomAbsorption = { left:0.06, right:0.06, front:0.06, back:0.06 };
+      wallCustomAbsorption = room.polygon.map(() => 0.06);
     }
     ceilingMaterialKey = cfg.ceilingMaterialKey || 'drywallInsulated';
     ceilingCustomAbsorption = absorptionFromLegacyConfig(cfg, 'ceilingCustomAbsorption', 'ceilingCustomReflect', 0.06);
@@ -867,7 +883,7 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   function applySymmetricDefaults(){
-    room = { w: 18, d: 13.5, h: 8 };
+    room = defaultRoom();
     sources = defaultSources();
     sourcesEnabled = true;
     offLimitZones = defaultOffLimitZones(room);
@@ -877,8 +893,8 @@ function applyAppearanceAttrs(mode, theme){
     listenerRows = defaultListenerRows();
     freq = 60;
     wallAbsorption = 0.06;
-    wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
-    wallCustomAbsorption = { left: 0.06, right: 0.06, front: 0.06, back: 0.06 };
+    wallMaterialKeys = Array(4).fill('drywallInsulated');
+    wallCustomAbsorption = Array(4).fill(0.06);
     ceilingMaterialKey = 'drywallInsulated';
     ceilingCustomAbsorption = 0.06;
     floorAbsorption = FLOOR_MATERIALS.hardwood;
@@ -1340,26 +1356,37 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   // ---- Wall material list UI ----
-  // Walls are a fixed set of exactly
-  // 4 -- no add/remove, no name editing, no enabled toggle (a wall can't be
-  // "disabled"). Each card just picks a material and, for 'custom', exposes
-  // the old flat-scalar slider. The small readout line shows each wall's
-  // resolved absorption AT THE CURRENT FREQUENCY -- refreshed cheaply by
-  // updateWallReadouts() on every draw() rather than rebuilding the whole list.
+  // One card per wall of the room's floor plan: no add/remove, no name
+  // editing, no enabled toggle (a wall can't be "disabled"). Each card just
+  // picks a material and, for 'custom', exposes the old flat-scalar slider.
+  // The small readout line shows each wall's resolved absorption AT THE
+  // CURRENT FREQUENCY, refreshed cheaply by updateWallReadouts() on every
+  // draw() rather than rebuilding the whole list.
   const WALL_COLOR = '#9099a8';
-  const WALL_NAMES = ['left', 'right', 'front', 'back'];
   const WALL_LABELS = { left: 'Left wall', right: 'Right wall', front: 'Front wall', back: 'Back wall' };
+  // Each polygon wall's name: the side of the room it bounds, numbered
+  // front to back or left to right when a side has more than one (an L
+  // room's notch adds a second back and a second right wall).
+  function wallLabels(){
+    const walls = RoomPhysics.floorPlanWalls(room.polygon);
+    const along = (w) => w.horizontal ? Math.min(w.a.x, w.b.x) : Math.min(w.a.y, w.b.y);
+    return walls.map(w => {
+      const same = walls.filter(o => o.side === w.side).sort((p, q) => along(p) - along(q));
+      return same.length > 1 ? `${WALL_LABELS[w.side]} ${same.indexOf(w) + 1}` : WALL_LABELS[w.side];
+    });
+  }
   function renderWallList(){
     const list = document.getElementById('wallList');
     list.innerHTML = '';
-    for(const wallName of WALL_NAMES){
+    const labels = wallLabels();
+    for(let i = 0; i < room.polygon.length; i++){
       const block = document.createElement('div');
       block.className = 'src-block';
       block.innerHTML = `
         <div class="src-label">
           <div class="name-wrap">
             <span class="dot" style="background:${WALL_COLOR}"></span>
-            <span style="font-weight:600;font-size:13.5px;">${WALL_LABELS[wallName]}</span>
+            <span style="font-weight:600;font-size:13.5px;">${labels[i]}</span>
           </div>
         </div>
         <div class="range-row">
@@ -1373,27 +1400,27 @@ function applyAppearanceAttrs(mode, theme){
         </div>
         <div class="row" data-role="customRow" style="display:none;">
           <label>Absorption</label>
-          <input type="range" data-field="customAbsorption" min="0" max="0.99" step="0.01" value="${wallCustomAbsorption[wallName]}">
-          <span class="val" data-out="customAbsorption">${wallCustomAbsorption[wallName].toFixed(2)}</span>
+          <input type="range" data-field="customAbsorption" min="0" max="0.99" step="0.01" value="${wallCustomAbsorption[i]}">
+          <span class="val" data-out="customAbsorption">${wallCustomAbsorption[i].toFixed(2)}</span>
         </div>
         <div class="hint" data-role="readout" style="margin:4px 0 0;"></div>
       `;
       list.appendChild(block);
       const materialSelect = block.querySelector('[data-field="material"]');
       const customRow = block.querySelector('[data-role="customRow"]');
-      materialSelect.value = wallMaterialKeys[wallName];
-      customRow.style.display = wallMaterialKeys[wallName] === 'custom' ? 'flex' : 'none';
+      materialSelect.value = wallMaterialKeys[i];
+      customRow.style.display = wallMaterialKeys[i] === 'custom' ? 'flex' : 'none';
 
       materialSelect.addEventListener('change', function(){
-        wallMaterialKeys[wallName] = this.value;
+        wallMaterialKeys[i] = this.value;
         customRow.style.display = this.value === 'custom' ? 'flex' : 'none';
         updateWallReadouts();
         draw();
       });
       const customInput = block.querySelector('[data-field="customAbsorption"]');
       customInput.addEventListener('input', function(){
-        wallCustomAbsorption[wallName] = parseFloat(this.value);
-        block.querySelector('[data-out="customAbsorption"]').textContent = wallCustomAbsorption[wallName].toFixed(2);
+        wallCustomAbsorption[i] = parseFloat(this.value);
+        block.querySelector('[data-out="customAbsorption"]').textContent = wallCustomAbsorption[i].toFixed(2);
         updateWallReadouts();
         scheduleDraw();
       });
@@ -1406,8 +1433,7 @@ function applyAppearanceAttrs(mode, theme){
     if(!list) return;
     const blocks = list.querySelectorAll('.src-block');
     blocks.forEach((block, i) => {
-      const wallName = WALL_NAMES[i];
-      const material = resolveWallMaterial(wallName);
+      const material = resolveWallMaterial(i);
       const absorptionAtFreq = wallMaterialAbsorptionAtFreq(material, freq) ?? wallAbsorption;
       const readout = block.querySelector('[data-role="readout"]');
       if(readout) readout.textContent = `Absorption @ ${Math.round(freq)}Hz: ${absorptionAtFreq.toFixed(2)}`;
@@ -1620,7 +1646,8 @@ function applyAppearanceAttrs(mode, theme){
   }
   document.getElementById('addMainBtn').addEventListener('click', () => {
     const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
-    sources.push(newMainSource(nextMainName(), Math.min(room.w-1, 2 + n*1.5), 1.5));
+    const at = insideRoom(Math.min(room.w-1, 2 + n*1.5), 1.5);
+    sources.push(newMainSource(nextMainName(), at.x, at.y));
     edited('layout', 'sources');
   });
   // Replaces the main speakers with the first `count` standard channels
@@ -1639,8 +1666,7 @@ function applyAppearanceAttrs(mode, theme){
     return {
       id: nextId++,
       name: nextSubName(),
-      x: Math.min(room.w-1, 2 + n*1.5),
-      y: room.d - 1.5,
+      ...insideRoom(Math.min(room.w-1, 2 + n*1.5), room.d - 1.5),
       z: 1,
       levelDb: 0, delayMs: 0,
       freqLow: 20, freqHigh: 80,
@@ -1670,8 +1696,7 @@ function applyAppearanceAttrs(mode, theme){
     listenerRows.push({
       id: nextId++,
       name: 'Row ' + (n + 1),
-      x: Math.min(room.w - 1, 2 + n*1.5),
-      y: Math.max(1, room.d - 1.5 - n*1.5),
+      ...insideRoom(Math.min(room.w - 1, 2 + n*1.5), Math.max(1, room.d - 1.5 - n*1.5)),
       z: 3.5, facing: 0, seats: 1, spacingFt: 2
     });
     edited('rows');
@@ -1785,26 +1810,46 @@ function applyAppearanceAttrs(mode, theme){
   // wallMaterialAbsorptionAtFreq expects -- 'custom' synthesizes a flat-scalar
   // material (peakBoost 0) from that wall's own slider value, so "Custom"
   // doesn't need a separate code path in the physics layer at all.
-  function resolveWallMaterial(wallName){
-    const key = wallMaterialKeys[wallName];
-    if(key === 'custom') return { baseAbsorption: wallCustomAbsorption[wallName], peakBoost: 0 };
+  function resolveWallMaterial(i){
+    const key = wallMaterialKeys[i];
+    if(key === 'custom') return { baseAbsorption: wallCustomAbsorption[i], peakBoost: 0 };
     return RoomPhysics.WALL_MATERIALS[key];
   }
   function resolveCeilingMaterial(){
     if(ceilingMaterialKey === 'custom') return { baseAbsorption: ceilingCustomAbsorption, peakBoost: 0 };
     return RoomPhysics.WALL_MATERIALS[ceilingMaterialKey];
   }
+  // Floor plans that are not rectangles have no formula for their modes:
+  // they are solved in a worker (RoomPhysics.createFloorPlanSolver), a quick
+  // preview first and then full size, and every redraw after a new plan
+  // arrives uses it. The worker runs this page's own copy of room-physics.js
+  // (RoomPhysics.SOURCE), so it also starts when the page is opened from disk.
+  let floorPlanWorkerUrl = null;
+  const floorPlans = RoomPhysics.createFloorPlanSolver({
+    startWorker(){
+      floorPlanWorkerUrl = floorPlanWorkerUrl || URL.createObjectURL(new Blob([
+        `self.RoomPhysics = ${RoomPhysics.SOURCE}();\nself.onmessage = (e) => self.postMessage(RoomPhysics.floorPlanWorkerReply(e.data));`
+      ], { type: 'text/javascript' }));
+      return new Worker(floorPlanWorkerUrl);
+    },
+    onSolved: () => scheduleDraw()
+  });
+  function isRectangleRoom(){ return room.polygon.length === 4; }
+  // False while a room that is not a rectangle waits for its first solve:
+  // until then there is nothing to compute its sound field from.
+  function fieldReady(){ return isRectangleRoom() || !!floorPlans.planFor(room.polygon); }
+  // A rectangle takes the exact formula path, with its four walls' materials
+  // by name; any other floor plan takes its solved plan (ctx.floorPlan, see
+  // fieldReady) and one material per polygon wall.
   function physicsCtx(){
-    return {
-      room, wallAbsorption, floorAbsorption,
-      wallMaterials: {
-        left: resolveWallMaterial('left'),
-        right: resolveWallMaterial('right'),
-        front: resolveWallMaterial('front'),
-        back: resolveWallMaterial('back')
-      },
-      ceilingMaterial: resolveCeilingMaterial()
-    };
+    const materials = room.polygon.map((_, i) => resolveWallMaterial(i));
+    const shared = { wallAbsorption, floorAbsorption, ceilingMaterial: resolveCeilingMaterial() };
+    if(isRectangleRoom()){
+      const wallMaterials = {};
+      RoomPhysics.floorPlanWalls(room.polygon).forEach((wall, i) => { wallMaterials[wall.side] = materials[i]; });
+      return { room: { w: room.w, d: room.d, h: room.h }, wallMaterials, ...shared };
+    }
+    return { room, wallMaterials: materials, floorPlan: floorPlans.planFor(room.polygon), ...shared };
   }
   const sourceGainAtFreq = RoomPhysics.sourceGainAtFreq;
   const wallMaterialAbsorptionAtFreq = RoomPhysics.wallMaterialAbsorptionAtFreq;
@@ -1872,13 +1917,16 @@ function applyAppearanceAttrs(mode, theme){
   // sources, zones or seats under it. timeAlignTo is set when applying the
   // result will re-run automatic time-align, so candidates are scored with
   // the delays they will really get.
+  // The solved floor plan is not copied: nothing changes it once solved.
   function optimizerScene(){
+    const { floorPlan, ...ctx } = physicsCtx();
     const scene = JSON.parse(JSON.stringify({
-      physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+      physicsCtx: ctx, offLimitZones, allowedZones, preferredZones,
       sources: sourcesEnabled ? sources.filter(s => s.enabled !== false) : [],
       listenerPositions: allSeatPositions(),
       timeAlignTo: autoTimeAlignEnabled ? primaryRow() : undefined
     }));
+    if(floorPlan) scene.physicsCtx.floorPlan = floorPlan;
     scene.room = scene.physicsCtx.room;
     return scene;
   }
@@ -2111,8 +2159,11 @@ function applyAppearanceAttrs(mode, theme){
   // The 2D canvas (`cv`) always draws overlays on top and, in CPU mode, the
   // field itself. In GPU mode the field is drawn into `cvGL` underneath, so
   // `cv` needs a transparent background so cvGL shows through.
+  // Only a rectangle is drawn on the GPU so far; any other floor plan is
+  // always drawn on the CPU.
+  function usesGPU(){ return renderMode === 'gpu' && gpuAvailable && isRectangleRoom(); }
   function setCanvasStackVisibility(){
-    canvasGL.style.display = (mapView === 'pressure' && renderMode === 'gpu' && gpuAvailable) ? 'block' : 'none';
+    canvasGL.style.display = (mapView === 'pressure' && usesGPU()) ? 'block' : 'none';
   }
   setCanvasStackVisibility();
 
@@ -2159,6 +2210,7 @@ function applyAppearanceAttrs(mode, theme){
   function verifyGPUAgainstCPU(sampleGridSize){
     sampleGridSize = sampleGridSize || 8;
     if(!gl){ return { ok: false, reason: 'WebGL not available' }; }
+    if(!isRectangleRoom()){ return { ok: false, reason: 'the GPU map only draws rectangular rooms so far; this room is drawn on the CPU' }; }
     initGPUProgram();
     if(fieldRenderer.gpuInitFailed || !fieldRenderer.gpuProgram){ return { ok: false, reason: 'GPU shader failed to initialize' }; }
 
@@ -2277,6 +2329,7 @@ function applyAppearanceAttrs(mode, theme){
   // one frequency) and the frequency-response chart (one point, swept across
   // frequencies) so the fitted range covers whichever is showing.
   function autofitColorRange(){
+    if(!fieldReady()) return;
     const precomputed = precomputeField();
     const heatmapRange = RoomPhysics.sampleFieldDbRange(precomputed, room, primaryRow().z);
     let min = heatmapRange.min, max = heatmapRange.max;
@@ -2312,23 +2365,37 @@ function applyAppearanceAttrs(mode, theme){
     }
     const { scale, offX, offY } = mapLayout(sizeW, sizeH);
 
-    if(mapView === 'plan'){
+    const floor = floorPath(offX, offY, scale);
+    if(mapView === 'plan' || !fieldReady()){
       // Floor-plan view: no pressure field, just a theme-tinted floor with a
       // soft shadow under it, so the layout reads as a plain room drawing.
+      // Also what the pressure map shows while a new room shape is solved.
       ctx.clearRect(0, 0, sizeW, sizeH);
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.3)';
       ctx.shadowBlur = 28;
       ctx.shadowOffsetY = 8;
       ctx.fillStyle = themeColors['floor'];
-      ctx.fillRect(offX, offY, w*scale, d*scale);
+      ctx.fill(floor);
       ctx.restore();
     } else {
-      const renderPath = renderPaths[(renderMode === 'gpu' && gpuAvailable) ? 'gpu' : 'cpu'];
+      const renderPath = renderPaths[usesGPU() ? 'gpu' : 'cpu'];
       renderPath({ RES, w, d, precomputed: precomputeField(), pz: primaryRow().z, offX, offY, scale, sizeW, sizeH, dbMin, dbMax, colormapId });
+      if(!isRectangleRoom()){
+        // The field is computed over the whole bounding box; keep only the floor.
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-in';
+        ctx.fill(floor);
+        ctx.restore();
+      }
     }
 
-    drawRoomFrame(offX, offY, scale, w, d);
+    drawRoomFrame(offX, offY, scale, w, d, floor);
+    if(mapView === 'pressure' && !fieldReady()){
+      const note = "Working out this room's modes...";
+      ctx.font = 'bold 16px sans-serif';
+      drawNameChip(note, offX + (w*scale - ctx.measureText(note).width - 12)/2, offY + d*scale/2, '#e8ecf1');
+    }
 
     drawHeatmapOverlay(offX, offY, scale, w, d);
     drawOptimizerWinner(offX, offY, scale);
@@ -2599,8 +2666,8 @@ function applyAppearanceAttrs(mode, theme){
 
   function drawWallDists(x, y, px, py, offX, offY, scale, color){
     const near = RoomPhysics.nearestWallDistances({ x, y }, room);
-    const nearVert = { d: near.side.distFt, wallX: near.side.wall === 'left' ? 0 : room.w };
-    const nearHoriz = { d: near.end.distFt, wallY: near.end.wall === 'front' ? 0 : room.d };
+    const nearVert = { d: near.side.distFt, wallX: near.side.x };
+    const nearHoriz = { d: near.end.distFt, wallY: near.end.y };
 
     const vwx = offX + nearVert.wallX*scale;
     const hwy = offY + nearHoriz.wallY*scale;
@@ -2723,25 +2790,45 @@ function applyAppearanceAttrs(mode, theme){
     ctx.restore();
   }
 
+  // The room's floor (room.polygon) as a canvas path.
+  function floorPath(offX, offY, scale){
+    const path = new Path2D();
+    room.polygon.forEach((p, i) => i ? path.lineTo(offX + p.x*scale, offY + p.y*scale) : path.moveTo(offX + p.x*scale, offY + p.y*scale));
+    path.closePath();
+    return path;
+  }
+
   // Walls, wall names and the room's two dimension lines, drawn in the
   // MAP_MARGIN band around the room rect. The front wall (the top of the map,
   // y = 0) gets the accent color: it is the orientation cue for everything
-  // else on the map.
-  function drawRoomFrame(offX, offY, scale, w, d){
+  // else on the map. In a room that is not a rectangle the names and the
+  // dimension lines go around its bounding box: the overall width and depth.
+  function drawRoomFrame(offX, offY, scale, w, d, floor){
     const WALL_PX = 7, LABEL_GAP = 32, DIM_GAP = 68;
     const rw = w*scale, rd = d*scale;
     ctx.save();
 
-    // Stroked along a path half a wall-width outside the room rect, so the
-    // wall's inner face is the room boundary and none of the floor is covered.
-    ctx.lineWidth = WALL_PX;
+    // Stroked twice as wide as a wall along the floor's edge, with only the
+    // outer half showing, so the wall's inner face is the room boundary and
+    // none of the floor is covered.
+    ctx.save();
+    const outside = new Path2D();
+    outside.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    outside.addPath(floor);
+    ctx.clip(outside, 'evenodd');
+    ctx.lineWidth = WALL_PX * 2;
+    ctx.lineJoin = 'miter';
     ctx.strokeStyle = themeColors['wall'];
-    ctx.strokeRect(offX - WALL_PX/2, offY - WALL_PX/2, rw + WALL_PX, rd + WALL_PX);
+    ctx.stroke(floor);
     ctx.strokeStyle = themeColors['accent'];
     ctx.beginPath();
-    ctx.moveTo(offX - WALL_PX, offY - WALL_PX/2);
-    ctx.lineTo(offX + rw + WALL_PX, offY - WALL_PX/2);
+    for(const { a, b, horizontal } of RoomPhysics.floorPlanWalls(room.polygon)){
+      if(!horizontal || a.y !== 0) continue;
+      ctx.moveTo(offX + Math.min(a.x, b.x)*scale - WALL_PX, offY);
+      ctx.lineTo(offX + Math.max(a.x, b.x)*scale + WALL_PX, offY);
+    }
     ctx.stroke();
+    ctx.restore();
 
     // Wall names, each centered on its wall and reading along it.
     ctx.font = '600 20px system-ui, sans-serif';
@@ -2821,7 +2908,7 @@ function applyAppearanceAttrs(mode, theme){
   function updateEarDiffInfo(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
     const card = document.getElementById('earDiffInfo');
-    card.hidden = activeSources.length === 0;
+    card.hidden = activeSources.length === 0 || !fieldReady();
     if(card.hidden) return;
     const ears = earPositions(primaryRow());
     const leftDb = dbAtFreq(ears.left.x, ears.left.y, ears.left.z, activeSources, freq);
@@ -2838,22 +2925,27 @@ function applyAppearanceAttrs(mode, theme){
   const estimatedT60 = RoomPhysics.estimatedT60;
 
   function updateSchroederInfo(){
-    const t60 = estimatedT60(room, freq, physicsCtx());
-    const fs = schroederFrequency(room, t60);
+    const ctx = physicsCtx();
+    const t60 = estimatedT60(ctx.room, freq, ctx);
+    const fs = schroederFrequency(ctx.room, t60);
     setStat('schroederInfo', 'fs', fs.toFixed(0));
     setStat('schroederInfo', 'hz', String(Math.round(freq)));
     setStat('schroederInfo', 't60', t60.toFixed(2));
   }
 
+  // A room that is not a rectangle has no width or depth axial modes: its
+  // floor plan's own lowest modes (RoomPhysics.floorPlanModeFrequencies)
+  // are listed instead, labeled "floor", once its plan is solved.
   function updateModalInfo(){
     updateSchroederInfo();
     const maxFreq = syncFreqSliderRange();
-    const wModes = axialModes(room.w, 4, maxFreq);
-    const dModes = axialModes(room.d, 4, maxFreq);
+    const plan = !isRectangleRoom() && floorPlans.planFor(room.polygon);
+    const floorModes = isRectangleRoom()
+      ? [...axialModes(room.w, 4, maxFreq).map(f => ({f, axis:'W'})), ...axialModes(room.d, 4, maxFreq).map(f => ({f, axis:'D'}))]
+      : (plan ? RoomPhysics.floorPlanModeFrequencies(plan).filter(f => f <= maxFreq).slice(0, 8).map(f => ({f, axis:'floor'})) : []);
     const hModes = axialModes(room.h, 4, maxFreq);
     const all = [
-      ...wModes.map(f => ({f, axis:'W'})),
-      ...dModes.map(f => ({f, axis:'D'})),
+      ...floorModes,
       ...hModes.map(f => ({f, axis:'H'}))
     ].sort((a,b) => a.f - b.f).slice(0, 8);
 
@@ -2865,7 +2957,8 @@ function applyAppearanceAttrs(mode, theme){
 
     // Only replaced when the list itself changes (room size, range, or which
     // mode is highlighted), not on every redraw, so it stays selectable.
-    const html = `<div style="margin-top:6px;">First axial room modes (&le;${maxFreq} Hz):<br>${rows || 'none in range'}</div>`;
+    const heading = isRectangleRoom() ? 'First axial room modes' : 'Lowest floor-plan and height modes';
+    const html = `<div style="margin-top:6px;">${heading} (&le;${maxFreq} Hz):<br>${rows || (fieldReady() ? 'none in range' : 'working them out...')}</div>`;
     const list = document.getElementById('modalInfo');
     if(list.dataset.html !== html){
       list.innerHTML = html;
@@ -3003,7 +3096,7 @@ function applyAppearanceAttrs(mode, theme){
   }
   function computeFreqResponseData(){
     const activeSources = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    if(activeSources.length === 0){
+    if(activeSources.length === 0 || !fieldReady()){
       freqResponseData = null;
       return;
     }
@@ -3655,7 +3748,12 @@ function applyAppearanceAttrs(mode, theme){
     acceptBtn.style.display = 'none';
     try {
       const changesAtStart = sceneChangeCount;
-      await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
+      // The search scores with the full-size floor plan, never the preview.
+      if(!isRectangleRoom()){
+        document.getElementById('optimizerStatus').textContent = "Working out this room's modes...";
+        await floorPlans.fullPlanFor(room.polygon);
+      }
+      if(sceneChangeCount === changesAtStart) await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
       if(sceneChangeCount !== changesAtStart){
         clearOptimizerResult();
         document.getElementById('optimizerStatus').textContent = OPTIMIZER_DROPPED_TEXT;
@@ -3884,7 +3982,7 @@ function applyAppearanceAttrs(mode, theme){
 
   // (x, y) kept just inside the walls.
   function insideRoom(x, y){
-    return { x: Math.max(0.2, Math.min(room.w-0.2, x)), y: Math.max(0.2, Math.min(room.d-0.2, y)) };
+    return RoomPhysics.clampToFloorPlan(x, y, room, 0.2);
   }
   // Moves a source or a listening row (by id) to a point in the room, kept
   // just inside the walls. Used by map drags and by the setup guide's typed
@@ -3966,7 +4064,7 @@ function applyAppearanceAttrs(mode, theme){
       // Fresh install, no saved presets: build the default scene then hand
       // off to loadConfig for state+DOM sync (same path applySymmetricDefaults
       // uses), rather than duplicating that sync here by hand.
-      room = { w: 18, d: 13.5, h: 8 };
+      room = defaultRoom();
       sources = defaultSources();
       sourcesEnabled = true;
       offLimitZones = defaultOffLimitZones(room);
@@ -4022,7 +4120,7 @@ function applyAppearanceAttrs(mode, theme){
   // are null when there is no sub yet, since there is nothing to compare
   // with. Null with no suggestion pending.
   function optimizerOutcome(){
-    if(!optimizerResult || !optimizerResult.placedSubs || optimizerResult.placedSubs.length === 0) return null;
+    if(!optimizerResult || !optimizerResult.placedSubs || optimizerResult.placedSubs.length === 0 || !fieldReady()) return null;
     // A refinement that had no position to try (obstacles cover the floor) leaves every sub in place; that is no result.
     if(optimizerResult.applyInPlace && !optimizerResult.best) return null;
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;

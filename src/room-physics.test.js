@@ -1104,7 +1104,7 @@ test('comparePlacements grades the change in score', () => {
 console.log('\n-- nearestWallDistances --');
 
 test('nearestWallDistances picks the nearer side wall and the nearer end wall', () => {
-  assert.deepStrictEqual(P.nearestWallDistances({ x: 2.25, y: 1 }, baseRoom), { side: { wall: 'left', distFt: 2.25 }, end: { wall: 'front', distFt: 1 } });
+  assert.deepStrictEqual(P.nearestWallDistances({ x: 2.25, y: 1 }, baseRoom), { side: { wall: 'left', distFt: 2.25, x: 0 }, end: { wall: 'front', distFt: 1, y: 0 } });
   const far = P.nearestWallDistances({ x: 16, y: 12 }, baseRoom);
   assert.strictEqual(far.side.wall, 'right'); approx(far.side.distFt, 2, 1e-9);
   assert.strictEqual(far.end.wall, 'back'); approx(far.end.distFt, 1.5, 1e-9);
@@ -3102,6 +3102,246 @@ test('estimatedT60 and schroederFrequency use a polygon room\'s own floor area a
   const mats = [null, null, null, P.WALL_MATERIALS.masonry, null, null];
   const avgAlpha = (0.1 * (88 * 8 + 800) - 0.07 * 64) / (88 * 8 + 800);
   approx(P.estimatedT60(lShaped, 60, { wallAbsorption: 0.1, wallMaterials: mats }), 0.161 * volume / (-surface * Math.log(1 - avgAlpha)), 1e-9);
+});
+
+console.log('\n-- Rooms with any right-angle floor plan: geometry, optimizer limits and the background solver --');
+
+const lShapedRoom = { w: 24, d: 20, h: 8, polygon: lPoly }; // notch 10 x 8 ft out of the back right corner: inside corner at (14, 12)
+
+test('rectanglePolygon starts at the front-left corner, so walls 0 to 3 are front, right, back and left', () => {
+  const rect = P.rectanglePolygon(18, 13.5);
+  assert.deepStrictEqual(rect, rectPolygon(18, 13.5));
+  assert.deepStrictEqual(P.floorPlanWalls(rect).map(w => w.side), ['front', 'right', 'back', 'left']);
+  assert.deepStrictEqual(P.floorPlanWalls(rect).map(w => w.lengthFt), [18, 13.5, 18, 13.5]);
+});
+
+test('floorPlanWalls names the side each wall of an L bounds, either way round the polygon', () => {
+  const walls = P.floorPlanWalls(lPoly);
+  assert.deepStrictEqual(walls.map(w => w.side), ['front', 'right', 'back', 'right', 'back', 'left']);
+  assert.deepStrictEqual(walls.map(w => w.lengthFt), [24, 12, 10, 8, 14, 20]);
+  assert.deepStrictEqual(walls.map(w => w.horizontal), [true, false, true, false, true, false]);
+  const reversed = P.floorPlanWalls(lPoly.slice().reverse());
+  assert.deepStrictEqual(reversed.map(w => w.side), ['back', 'right', 'back', 'right', 'front', 'left']);
+});
+
+test('floorPlanClearance is the larger of the x and y offsets to the nearest wall', () => {
+  approx(P.floorPlanClearance(5, 3, lPoly), 3, 1e-12);       // the front wall is nearest
+  approx(P.floorPlanClearance(12, 16, lPoly), 2, 1e-12);     // the notch's side wall x = 14
+  approx(P.floorPlanClearance(16, 10, lPoly), 2, 1e-12);     // the notch's top wall y = 12
+  approx(P.floorPlanClearance(13, 11, lPoly), 1, 1e-12);     // diagonally in from the inside corner
+  approx(P.floorPlanClearance(14, 15, lPoly), 0, 1e-12);     // on a wall
+});
+
+test('clampToFloorPlan: a rectangle clamps each axis, with or without its polygon', () => {
+  for(const room of [{ w: 18, d: 13.5 }, { w: 18, d: 13.5, polygon: P.rectanglePolygon(18, 13.5) }]){
+    assert.deepStrictEqual(P.clampToFloorPlan(-3, 20, room, 0.2), { x: 0.2, y: 13.3 });
+    assert.deepStrictEqual(P.clampToFloorPlan(5, 6, room, 0.2), { x: 5, y: 6 });
+    assert.deepStrictEqual(P.clampToFloorPlan(30, 7, room), { x: 18, y: 7 });
+  }
+});
+
+test('clampToFloorPlan moves a point in an L room\'s notch to the nearest point the inset allows', () => {
+  assert.deepStrictEqual(P.clampToFloorPlan(10, 10, lShapedRoom, 0.5), { x: 10, y: 10 }); // already fine
+  // in the notch, nearer its side wall than its top wall
+  const a = P.clampToFloorPlan(15, 18, lShapedRoom, 0.5);
+  approx(a.x, 13.5, 1e-12); approx(a.y, 18, 1e-12);
+  // in the notch, nearer its top wall
+  const b = P.clampToFloorPlan(20, 13, lShapedRoom, 0.5);
+  approx(b.x, 20, 1e-12); approx(b.y, 11.5, 1e-12);
+  // just inside the room but within the inset of the inside corner: out to the corner of the allowed area
+  // (both walls there are 0.1 ft away; the side wall's inset line is the nearer, 0.3 ft against 0.4)
+  const c = P.clampToFloorPlan(13.8, 11.9, lShapedRoom, 0.5);
+  approx(c.x, 13.5, 1e-12); approx(c.y, 11.9, 1e-12);
+  // beyond the notch's outer corner: the nearest allowed corner is the one in front of the notch (10.8 ft), not behind it (12.7 ft)
+  const d = P.clampToFloorPlan(26, 22, lShapedRoom, 0.5);
+  approx(d.x, 23.5, 1e-12); approx(d.y, 11.5, 1e-12);
+  for(const p of [a, b, c, d]){
+    assert.ok(P.isPointInPolygon(p.x, p.y, lPoly));
+    assert.ok(P.floorPlanClearance(p.x, p.y, lPoly) >= 0.5 - 1e-9);
+  }
+});
+
+test('resizeFloorPlan moves only the farthest wall, never past the next corner', () => {
+  assert.deepStrictEqual(P.resizeFloorPlan(P.rectanglePolygon(18, 13.5), 'x', 20), P.rectanglePolygon(20, 13.5));
+  assert.deepStrictEqual(P.resizeFloorPlan(P.rectanglePolygon(18, 13.5), 'y', 10), P.rectanglePolygon(18, 10));
+  // L: the right wall moves out, and the notch keeps its 8 ft depth but gets 2 ft wider
+  assert.deepStrictEqual(P.resizeFloorPlan(lPoly, 'x', 26), lPolygon(26, 20, 12, 8));
+  // the back wall (y = 20, left of the notch) and the notch's own side wall move together
+  assert.deepStrictEqual(P.resizeFloorPlan(lPoly, 'y', 18), lPolygon(24, 18, 10, 6));
+  // can't pass the inside corner: stops FLOOR_PLAN_MIN_WALL_FT beyond x = 14
+  assert.deepStrictEqual(P.resizeFloorPlan(lPoly, 'x', 10).map(p => p.x), [0, 15, 15, 14, 14, 0]);
+  assert.deepStrictEqual(P.resizeFloorPlan(lPoly, 'x', 10), lPolygon(15, 20, 1, 8));
+});
+
+test('nearestWallDistances in an L room measures to the notch\'s walls where they are nearer, and reports where each wall is', () => {
+  const belowNotch = P.nearestWallDistances({ x: 20, y: 10 }, lShapedRoom);
+  assert.deepStrictEqual(belowNotch, { side: { wall: 'right', distFt: 4, x: 24 }, end: { wall: 'back', distFt: 2, y: 12 } });
+  const besideNotch = P.nearestWallDistances({ x: 10, y: 16 }, lShapedRoom);
+  assert.deepStrictEqual(besideNotch, { side: { wall: 'right', distFt: 4, x: 14 }, end: { wall: 'back', distFt: 4, y: 20 } });
+  // a rectangle's own polygon gives exactly the same as the plain rectangle
+  for(const pos of [{ x: 2.25, y: 1 }, { x: 16, y: 12 }, { x: 9, y: 6.75 }]){
+    assert.deepStrictEqual(P.nearestWallDistances(pos, { ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }), P.nearestWallDistances(pos, baseRoom));
+  }
+});
+
+test('speakerKeepOut runs back to a notch wall when that is the nearest wall', () => {
+  const r = P.speakerKeepOut({ x: 13, y: 16 }, lShapedRoom); // 1 ft from the notch's side wall x = 14
+  assert.deepStrictEqual(r, { x: 12, y: 15, width: 2, height: 2 });
+  const s = P.speakerKeepOut({ x: 18, y: 11.5 }, lShapedRoom); // 0.5 ft in front of the notch's top wall y = 12
+  assert.deepStrictEqual(s, { x: 17, y: 10.5, width: 2, height: 1.5 });
+});
+
+test('standardSpeakerPositions: a rectangle\'s polygon gives exactly the rectangle\'s positions, and in an L every position stays the inset from every wall', () => {
+  const names = Object.keys(P.SPEAKER_AZIMUTH_DEG);
+  for(const seat of [{ x: 9, y: 9 }, { x: 3, y: 0.5 }, { x: 17.9, y: 13 }]){
+    assert.deepStrictEqual(P.standardSpeakerPositions({ ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }, seat, names), P.standardSpeakerPositions(baseRoom, seat, names));
+  }
+  const seat = { x: 7, y: 14 };
+  const spots = P.standardSpeakerPositions(lShapedRoom, seat, names);
+  assert.strictEqual(spots.length, names.length);
+  for(const p of spots){
+    assert.ok(P.isPointInPolygon(p.x, p.y, lPoly), `${p.name} inside`);
+    approx(P.floorPlanClearance(p.x, p.y, lPoly), 1.5, 1e-9, `${p.name} clearance`);
+  }
+  // SR, at 100 degrees to the seat's right, stops 1.5 ft short of the notch's side wall x = 14
+  const sr = spots.find(p => p.name === 'SR');
+  approx(sr.x, 12.5, 1e-9);
+  approx(sr.y, 14 - Math.cos(100 * Math.PI / 180) * (5.5 / Math.sin(100 * Math.PI / 180)), 1e-9);
+});
+
+test('freeFloorFraction in an L room counts only the floor inside it', () => {
+  approx(P.freeFloorFraction(lShapedRoom, []), 1, 1e-12);
+  // a zone over the whole notch covers no floor; one over the notch and 2 ft in front of it covers 10 x 2 = 20 of 400 ft^2
+  approx(P.freeFloorFraction(lShapedRoom, [{ x: 14, y: 12, width: 10, height: 8 }]), 1, 1e-12);
+  approx(P.freeFloorFraction(lShapedRoom, [{ x: 14, y: 10, width: 10, height: 10 }]), 1 - 20 / 400, 1e-12);
+  // the rectangle's own polygon changes nothing
+  const zones = [{ x: 2, y: 2, width: 5, height: 4 }, { x: 4, y: 3, width: 6, height: 6 }];
+  approx(P.freeFloorFraction({ ...baseRoom, polygon: P.rectanglePolygon(18, 13.5) }, zones), P.freeFloorFraction(baseRoom, zones), 1e-12);
+});
+
+test('isCandidateValid rejects a spot outside an L room\'s polygon or on its wall', () => {
+  assert.strictEqual(P.isCandidateValid(10, 10, lShapedRoom, [], [], [], 0), true);
+  assert.strictEqual(P.isCandidateValid(20, 16, lShapedRoom, [], [], [], 0), false); // in the notch
+  assert.strictEqual(P.isCandidateValid(14, 16, lShapedRoom, [], [], [], 0), false); // on the notch's wall
+  assert.strictEqual(P.isCandidateValid(20, 16, lRoom, [], [], [], 0), true); // the same spot in the bounding rectangle
+});
+
+test('optimizeSubPlacement in an L room only scores spots inside it, and scans the whole bounding grid', () => {
+  const ctx = { room: lShapedRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const scanned = Array.from(P.scanGridCandidates({
+    room: lShapedRoom, otherSources: [], freqList: [40, 60], listenerPositions: [{ x: 7, y: 14, z: 3.5, weight: 1 }],
+    physicsCtx: ctx, gridStepFt: 1, mode: 'balanced'
+  }));
+  assert.strictEqual(scanned.length, P.countGridCells(lShapedRoom, 1));
+  const valid = scanned.filter(Boolean);
+  assert.strictEqual(valid.length, 400); // one 1 ft cell per ft^2 of floor
+  assert.ok(valid.every(c => P.isPointInPolygon(c.x, c.y, lPoly) && !(c.x > 14 && c.y > 12)));
+  const result = P.optimizeSubPlacement({
+    room: lShapedRoom, otherSources: [], freqList: [40, 60], listenerPositions: [{ x: 7, y: 14, z: 3.5, weight: 1 }],
+    physicsCtx: ctx, gridStepFt: 1, mode: 'balanced'
+  });
+  assert.strictEqual(result.allCandidates.length, 400);
+  assert.ok(P.isPointInPolygon(result.best.x, result.best.y, lPoly));
+});
+
+test('sampleFieldDbRange skips grid points outside an L room', () => {
+  const ctx = { room: lShapedRoom, wallAbsorption: 0.05, floorPlan: lPlan };
+  const pre = P.precomputeModalField([{ x: 3, y: 3, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 200 }], 47, ctx, P.enumerateModes(ctx));
+  let min = Infinity, max = -Infinity;
+  for(let j = 0; j < 5; j++) for(let i = 0; i < 5; i++){
+    const x = i / 4 * 24, y = j / 4 * 20;
+    if(!P.isPointInPolygon(x, y, lPoly)) continue;
+    const { re, im } = P.computeFieldAtPoint(x, y, 3.5, pre);
+    const db = P.pressureToDb(re, im);
+    min = Math.min(min, db); max = Math.max(max, db);
+  }
+  assert.deepStrictEqual(P.sampleFieldDbRange(pre, lShapedRoom, 3.5, 5), { min, max });
+});
+
+test('floorPlanModeFrequencies: a rectangle\'s lowest floor modes are its width and depth axial modes', () => {
+  const f = P.floorPlanModeFrequencies(rectPlan);
+  assert.strictEqual(f.length, rectPlan.numModes - 1);
+  approx(f[0], P.C / (2 * 20 * 0.3048), 0.05);  // 28.1 Hz, width
+  approx(f[1], P.C / (2 * 15 * 0.3048), 0.05);  // 37.5 Hz, depth
+  assert.ok(f.every((v, i) => i === 0 || v >= f[i - 1]));
+});
+
+// A stand-in for the page's Web Worker: answers each message on a later
+// tick with floorPlanWorkerReply, and records what it was sent.
+function fakeFloorPlanWorkers(){
+  const log = { started: 0, terminated: 0, posted: [] };
+  const startWorker = () => {
+    log.started++;
+    const worker = {
+      alive: true,
+      postMessage(msg){ log.posted.push(msg); setTimeout(() => { if(worker.alive) worker.onmessage({ data: P.floorPlanWorkerReply(msg) }); }, 0); },
+      terminate(){ worker.alive = false; log.terminated++; }
+    };
+    return worker;
+  };
+  return { log, startWorker };
+}
+const smallL = lPolygon(10, 8, 4, 3), smallU = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 8 }, { x: 7, y: 8 }, { x: 7, y: 4 }, { x: 3, y: 4 }, { x: 3, y: 8 }, { x: 0, y: 8 }];
+const nextTick = () => new Promise(r => setTimeout(r, 0));
+
+testAsync('createFloorPlanSolver solves the preview first and then full size, calling onSolved for each, and keeps both', async () => {
+  const { log, startWorker } = fakeFloorPlanWorkers();
+  let solved = 0;
+  const solver = P.createFloorPlanSolver({ startWorker, onSolved: () => solved++ });
+  assert.strictEqual(solver.planFor(smallL), null);
+  assert.deepStrictEqual(log.posted.map(m => m.cellM), [P.FLOOR_PLAN_PREVIEW_CELL_M]);
+  await nextTick();
+  const preview = solver.planFor(smallL);
+  assert.strictEqual(preview.cellM, P.FLOOR_PLAN_PREVIEW_CELL_M);
+  assert.strictEqual(solved, 1);
+  const full = await solver.fullPlanFor(smallL);
+  assert.strictEqual(full.cellM, P.FLOOR_PLAN_CELL_M);
+  assert.strictEqual(solved, 2);
+  assert.strictEqual(solver.planFor(smallL), full);
+  // asking again sends nothing more
+  assert.strictEqual(await solver.fullPlanFor(smallL.map(p => ({ ...p }))), full);
+  assert.strictEqual(log.posted.length, 2);
+  assert.strictEqual(log.started, 1);
+  // the worker's plan matches solving it directly
+  assert.deepStrictEqual(Array.from(full.kSquared), Array.from(P.solveFloorPlan(smallL).kSquared));
+});
+
+testAsync('createFloorPlanSolver stops a full solve that is no longer wanted, lets a preview finish, and drops waiters for the old shape', async () => {
+  const { log, startWorker } = fakeFloorPlanWorkers();
+  const solver = P.createFloorPlanSolver({ startWorker });
+  solver.planFor(smallL);
+  await nextTick(); // preview of smallL done, its full solve now running
+  const waiting = solver.fullPlanFor(smallL);
+  assert.strictEqual(log.posted[log.posted.length - 1].cellM, P.FLOOR_PLAN_CELL_M);
+  solver.planFor(smallU);
+  assert.strictEqual(await waiting, null);
+  assert.strictEqual(log.terminated, 1);
+  assert.strictEqual(log.started, 2);
+  assert.strictEqual(floorKeyOf(log.posted[log.posted.length - 1]), P.floorPlanKey(smallU));
+  // a running preview is not stopped: smallL is asked for while smallU's preview runs
+  solver.planFor(smallL);
+  assert.strictEqual(log.terminated, 1);
+  await nextTick(); // smallU's preview arrives, then smallL's full solve starts (its preview is kept)
+  assert.strictEqual(solver.planFor(smallL).cellM, P.FLOOR_PLAN_PREVIEW_CELL_M);
+  assert.strictEqual((await solver.fullPlanFor(smallL)).cellM, P.FLOOR_PLAN_CELL_M);
+  // smallU's preview was kept too
+  const before = log.posted.length;
+  assert.strictEqual(solver.planFor(smallU).cellM, P.FLOOR_PLAN_PREVIEW_CELL_M);
+  assert.strictEqual(log.posted.length, before + 1); // only its full solve is sent
+});
+const floorKeyOf = (msg) => msg.key;
+
+testAsync('createFloorPlanSolver keeps only the most recent cacheSize floor plans', async () => {
+  const { log, startWorker } = fakeFloorPlanWorkers();
+  const solver = P.createFloorPlanSolver({ startWorker, cacheSize: 2 });
+  const shapes = [smallL, smallU, lPolygon(10, 8, 5, 3)];
+  for(const shape of shapes) await solver.fullPlanFor(shape);
+  const sent = log.posted.length;
+  await solver.fullPlanFor(shapes[2]);
+  await solver.fullPlanFor(shapes[1]);
+  assert.strictEqual(log.posted.length, sent); // still cached
+  solver.planFor(shapes[0]); // dropped: solved again
+  assert.strictEqual(log.posted.length, sent + 1);
 });
 
 (async () => {
