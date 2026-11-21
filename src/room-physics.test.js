@@ -265,6 +265,20 @@ test('is deterministic -- same inputs produce the same cloud every time', () => 
   assert.deepStrictEqual(a, b);
 });
 
+test('the cloud is centered: points above and below the center reach out equally far', () => {
+  const pts = P.sphereSamplePoints(0, 0, 0, 2, 20);
+  const r = p => Math.hypot(p.x, p.y, p.z);
+  const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+  const above = pts.filter(p => p.z > 0).map(r), below = pts.filter(p => p.z < 0).map(r);
+  assert.strictEqual(above.length, 10);
+  assert.strictEqual(below.length, 10);
+  assert.ok(Math.abs(mean(above) - mean(below)) < 0.1, `mean radius above ${mean(above).toFixed(2)} vs below ${mean(below).toFixed(2)}`);
+  for(const axis of ['x', 'y', 'z']){
+    const c = mean(pts.map(p => p[axis]));
+    assert.ok(Math.abs(c) < 0.05, `centroid ${axis} = ${c.toFixed(3)} ft, expected within 0.05 ft of the center`);
+  }
+});
+
 test('radius 0 collapses every point onto the center', () => {
   const pts = P.sphereSamplePoints(9, 6, 3, 0, 10);
   for(const p of pts) assert.deepStrictEqual(p, { x: 9, y: 6, z: 3 });
@@ -475,25 +489,80 @@ test("DEMONSTRATION: on-resonance peak magnitude grows as a mode's damping decre
   }
 });
 
-test('uniform-absorption bandwidth cross-check: a mode\'s own decay time tracks estimatedT60\'s Eyring estimate (same order of magnitude, not exact equality)', () => {
-  // These measure genuinely different things -- one mode's own decay vs a
-  // diffuse-field room average -- so exact equality isn't expected (see
-  // enumerateModes' comment on why per-mode damping varies by mode index even
-  // under uniform absorption). This just confirms they're in the same
-  // ballpark and both derived from the same underlying wall absorption.
+test('uniform absorption: each mode family decays at its own classic fraction of the Sabine rate', () => {
+  // With the same absorption on all six surfaces, a mode's damping is
+  // alpha * sum over axes of eps(n on that axis) / (4 * L of that axis): the
+  // Sabine rate alpha*S/(4V) exactly for every oblique mode, less for a
+  // tangential mode and least for an axial one (Morse; Kuttruff).
   const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallAbsorption: 0.51 }; // uniform absorption on every surface
-  const modes = P.enumerateModes(ctx);
-  const mode = modes.find(m => m.fn > 100 && m.fn < 200);
-  assert.ok(mode, 'expected a mode in the 100-200Hz range for this room');
-  // delta_n here is spatial (1/m); the temporal damping rate is delta_n*c,
-  // and T60 (60dB energy decay, e^{-delta_temporal*t}) is ln(1e6)/delta_temporal.
-  const deltaTemporal = mode.deltaN * P.C;
-  const t60FromMode = Math.log(1e6) / deltaTemporal;
-  const t60Eyring = P.estimatedT60(room, mode.fn, ctx);
-  const ratio = t60FromMode / t60Eyring;
-  assert.ok(ratio > 0.3 && ratio < 3,
-    `expected same-order-of-magnitude T60 estimates: fromMode=${t60FromMode.toFixed(3)}s eyring=${t60Eyring.toFixed(3)}s ratio=${ratio.toFixed(2)}`);
+  const alpha = 0.1;
+  const modes = P.enumerateModes({ room, wallAbsorption: alpha });
+  const L = [room.w, room.d, room.h].map(ft => ft * P.FT_TO_M);
+  const sabine = (alpha / 2) * (1/L[0] + 1/L[1] + 1/L[2]); // alpha*S/(4V), in 1/m like deltaN
+  const counts = { axial: 0, tangential: 0, oblique: 0 };
+  for(const m of modes){
+    const n = [m.nx, m.ny, m.nz];
+    const nonZero = n.filter(v => v > 0).length;
+    if(nonZero === 0) continue; // the (0,0,0) mode has its own test below
+    const expected = (alpha / 4) * n.reduce((sum, v, i) => sum + (v > 0 ? 2 : 1) / L[i], 0);
+    approx(m.deltaN, expected, 1e-12, `mode (${n.join(',')})`);
+    if(nonZero === 3) approx(m.deltaN / sabine, 1, 1e-9, `oblique mode (${n.join(',')}) vs the Sabine rate`);
+    else assert.ok(m.deltaN < sabine, `expected mode (${n.join(',')}) to decay slower than the Sabine rate`);
+    counts[nonZero === 1 ? 'axial' : nonZero === 2 ? 'tangential' : 'oblique']++;
+  }
+  assert.ok(counts.axial > 0 && counts.tangential > 0 && counts.oblique > 0, `expected all three mode families, got ${JSON.stringify(counts)}`);
+  // An x-axial mode: its two end walls count double, the other four surfaces once.
+  const axialX = modes.find(m => m.nx === 1 && m.ny === 0 && m.nz === 0);
+  approx(axialX.deltaN / sabine, (2/L[0] + 1/L[1] + 1/L[2]) / (2 * (1/L[0] + 1/L[1] + 1/L[2])), 1e-9, 'x-axial mode vs the Sabine rate');
+});
+
+test('an oblique mode\'s own decay time equals the Sabine T60 for a lightly damped room', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.05 };
+  const mode = P.enumerateModes(ctx).find(m => m.nx > 0 && m.ny > 0 && m.nz > 0);
+  // delta_n is spatial (1/m); the energy decay rate is delta_n*c, and T60 is ln(1e6) over it.
+  const t60FromMode = Math.log(1e6) / (mode.deltaN * P.C);
+  const m2 = P.FT_TO_M ** 2, m3 = P.FT_TO_M ** 3;
+  const surface = 2 * (room.w*room.d + room.w*room.h + room.d*room.h) * m2;
+  const t60Sabine = 24 * Math.log(10) / P.C * (room.w*room.d*room.h * m3) / (0.05 * surface);
+  approx(t60FromMode / t60Sabine, 1, 1e-9, 'oblique-mode T60 vs Sabine');
+  // Eyring's estimate sits just under Sabine's at this absorption.
+  const ratioToEyring = t60FromMode / P.estimatedT60(room, mode.fn, ctx);
+  assert.ok(ratioToEyring > 1 && ratioToEyring < 1.05, `expected the mode's T60 just above Eyring's, got ratio ${ratioToEyring.toFixed(3)}`);
+});
+
+test('the (0,0,0) pressure-zone mode is enumerated, uniform across the room and lightly damped', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const alpha = 0.1;
+  const modes = P.enumerateModes({ room, wallAbsorption: alpha });
+  const zero = modes.filter(m => m.nx === 0 && m.ny === 0 && m.nz === 0);
+  assert.strictEqual(zero.length, 1, 'expected exactly one (0,0,0) mode');
+  const m = zero[0];
+  assert.strictEqual(m.kn, 0);
+  assert.strictEqual(m.fn, 0);
+  assert.ok(m.invLx === 0 && m.invLy === 0 && m.invLz === 0, 'expected a mode shape of 1 everywhere');
+  const L = [room.w, room.d, room.h].map(ft => ft * P.FT_TO_M);
+  approx(m.deltaN, (alpha / 4) * (1/L[0] + 1/L[1] + 1/L[2]), 1e-12, 'half the Sabine rate');
+  approx(m.An, P.C * P.C / (L[0] * L[1] * L[2]), 1e-9, 'c^2/V');
+});
+
+test('below the first room mode the pressure-zone mode dominates: the level is nearly the same everywhere and rises toward low frequency', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.1 };
+  const source = { x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 1, freqHigh: 20000 };
+  const [firstMode] = P.axialModes(room.w, 1, 300); // about 31 Hz
+  assert.ok(firstMode > 30, `expected the first mode above 30Hz, got ${firstMode}`);
+  const at = (x, y, z, f) => P.fieldDbAtPoint(x, y, z, [source], f, ctx);
+  // 10 Hz, a third of the first mode's frequency: far corner, room center and a few feet from the source.
+  const levels = [at(17, 1, 7, 10), at(9, 6.75, 4, 10), at(6, 9, 3, 10)];
+  assert.ok(Math.max(...levels) - Math.min(...levels) < 3, `expected under 3dB of variation across the room at 10Hz, got ${levels.map(v => v.toFixed(1)).join(', ')}`);
+  // The zero mode's term goes as 1/k^2: 12 dB per octave.
+  approx(at(9, 6.75, 4, 5) - at(9, 6.75, 4, 10), 12, 1.5, 'rise from 10Hz down to 5Hz at the room center');
+  // Without the mode, the room center (on the first x and y modes' nodal planes) would read far lower.
+  const without = P.enumerateModes(ctx).filter(m => m.kn > 0);
+  const { re, im } = P.computeFieldAtPoint(9, 6.75, 4, P.precomputeModalField([source], 10, ctx, without));
+  const dbWithout = 20 * Math.log10(Math.hypot(re, im));
+  assert.ok(at(9, 6.75, 4, 10) - dbWithout > 10, `expected the pressure-zone mode to add over 10dB at the room center at 10Hz, got ${(at(9, 6.75, 4, 10) - dbWithout).toFixed(1)}`);
 });
 
 console.log('\n-- isNearNull / dB sensitivity near interference nulls --');
@@ -887,6 +956,27 @@ test('isCandidateValid with NO allowed zones allows anywhere in-room (not off-li
   assert.strictEqual(P.isCandidateValid(9, 9, room, [], []), true);
 });
 
+test('isCandidateValid: an exclude point with its own clearanceFt is cleared by that much, not by minSeparationFt', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const speaker = [{ x: 9, y: 9, clearanceFt: 1 }];
+  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker, 4), false, 'inside the 2x2ft box');
+  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], speaker, 4), true, 'just outside the box, well inside 4ft');
+  assert.strictEqual(P.isCandidateValid(9.75, 9.75, room, [], [], speaker), false, 'still applies with no minSeparationFt at all');
+  assert.strictEqual(P.isCandidateValid(10.25, 9.25, room, [], [], [{ x: 9, y: 9 }], 4), false, 'a plain point keeps minSeparationFt');
+});
+
+test('isSubSource / sourceExclusionPoints: subs keep the full separation, mains get SPEAKER_CLEARANCE_FT', () => {
+  assert.strictEqual(P.isSubSource({ freqHigh: 80 }), true);
+  assert.strictEqual(P.isSubSource({ freqHigh: 150 }), true);
+  assert.strictEqual(P.isSubSource({ freqHigh: 20000 }), false);
+  assert.strictEqual(P.SPEAKER_CLEARANCE_FT, 1, 'a 2x2ft box');
+  const points = P.sourceExclusionPoints([
+    { x: 1, y: 2, freqLow: 80, freqHigh: 20000 },
+    { x: 3, y: 4, freqLow: 20, freqHigh: 80 }
+  ]);
+  assert.deepStrictEqual(points, [{ x: 1, y: 2, clearanceFt: 1 }, { x: 3, y: 4 }]);
+});
+
 console.log('\n-- freeFloorFraction --');
 
 test('freeFloorFraction is 1 with no zones and 0 with the floor fully covered', () => {
@@ -928,6 +1018,15 @@ test('freeFloorFraction agrees with a brute-force point count on scattered zones
     if(!zones.some(z => P.isPointInRect(px, py, z))) free++;
   }
   approx(P.freeFloorFraction(baseRoom, zones), free / (n * n), 0.005);
+});
+
+test('clipRectToRoom cuts a rect back to the room and drops one that lies outside it', () => {
+  const room = { w: 12, d: 10, h: 8 };
+  assert.deepStrictEqual(P.clipRectToRoom({ x: 2, y: 3, width: 4, height: 5 }, room), { x: 2, y: 3, width: 4, height: 5 }, 'inside: unchanged');
+  assert.deepStrictEqual(P.clipRectToRoom({ x: 4.5, y: 3, width: 9, height: 6.75 }, room), { x: 4.5, y: 3, width: 7.5, height: 6.75 }, 'cut at the right wall');
+  assert.deepStrictEqual(P.clipRectToRoom({ x: -1, y: 8, width: 3, height: 5 }, room), { x: 0, y: 8, width: 2, height: 2 }, 'cut at the left and back walls');
+  assert.strictEqual(P.clipRectToRoom({ x: 13, y: 2, width: 3, height: 3 }, room), null, 'wholly outside');
+  assert.strictEqual(P.clipRectToRoom({ x: 12, y: 2, width: 3, height: 3 }, room), null, 'only touching the wall');
 });
 
 console.log('\n-- scoreResponses / seatToSeatVariationDb / comparePlacements --');
@@ -1266,21 +1365,152 @@ test('REGRESSION: a placed sub keeps clear of otherSources positions (mains, pre
   // only accumulate subs placed DURING this call. otherSources (mains,
   // and any subs that existed before this call) were never in it, so a
   // newly-placed sub could land right on top of one of them. Forcing the
-  // search into an allowed zone tight around an existing main makes this
-  // concrete: a 3ft square exclusion around that main should leave no valid
-  // candidate inside a 4x4ft zone centered on it.
+  // search into an allowed zone tight around an existing source makes this
+  // concrete: an existing SUB keeps the full sub-to-sub separation, so its
+  // 4ft square exclusion leaves no valid candidate inside a 4x4ft zone
+  // centered on it; a MAIN keeps a 2x2ft box, which fills a zone just
+  // inside that box.
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51 };
-  const existingMain = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
-  const allowedZones = [{ x: 7, y: 7, width: 4, height: 4 }]; // 4x4ft, centered on (9,9)
-
-  const result = P.optimizeMultipleSubs({
-    room, otherSources: [existingMain], numSubs: 1, freqList: [40,60,80],
+  const base = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, enabled: true };
+  const existingSub = { ...base, freqLow: 20, freqHigh: 80 };
+  const existingMain = { ...base, freqLow: 80, freqHigh: 20000 };
+  const search = (otherSources, allowedZones) => P.optimizeMultipleSubs({
+    room, otherSources, numSubs: 1, freqList: [40,60,80],
     listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
     offLimitZones: [], allowedZones, gridStepFt: 0.5, subHeightFt: 1
   });
-  assert.strictEqual(result.placedSubs.length, 0,
-    `expected no valid candidate inside a zone this tight around an existing source, but placed a sub at (${result.placedSubs[0]?.x},${result.placedSubs[0]?.y})`);
+  const aroundSub = search([existingSub], [{ x: 7, y: 7, width: 4, height: 4 }]);
+  assert.strictEqual(aroundSub.placedSubs.length, 0,
+    `expected no valid candidate inside a zone this tight around an existing sub, but placed a sub at (${aroundSub.placedSubs[0]?.x},${aroundSub.placedSubs[0]?.y})`);
+  const insideMainBox = search([existingMain], [{ x: 8.1, y: 8.1, width: 1.8, height: 1.8 }]);
+  assert.strictEqual(insideMainBox.placedSubs.length, 0,
+    `expected no valid candidate inside a main speaker's 2x2ft box, but placed a sub at (${insideMainBox.placedSubs[0]?.x},${insideMainBox.placedSubs[0]?.y})`);
+});
+
+test('a main speaker only blocks a 2x2ft box, so a sub can stand right beside it', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const main = { x: 9, y: 9, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true };
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [main], numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [{x:9,y:6,z:3.5}], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [{ x: 7, y: 7, width: 4, height: 4 }], gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 1, 'expected a sub to fit in a 4x4ft zone around a main speaker');
+  const sub = result.placedSubs[0];
+  assert.ok(Math.abs(sub.x - main.x) >= P.SPEAKER_CLEARANCE_FT || Math.abs(sub.y - main.y) >= P.SPEAKER_CLEARANCE_FT,
+    `expected the sub outside the main's box, got (${sub.x},${sub.y})`);
+  // 64 cells in the zone, minus the 16 inside the 2x2ft box.
+  assert.strictEqual(result.roundResults[0].allCandidates.length, 48);
+});
+
+test('REGRESSION: a small room full of speakers still has somewhere to search (12x10ft with a 7-speaker layout)', () => {
+  // Every main used to take the full sub-to-sub separation, an 8x8ft box
+  // each, which left this room with no valid candidate at all.
+  const room = { w: 12, d: 10, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const seat = { x: 6, y: 6.3, z: 3.5 };
+  const mains = P.standardSpeakerPositions(room, seat, ['FL','FR','C','SL','SR','SBL','SBR'])
+    .map(p => ({ x: p.x, y: p.y, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }));
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: mains, numSubs: 1, freqList: [40,60,80],
+    listenerPositions: [seat], physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 0.5, subHeightFt: 1
+  });
+  assert.strictEqual(result.placedSubs.length, 1);
+  const cells = P.countGridCells(room, 0.5);
+  assert.ok(result.roundResults[0].allCandidates.length > cells * 0.7,
+    `expected most of the ${cells} cells searchable, got ${result.roundResults[0].allCandidates.length}`);
+});
+
+test('a new sub is scored as the sub that gets placed (NEW_SUB_DEFAULTS), not as a full-range source', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 70, 100, 120];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const result = P.optimizeMultipleSubs({
+    room, otherSources: [], numSubs: 1, freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 1, subHeightFt: 1
+  });
+  const best = result.roundResults[0].best;
+  const pos = { x: best.x, y: best.y, z: best.z };
+  const asPlaced = P.scoreSubPosition({ ...P.NEW_SUB_DEFAULTS, ...pos }, [], room, freqList, lp, ctx);
+  const asFullRange = P.scoreSubPosition(pos, [], room, freqList, lp, ctx);
+  approx(best.score, asPlaced.score, 1e-9, 'score of the winning candidate');
+  assert.ok(Math.abs(asPlaced.score - asFullRange.score) > 1, 'expected the 80Hz low-pass to change the score above 80Hz');
+  assert.strictEqual(result.placedSubs[0].freqHigh, P.NEW_SUB_DEFAULTS.freqHigh);
+});
+
+test('scanGridCandidates: candidateTemplate and timeAlignTo score each candidate as the sub that will stand there', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [50, 80, 110];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const main = { id: 1, x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 7, freqLow: 80, freqHigh: 20000, enabled: true };
+  const template = { id: 2, levelDb: -6, delayMs: 3, freqLow: 20, freqHigh: 100, rolloffDbPerOct: 12 };
+  const opts = {
+    room, otherSources: [main], freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 3, subHeightFt: 1, candidateTemplate: template
+  };
+  // Template only: the candidate keeps the template's own delay, the main its own.
+  for(const c of [...P.scanGridCandidates(opts)].filter(Boolean)){
+    const expected = P.scoreSubPosition({ ...template, x: c.x, y: c.y, z: c.z }, [main], room, freqList, lp, ctx);
+    approx(c.score, expected.score, 1e-9, `template score at (${c.x},${c.y})`);
+  }
+  // With timeAlignTo, both sources get the delays time alignment gives them with the candidate in place.
+  const listener = { x: 9, y: 9, z: 3.5 };
+  let differs = false;
+  for(const c of [...P.scanGridCandidates({ ...opts, timeAlignTo: listener })].filter(Boolean)){
+    const [alignedMain, alignedSub] = P.timeAlignedSources([main, { ...template, x: c.x, y: c.y, z: c.z }], listener);
+    const expected = P.scoreSubPosition(alignedSub, [alignedMain], room, freqList, lp, ctx);
+    approx(c.score, expected.score, 1e-9, `time-aligned score at (${c.x},${c.y})`);
+    const unaligned = P.scoreSubPosition({ ...template, x: c.x, y: c.y, z: c.z }, [main], room, freqList, lp, ctx);
+    if(Math.abs(unaligned.score - expected.score) > 0.1) differs = true;
+  }
+  assert.ok(differs, 'expected time alignment to change at least one candidate score');
+});
+
+test('scanGridCandidates: nullAvoidance\'s spread penalty counts other subs only, not main speakers', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 60];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const scan = (excludePoints) => [...P.scanGridCandidates({
+    room, otherSources: [], freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [{ x: 5, y: 1, width: 1, height: 1 }], gridStepFt: 0.5, subHeightFt: 1,
+    excludePoints, minSeparationFt: 3, mode: 'nullAvoidance'
+  })].filter(Boolean);
+  const alone = scan([]);
+  const nearSpeaker = scan([{ x: 2, y: 1.5, clearanceFt: P.SPEAKER_CLEARANCE_FT }]);
+  const nearSub = scan([{ x: 2, y: 1.5 }]);
+  assert.ok(alone.length > 0 && nearSpeaker.length === alone.length && nearSub.length === alone.length);
+  alone.forEach((c, i) => {
+    approx(nearSpeaker[i].score, c.score, 1e-9, 'a speaker 3ft away should not cost anything');
+    assert.ok(nearSub[i].score < c.score - 1, 'a sub 3ft away should cost a spread penalty');
+  });
+});
+
+test('polishSubPlacements scores each sub as itself: its own level and passband, time-aligned when asked', () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const freqList = [40, 70, 100];
+  const lp = [{ x: 9, y: 9, z: 3.5 }];
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const subs = [
+    { id: 1, x: 1.5, y: 1.5, z: 1, levelDb: -6, delayMs: 0, freqLow: 20, freqHigh: 60, enabled: true },
+    { id: 2, x: 16.5, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 120, enabled: true }
+  ];
+  const result = P.polishSubPlacements({
+    room, otherSources: [], subs, freqList, listenerPositions: lp, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], gridStepFt: 1.5, timeAlignTo: listener
+  });
+  // The first round searched for sub 1 with sub 2 still at its starting position.
+  const first = result.polishResults[0].best;
+  const [alignedOther, alignedCandidate] = P.timeAlignedSources([subs[1], { ...subs[0], x: first.x, y: first.y, z: first.z }], listener);
+  const expected = P.scoreSubPosition(alignedCandidate, [alignedOther], room, freqList, lp, ctx);
+  approx(first.score, expected.score, 1e-9, 'first polish round\'s best score');
+  assert.strictEqual(result.placedSubs[0].levelDb, -6);
+  assert.strictEqual(result.placedSubs[0].freqHigh, 60);
 });
 
 test('minSeparationFt is configurable and respected', () => {
@@ -1741,6 +1971,26 @@ test('returns one entry per source, in the same order, empty array for no source
   assert.deepStrictEqual(result.map(r => r.id), ['a', 'b', 'c']);
 });
 
+test('timeAlignDelays rounds to stepMs when given one, and timeAlignedSources applies the app\'s 0.1ms step', () => {
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const sources = [
+    { id: 1, x: 4.67, y: 1.5, z: 3, delayMs: 0, name: 'FL' },
+    { id: 2, x: 16, y: 12.3, z: 1, delayMs: 5, name: 'SW1' }
+  ];
+  const exact = P.timeAlignDelays(sources, listener);
+  const rounded = P.timeAlignDelays(sources, listener, P.TIME_ALIGN_STEP_MS);
+  assert.strictEqual(P.TIME_ALIGN_STEP_MS, 0.1);
+  exact.forEach((e, i) => {
+    assert.strictEqual(rounded[i].id, e.id);
+    assert.strictEqual(rounded[i].delayMs, Math.round(e.delayMs * 10) / 10);
+  });
+  assert.ok(exact.some((e, i) => e.delayMs !== rounded[i].delayMs), 'expected at least one delay to actually round');
+  const aligned = P.timeAlignedSources(sources, listener);
+  assert.deepStrictEqual(aligned.map(s => s.delayMs), rounded.map(r => r.delayMs));
+  assert.strictEqual(aligned[1].name, 'SW1', 'other fields are kept');
+  assert.strictEqual(sources[1].delayMs, 5, 'the input is not mutated');
+});
+
 console.log('\n-- earPositions / fieldDbAtEars --');
 
 test('ears are offset by the correct total spacing (~0.17m / ~0.558ft)', () => {
@@ -2145,6 +2395,154 @@ testAsync('optimizeSubPlacementAsync applies the same preferred-zone bonus as op
   const syncResult = P.optimizeSubPlacement(opts);
   const asyncResult = await P.optimizeSubPlacementAsync(opts);
   assert.deepStrictEqual(asyncResult.best, syncResult.best, 'async best should exactly match sync best with a preferred zone applied');
+});
+
+testAsync('async twins match the sync optimizers with timeAlignTo, speaker clearance and per-sub templates', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const listener = { x: 9, y: 9, z: 3.5 };
+  const mains = [
+    { id: 1, x: 4.67, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
+    { id: 2, x: 13.33, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
+  ];
+  const opts = {
+    room, otherSources: mains, numSubs: 2, freqList: [40, 70, 100], listenerPositions: [listener], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1.5, subHeightFt: 1, mode: 'nullAvoidance', timeAlignTo: listener
+  };
+  const syncResult = P.optimizeMultipleSubs(opts);
+  const asyncResult = await P.optimizeMultipleSubsAsync(opts);
+  assert.deepStrictEqual(asyncResult.placedSubs, syncResult.placedSubs);
+  assert.deepStrictEqual(asyncResult.roundResults.map(r => r.best), syncResult.roundResults.map(r => r.best));
+
+  const subs = [
+    { id: 3, x: 1.5, y: 12, z: 1, levelDb: -3, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 4, x: 16.5, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 100, enabled: true }
+  ];
+  const polishOpts = { ...opts, subs, subHeightFt: undefined };
+  const syncPolish = P.polishSubPlacements(polishOpts);
+  const asyncPolish = await P.polishSubPlacementsAsync(polishOpts);
+  assert.deepStrictEqual(asyncPolish.placedSubs, syncPolish.placedSubs);
+  assert.deepStrictEqual(asyncPolish.polishResults.map(r => r.best), syncPolish.polishResults.map(r => r.best));
+});
+
+console.log('\n-- pressureToDb / sampleFieldDbRange / logSpacedFreqs / maxSchroederFrequency --');
+
+test('pressureToDb is 20 log10 of the magnitude over refAmp, floored at 1e-6', () => {
+  approx(P.pressureToDb(1, 0), 0, 1e-12);
+  approx(P.pressureToDb(3, 4), 20 * Math.log10(5), 1e-12);
+  approx(P.pressureToDb(1, 0, 2), -20 * Math.log10(2), 1e-12);
+  approx(P.pressureToDb(0, 0), -120, 1e-9, 'a perfect null stays finite');
+});
+
+test('fieldDbAtPoint is the field at that point through pressureToDb', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const pre = P.precomputeModalField(src, 47, ctx, P.enumerateModes(ctx));
+  const { re, im } = P.computeFieldAtPoint(9, 6, 3.5, pre);
+  approx(P.fieldDbAtPoint(9, 6, 3.5, src, 47, ctx), P.pressureToDb(re, im), 1e-12);
+});
+
+test('sampleFieldDbRange returns the min and max of an n x n grid that includes the walls', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const pre = P.precomputeModalField(src, 55, ctx, P.enumerateModes(ctx));
+  let min = Infinity, max = -Infinity;
+  for(let j = 0; j < 4; j++) for(let i = 0; i < 4; i++){
+    const { re, im } = P.computeFieldAtPoint(i / 3 * 18, j / 3 * 13.5, 3.5, pre);
+    const db = P.pressureToDb(re, im);
+    min = Math.min(min, db); max = Math.max(max, db);
+  }
+  const r = P.sampleFieldDbRange(pre, ctx.room, 3.5, 4);
+  approx(r.min, min, 1e-12); approx(r.max, max, 1e-12);
+  assert.ok(r.max - r.min > 3, `expected some spread across the floor, got ${(r.max - r.min).toFixed(2)} dB`);
+  const def = P.sampleFieldDbRange(pre, ctx.room, 3.5);
+  assert.ok(def.min <= r.min && def.max >= r.max, 'the default 10 x 10 grid includes the 4 x 4 grid corners, so its range is at least as wide');
+});
+
+test('logSpacedFreqs spaces n frequencies evenly on a log axis, both ends included', () => {
+  const f = P.logSpacedFreqs(20, 200, 3);
+  approx(f[0], 20, 1e-9); approx(f[1], Math.sqrt(20 * 200), 1e-9); approx(f[2], 200, 1e-9);
+  const g = P.logSpacedFreqs(20, 250, 48);
+  assert.strictEqual(g.length, 48);
+  for(let i = 2; i < g.length; i++) approx(g[i] / g[i - 1], g[1] / g[0], 1e-9, 'constant ratio');
+});
+
+test('maxSchroederFrequency is the highest Schroeder frequency over 24 samples from 20 to 300 Hz', () => {
+  const ctx = {
+    room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.06, floorAbsorption: 0.15,
+    wallMaterials: { left: P.WALL_MATERIALS.drywallInsulated, right: P.WALL_MATERIALS.drywallInsulated, front: P.WALL_MATERIALS.masonry, back: P.WALL_MATERIALS.masonry },
+    ceilingMaterial: P.WALL_MATERIALS.drywallHollow
+  };
+  let expected = 0;
+  for(let i = 0; i < 24; i++){
+    const f = 20 + 280 * i / 23;
+    expected = Math.max(expected, P.schroederFrequency(ctx.room, P.estimatedT60(ctx.room, f, ctx)));
+  }
+  approx(P.maxSchroederFrequency(ctx), expected, 1e-9);
+  assert.ok(P.maxSchroederFrequency(ctx) > P.schroederFrequency(ctx.room, P.estimatedT60(ctx.room, 80, ctx)), 'the drywall resonance near 80 Hz is not the least absorptive frequency');
+});
+
+console.log('\n-- seatPositions / measureAtSeats / gradePlacement / optimizerFreqList --');
+
+test('seatPositions flattens rows in rank order with each seat\'s rank, offset and weight', () => {
+  const rows = [
+    { x: 9, y: 9, z: 3.5, facing: 0, seats: 3, spacingFt: 2 },
+    { x: 9, y: 12, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }
+  ];
+  const seats = P.seatPositions(rows);
+  assert.strictEqual(seats.length, 4);
+  assert.deepStrictEqual(seats.map(s => s.rank), [0, 0, 0, 1]);
+  assert.deepStrictEqual(seats.map(s => s.rowSeatCount), [3, 3, 3, 1]);
+  const byOffset = Object.fromEntries(seats.slice(0, 3).map(s => [s.offsetIndex, s.weight]));
+  approx(byOffset[0], 1, 1e-12, 'center seat of the top row');
+  approx(byOffset[-1], 0.5, 1e-12, 'edge seat');
+  approx(byOffset[1], 0.5, 1e-12, 'edge seat');
+  approx(seats[3].weight, 0.5, 1e-12, 'second row, single seat');
+  const row0 = P.rowSeatPositions(rows[0]);
+  assert.deepStrictEqual(seats.slice(0, 3).map(s => [s.x, s.y, s.z]), row0.map(s => [s.x, s.y, s.z]));
+});
+
+test('measureAtSeats averages over a 2 ft, 20 point cloud at every seat and the reference point', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const seats = P.seatPositions([{ x: 9, y: 9, z: 3.5, facing: 0, seats: 2, spacingFt: 2 }]);
+  const reference = { x: 9, y: 9, z: 3.5 };
+  const freqs = [30, 45, 60, 75];
+  const m = P.measureAtSeats(seats, reference, freqs, src, ctx);
+  assert.deepStrictEqual(P.SEAT_AVERAGING, { radiusFt: 2, numPoints: 20 });
+  const ref = P.spatiallyAveragedResponse(9, 9, 3.5, freqs, src, ctx, P.SEAT_AVERAGING);
+  ref.forEach((r, j) => approx(m.referenceDb[j], r.db, 1e-9, `reference at ${freqs[j]} Hz`));
+  seats.forEach((s, i) => {
+    const r = P.spatiallyAveragedResponse(s.x, s.y, s.z, freqs, src, ctx, P.SEAT_AVERAGING);
+    r.forEach((x, j) => approx(m.perSeatDb[i][j], x.db, 1e-9, `seat ${i} at ${freqs[j]} Hz`));
+  });
+  freqs.forEach((_, j) => {
+    approx(m.seatMinDb[j], Math.min(m.perSeatDb[0][j], m.perSeatDb[1][j]), 1e-12);
+    approx(m.seatMaxDb[j], Math.max(m.perSeatDb[0][j], m.perSeatDb[1][j]), 1e-12);
+  });
+});
+
+test('gradePlacement scores the seats with their weights and reports seat-to-seat variation', () => {
+  const ctx = { room: { w: 18, d: 13.5, h: 8 }, wallAbsorption: 0.1 };
+  const src = [{ x: 2, y: 12, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }];
+  const seats = P.seatPositions([{ x: 9, y: 9, z: 3.5, facing: 0, seats: 3, spacingFt: 2 }, { x: 9, y: 12, z: 3.5, facing: 0, seats: 1, spacingFt: 2 }]);
+  const reference = { x: 9, y: 9, z: 3.5 };
+  const freqs = P.logSpacedFreqs(20, 120, 12);
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const g = P.gradePlacement(seats, reference, freqs, src, ctx, mode);
+    const m = P.measureAtSeats(seats, reference, freqs, src, ctx);
+    assert.deepStrictEqual(g.db, m.referenceDb);
+    assert.deepStrictEqual(g.stats, P.scoreResponses(m.perSeatDb, [0.5, 1, 0.5, 0.5], mode));
+    approx(g.seatToSeatDb, P.seatToSeatVariationDb(m.perSeatDb), 1e-12);
+  }
+});
+
+test('optimizerFreqList steps about 12 times across the band, never under 2 Hz apart', () => {
+  const wide = P.optimizerFreqList(20, 120);
+  assert.strictEqual(wide.length, 13);
+  approx(wide[0], 20, 1e-12); approx(wide[12], 120, 1e-9);
+  approx(wide[1] - wide[0], 100 / 12, 1e-9);
+  assert.deepStrictEqual(P.optimizerFreqList(20, 30), [20, 22, 24, 26, 28, 30]);
 });
 
 (async () => {

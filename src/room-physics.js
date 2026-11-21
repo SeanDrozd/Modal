@@ -194,7 +194,7 @@
   // coefficient (alpha, evaluated at that mode's OWN resonance frequency
   // f_n -- the same alpha convention estimatedT60 already uses):
   //
-  //   delta_n = (c / 4V) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s)
+  //   delta_n = (c / 8) * sum_surfaces  alpha_s(f_n) * (integral of psi_n^2 over surface s) / (integral of psi_n^2 over the room)
   //
   // Because psi_n factors into cos(nx..)*cos(ny..)*cos(nz..), each surface's
   // integral collapses to a simple product of per-axis L/eps(n) terms -- e.g.
@@ -204,21 +204,27 @@
   //   S_x = (Ly/eps(ny)) * (Lz/eps(nz))   -- shared by left+right
   //   S_y = (Lx/eps(nx)) * (Lz/eps(nz))   -- shared by front+back
   //   S_z = (Lx/eps(nx)) * (Ly/eps(ny))   -- shared by floor+ceiling
-  // This genuinely varies per mode under UNIFORM absorption too (a pure axial
-  // mode's along-wall eps(0)=1 vs an oblique mode's eps>1 on multiple axes) --
-  // that's real physics (different mode families couple to the boundaries
-  // differently), not a bug. What SHOULD hold in the uniform-absorption case
-  // is a looser, statistical one: delta_n averaged across many modes should
-  // track alpha*S_total/(4V) (the Eyring-equivalent quantity) -- see the
-  // cross-check test tying this to estimatedT60's existing Eyring output.
+  // and the volume integral is V / (eps(nx)*eps(ny)*eps(nz)). Dividing by
+  // the volume integral, not by V alone, is what gives each mode family its
+  // own decay rate: with uniform absorption an oblique mode decays at exactly
+  // the Sabine rate alpha*S_total/(4V) (the diffuse-field limit, which is
+  // where the alpha = 8 * wall admittance relation behind the 1/8 comes
+  // from), a tangential mode somewhat slower and an axial mode slowest, the
+  // classic result for a rectangular room (Morse; Kuttruff). Per pair of
+  // walls this is alpha * eps(n along that axis) / (4 * L of that axis).
   //
   // Units: this formula is naturally a TEMPORAL damping rate (1/s, Kuttruff's
   // own convention). The complex denominator in precomputeModalField is
   // written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which needs
   // delta_n in units of 1/m (spatial) instead -- i.e. this temporal rate
-  // divided by c. The code below folds that division in directly (1/(4V)
-  // rather than c/(4V), since the c's cancel) rather than computing a
-  // temporal rate and converting it separately.
+  // divided by c. The code below folds that division in directly (the c's
+  // cancel) rather than computing a temporal rate and converting it
+  // separately.
+  //
+  // The (0,0,0) mode is included: it is the uniform pressurization of a
+  // closed room ("room gain"), which is most of the response below the first
+  // room mode. Its k_n is 0 and its mode shape is 1 everywhere, so it adds
+  // the same pressure at every point and is damped like any other mode.
   function enumerateModes(ctx, cutoffFreq){
     cutoffFreq = cutoffFreq ?? MODE_CUTOFF_HZ;
     const { room } = ctx;
@@ -235,7 +241,6 @@
     for(let nx = 0; nx <= maxNx; nx++){
       for(let ny = 0; ny <= maxNy; ny++){
         for(let nz = 0; nz <= maxNz; nz++){
-          if(nx === 0 && ny === 0 && nz === 0) continue; // not a propagating mode (DC/uniform pressure)
           const kn = Math.PI * Math.sqrt((nx/Lx)**2 + (ny/Ly)**2 + (nz/Lz)**2);
           const fn = C * kn / (2 * Math.PI);
           if(fn > cutoffFreq) continue;
@@ -247,12 +252,9 @@
           const Sy = (Lx / epsX) * (Lz / epsZ);
           const Sz = (Lx / epsX) * (Ly / epsY);
           const absorptionOf = (surfaceName) => surfaceAbsorptionAtFreq(surfaceName, fn, ctx);
-          // Kuttruff's coupled-mode damping is naturally a TEMPORAL rate (1/s):
-          // delta_n_temporal = (c/4V) * sum(...). The complex denominator below
-          // is written in wavenumber space (k_n^2 - k^2 - j*k*delta_n), which
-          // needs delta_n in units of 1/m (spatial), i.e. delta_n_temporal/c --
-          // the c cancels the leading (c/4V), leaving just 1/(4V) here.
-          const deltaN = (1 / (4 * V)) * (
+          // Spatial (1/m) form of the damping rate above: the surface integrals
+          // over the mode's own volume integral V/(epsX*epsY*epsZ), times 1/8.
+          const deltaN = (epsX * epsY * epsZ / (8 * V)) * (
             absorptionOf('left') * Sx + absorptionOf('right') * Sx +
             absorptionOf('front') * Sy + absorptionOf('back') * Sy +
             absorptionOf('floor') * Sz + absorptionOf('ceil') * Sz
@@ -326,12 +328,34 @@
   // draw() does per grid point, but callable standalone (e.g. for two-ear sampling,
   // or tests) without running the full grid.
   function fieldDbAtPoint(px, py, pz, sources, freq, ctx, refAmp){
-    refAmp = refAmp ?? 1.0;
     const modes = enumerateModes(ctx);
     const precomputed = precomputeModalField(sources, freq, ctx, modes);
     const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
+    return pressureToDb(re, im, refAmp);
+  }
+  // A complex pressure (computeFieldAtPoint's re, im) in dB relative to
+  // refAmp (default 1), floored at 1e-6 so a perfect null stays finite.
+  function pressureToDb(re, im, refAmp){
     const mag = Math.sqrt(re*re + im*im);
-    return 20 * Math.log10(Math.max(mag, 1e-6) / refAmp);
+    return 20 * Math.log10(Math.max(mag, 1e-6) / (refAmp ?? 1.0));
+  }
+  // The quietest and loudest level on an n x n grid over the floor plan at
+  // height z (walls included), from one precomputeModalField result. A cheap
+  // stand-in for the full render when only the range is needed.
+  function sampleFieldDbRange(precomputed, room, z, n){
+    n = n ?? 10;
+    let min = Infinity, max = -Infinity;
+    for(let j = 0; j < n; j++){
+      const py = (j/(n-1)) * room.d;
+      for(let i = 0; i < n; i++){
+        const px = (i/(n-1)) * room.w;
+        const { re, im } = computeFieldAtPoint(px, py, z, precomputed);
+        const db = pressureToDb(re, im);
+        if(db < min) min = db;
+        if(db > max) max = db;
+      }
+    }
+    return { min, max };
   }
 
   // ---- Spherical spatial sampling (moving-mic-style measurement) ----
@@ -342,6 +366,16 @@
   // point) rather than clustering on the outer shell. Deterministic (no RNG)
   // so the same inputs always produce the same cloud -- a UI value shouldn't
   // flicker between otherwise-identical redraws.
+  //
+  // The radius fraction comes from the base-2 van der Corput sequence, not
+  // from the same index fraction that sets the height. Sharing one variable
+  // put every point above the center near it and every point below it far
+  // out, so the cloud sat lower than its center.
+  function vanDerCorput(i){
+    let v = 0, f = 0.5;
+    for(; i > 0; i >>= 1, f /= 2) if(i & 1) v += f;
+    return v;
+  }
   function sphereSamplePoints(cx, cy, cz, radiusFt, n){
     const points = [];
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -350,7 +384,7 @@
       const zUnit = 1 - 2 * t; // -1..1, evenly stepped
       const rXY = Math.sqrt(Math.max(0, 1 - zUnit * zUnit));
       const theta = goldenAngle * i;
-      const r = radiusFt * Math.cbrt(t); // cube-root spacing -> uniform volume density
+      const r = radiusFt * Math.cbrt(vanDerCorput(i + 1)); // cube-root spacing -> uniform volume density
       points.push({
         x: cx + r * rXY * Math.cos(theta),
         y: cy + r * rXY * Math.sin(theta),
@@ -358,6 +392,17 @@
       });
     }
     return points;
+  }
+
+  // n frequencies from minHz to maxHz inclusive, evenly spaced on a log axis.
+  function logSpacedFreqs(minHz, maxHz, n){
+    const logMin = Math.log10(minHz), logMax = Math.log10(maxHz);
+    const freqs = [];
+    for(let i = 0; i < n; i++){
+      const t = i / (n - 1);
+      freqs.push(Math.pow(10, logMin + t * (logMax - logMin)));
+    }
+    return freqs;
   }
 
   // ---- Spatially-averaged frequency response (moving-mic-method-style) ----
@@ -432,8 +477,11 @@
   // delayed relative to whichever one is FARTHEST away (that one gets 0 --
   // it's already the latest natural arrival, nothing to align it to).
   // sources: array of {id, x, y, z}. listener: {x, y, z}. Returns
-  // [{id, delayMs}, ...], one entry per input source, in order.
-  function timeAlignDelays(sources, listener){
+  // [{id, delayMs}, ...], one entry per input source, in order. With
+  // `stepMs`, each delay is rounded to that step (TIME_ALIGN_STEP_MS is the
+  // app's delay resolution).
+  const TIME_ALIGN_STEP_MS = 0.1;
+  function timeAlignDelays(sources, listener, stepMs){
     const distM = sources.map(s => {
       const dx = (s.x - listener.x) * FT_TO_M;
       const dy = (s.y - listener.y) * FT_TO_M;
@@ -441,7 +489,17 @@
       return Math.sqrt(dx*dx + dy*dy + dz*dz);
     });
     const maxDist = distM.length ? Math.max(...distM) : 0;
-    return sources.map((s, i) => ({ id: s.id, delayMs: (maxDist - distM[i]) / C * 1000 }));
+    const perMs = stepMs ? 1 / stepMs : 0; // steps per ms: 10 for the 0.1 ms step, so rounded values stay clean decimals
+    return sources.map((s, i) => {
+      const delayMs = (maxDist - distM[i]) / C * 1000;
+      return { id: s.id, delayMs: perMs ? Math.round(delayMs * perMs) / perMs : delayMs };
+    });
+  }
+  // Copies of `sources`, each with the delay automatic time alignment to
+  // `listener` gives it, at the app's delay resolution.
+  function timeAlignedSources(sources, listener){
+    const delays = timeAlignDelays(sources, listener, TIME_ALIGN_STEP_MS);
+    return sources.map((s, i) => Object.assign({}, s, { delayMs: delays[i].delayMs }));
   }
 
   // ---- Two-ear listener sampling ----
@@ -533,6 +591,23 @@
     if(!(maxOffset > 0)) return 1;
     return 1 - 0.5 * (Math.abs(offsetIndex) / maxOffset);
   }
+  // Every seat of every row (rows in rank order, index 0 first), each with
+  // its row's rank, its offsetIndex and its row's seat count, and the weight
+  // the optimizer and the result card give it (rowRankWeight times
+  // seatCenterWeight).
+  function seatPositions(rows){
+    const out = [];
+    rows.forEach((row, rank) => {
+      const seats = rowSeatPositions(row);
+      for(const seat of seats){
+        out.push({
+          x: seat.x, y: seat.y, z: seat.z, rank, offsetIndex: seat.offsetIndex, rowSeatCount: seats.length,
+          weight: rowRankWeight(rank) * seatCenterWeight(seat.offsetIndex, seats.length)
+        });
+      }
+    });
+    return out;
+  }
 
   // ---- Axial room mode frequencies for one dimension ----
   function axialModes(dimFt, maxOrder, maxFreq){
@@ -621,6 +696,20 @@
     const volumeM3 = (room.w * room.d * room.h) * (FT_TO_M ** 3);
     if(volumeM3 <= 0) return 0;
     return 2000 * Math.sqrt(t60 / volumeM3);
+  }
+  // The room's highest Schroeder frequency over 20 to 300 Hz (24 evenly
+  // spaced samples), using the T60 estimatedT60 gives at each. Materials
+  // absorb differently with frequency, so this is the worst case, a stable
+  // bound that does not move with whichever frequency is being viewed.
+  function maxSchroederFrequency(ctx){
+    const SEARCH_MIN_HZ = 20, SEARCH_MAX_HZ = 300, SEARCH_POINTS = 24;
+    let maxFs = 0;
+    for(let i = 0; i < SEARCH_POINTS; i++){
+      const f = SEARCH_MIN_HZ + (SEARCH_MAX_HZ - SEARCH_MIN_HZ) * i / (SEARCH_POINTS - 1);
+      const fs = schroederFrequency(ctx.room, estimatedT60(ctx.room, f, ctx));
+      if(fs > maxFs) maxFs = fs;
+    }
+    return maxFs;
   }
 
   // ---- Null-proximity classification ----
@@ -856,6 +945,37 @@
     }
     return sum / numFreqs;
   }
+  // ---- Measuring a placement at the seats ----
+  // How the frequency response chart and the result card measure: a
+  // spatially averaged response (a 2 ft cloud of 20 points) at every seat
+  // and at one reference point, the top row's own center, which is not
+  // always a seat.
+  const SEAT_AVERAGING = { radiusFt: 2, numPoints: 20 };
+  // seats: from seatPositions. reference: {x, y, z}. Returns perSeatDb
+  // [seat][freqIndex], referenceDb [freqIndex], and the quietest and loudest
+  // seat at each frequency (seatMinDb, seatMaxDb).
+  function measureAtSeats(seats, reference, freqs, sources, ctx){
+    const { perCenterDb } = spatiallyAveragedResponseMulti(seats.concat([reference]), freqs, sources, ctx, SEAT_AVERAGING);
+    const perSeatDb = perCenterDb.slice(0, seats.length);
+    return {
+      perSeatDb,
+      referenceDb: perCenterDb[seats.length],
+      seatMinDb: freqs.map((_, j) => Math.min(...perSeatDb.map(row => row[j]))),
+      seatMaxDb: freqs.map((_, j) => Math.max(...perSeatDb.map(row => row[j])))
+    };
+  }
+  // A placement graded the way the result card shows it: the reference
+  // response (db), the weighted scoreResponses stats over every seat, and the
+  // seat-to-seat variation.
+  function gradePlacement(seats, reference, freqs, sources, ctx, mode){
+    const m = measureAtSeats(seats, reference, freqs, sources, ctx);
+    return {
+      db: m.referenceDb,
+      stats: scoreResponses(m.perSeatDb, seats.map(s => s.weight ?? 1), mode),
+      seatToSeatDb: seatToSeatVariationDb(m.perSeatDb)
+    };
+  }
+
   // What moving from one placement to another amounts to, from the two
   // placements' scoreResponses results (same listeners, frequencies and
   // mode). gainDb is the change in score, so it is positive when `after` is
@@ -956,6 +1076,14 @@
     return 1 - covered / (room.w * room.d);
   }
 
+  // `rect` ({ x, y, width, height }) cut down to the part of it inside the
+  // room, or null when none of it is.
+  function clipRectToRoom(rect, room){
+    const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
+    const x1 = Math.min(room.w, rect.x + rect.width), y1 = Math.min(room.d, rect.y + rect.height);
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+  }
+
   function isCandidateValid(px, py, room, offLimitZones, allowedZones, excludePoints, minSeparationFt){
     if(px < 0 || px > room.w || py < 0 || py > room.d) return false;
     for(const zone of (offLimitZones || [])){
@@ -982,13 +1110,34 @@
     // subsumes the circular guarantee: any point this accepts is still at
     // least minSeparationFt away in straight-line distance too, since one of
     // the two axis offsets alone already reaches that value.
-    if(excludePoints && excludePoints.length > 0 && minSeparationFt > 0){
-      for(const p of excludePoints){
-        if(Math.abs(px - p.x) < minSeparationFt && Math.abs(py - p.y) < minSeparationFt) return false;
-      }
+    //
+    // A point that carries its own `clearanceFt` (a main speaker, see
+    // sourceExclusionPoints) is cleared by that much instead of by
+    // minSeparationFt.
+    for(const p of (excludePoints || [])){
+      const clearance = p.clearanceFt ?? minSeparationFt;
+      if(clearance > 0 && Math.abs(px - p.x) < clearance && Math.abs(py - p.y) < clearance) return false;
     }
     return true;
   }
+
+  // A source counts as a sub when its passband tops out at or below 150 Hz.
+  function isSubSource(source){ return source.freqHigh <= 150; }
+
+  // What a sub search has to keep clear of each existing source. A sub keeps
+  // the search's full sub-to-sub separation (a plain { x, y } point, which
+  // also counts toward nullAvoidance's spread penalty). A main speaker only
+  // needs room for its own cabinet: SPEAKER_CLEARANCE_FT on each axis, a
+  // 2 x 2 ft box, and no spread penalty, since a sub next to a speaker is an
+  // ordinary placement.
+  const SPEAKER_CLEARANCE_FT = 1;
+  function sourceExclusionPoints(sources){
+    return sources.map(s => isSubSource(s) ? { x: s.x, y: s.y } : { x: s.x, y: s.y, clearanceFt: SPEAKER_CLEARANCE_FT });
+  }
+
+  // The sub a search places when it is adding a new one. Candidates are
+  // scored as this source, so the search measures the sub that is then added.
+  const NEW_SUB_DEFAULTS = { levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
 
   // A "preferred zone" is a soft bias, not a hard restriction: a candidate inside
   // one gets a flat score bonus, but candidates outside are still fully considered
@@ -1012,10 +1161,31 @@
   // Yields null for an invalid cell (rather than skipping it) so a caller that's
   // counting scanned cells for chunking purposes sees every grid cell, not just
   // the valid ones.
+  //
+  // Two options make a candidate score as the sub that will really stand
+  // there, both optional:
+  //   candidateTemplate: source fields (levelDb, delayMs, freqLow, freqHigh,
+  //     rolloffDbPerOct) the candidate takes; without it, it is
+  //     scoreSubPosition's generic full-range source.
+  //   timeAlignTo: a listener point {x,y,z}. When given, every source
+  //     (the candidate included) gets the delay automatic time alignment to
+  //     that point would give it with the candidate in place, recomputed
+  //     per candidate, instead of the delays the sources came in with.
+  // The frequencies a sub search samples: about 12 steps from freqLow up to
+  // freqHigh, never closer than 2 Hz apart. Coarser than the result card's
+  // 48, since every candidate position is scored at each of them.
+  function optimizerFreqList(freqLow, freqHigh){
+    const freqList = [];
+    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
+    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
+    return freqList;
+  }
+
   function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes,
+      candidateTemplate, timeAlignTo
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -1027,6 +1197,9 @@
     // subs across several grid scans can pass precomputedModes to avoid
     // re-enumerating them once per sub too.
     const modes = precomputedModes || enumerateModes(physicsCtx);
+    // Only other subs count toward nullAvoidance's spread penalty; a point
+    // with its own clearance is a main speaker (see sourceExclusionPoints).
+    const spreadPoints = (excludePoints || []).filter(p => p.clearanceFt == null);
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
@@ -1034,7 +1207,13 @@
           yield null;
           continue;
         }
-        const eval_ = scoreSubPosition({ x, y, z }, otherSources, room, freqList, listenerPositions, physicsCtx, mode, excludePoints, modes);
+        let candidate = Object.assign({}, candidateTemplate, { x, y, z });
+        let others = otherSources;
+        if(timeAlignTo){
+          others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo);
+          candidate = others.pop();
+        }
+        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -1145,7 +1324,7 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number
@@ -1164,9 +1343,11 @@
     // Seeded with every existing otherSources position (mains, and any subs
     // already placed before this call), not just subs placed during this
     // run. Without this, a newly-placed sub could land at or very near an
-    // existing source's exact position, since isCandidateValid's
-    // minSeparationFt check only ever excludes points already in this list.
-    const placedPositions = otherSources.map(s => ({ x: s.x, y: s.y }));
+    // existing source's exact position, since isCandidateValid only ever
+    // excludes points already in this list. An existing sub keeps the full
+    // separation; a main speaker only its own cabinet's clearance (see
+    // sourceExclusionPoints).
+    const placedPositions = sourceExclusionPoints(otherSources);
     const roundResults = []; // one optimizeSubPlacement result per sub placed, for diagnostics/visualization
     let currentOtherSources = otherSources.slice();
 
@@ -1174,7 +1355,8 @@
       const roundResult = optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
-        excludePoints: placedPositions, minSeparationFt: separation, mode
+        excludePoints: placedPositions, minSeparationFt: separation, mode,
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo
       });
       roundResults.push(roundResult);
       if(roundResult.best === null){
@@ -1184,7 +1366,7 @@
         break;
       }
       const placedSub = Object.assign(
-        { name: `Sub ${i+1}`, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+        { name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS,
         { x: roundResult.best.x, y: roundResult.best.y, z: roundResult.best.z }
       );
       placedSubs.push(placedSub);
@@ -1201,7 +1383,7 @@
     // value through here reproduces the exact prior inlined behavior.
     const polish = polishSubPlacements({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -1228,7 +1410,7 @@
   function polishSubPlacements(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const placedSubs = subs.map(s => Object.assign({}, s));
@@ -1246,12 +1428,15 @@
           // what stops it from excluding/penalizing itself against its own
           // pre-polish position.
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
+          const excludePoints = sourceExclusionPoints(others);
+          // Scored as this sub itself (its own level and passband), so a
+          // refined position is judged for the sub that will stand there.
           const roundResult = optimizeSubPlacement({
             room, otherSources: others, freqList, listenerPositions,
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
-            excludePoints, minSeparationFt: separation, mode
+            excludePoints, minSeparationFt: separation, mode,
+            candidateTemplate: placedSubs[k], timeAlignTo
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
@@ -1277,7 +1462,7 @@
   async function polishSubPlacementsAsync(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
       onYield, onProgress, yieldEvery, precomputedModes
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
@@ -1290,12 +1475,13 @@
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = others.map(s => ({ x: s.x, y: s.y }));
+          const excludePoints = sourceExclusionPoints(others);
           const roundResult = await optimizeSubPlacementAsync({
             room, otherSources: others, freqList, listenerPositions,
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
+            candidateTemplate: placedSubs[k], timeAlignTo,
             precomputedModes: modes, onYield, yieldEvery,
             onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
           });
@@ -1326,14 +1512,14 @@
   async function optimizeMultipleSubsAsync(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
       onYield, onProgress, yieldEvery
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = enumerateModes(physicsCtx);
 
     const placedSubs = [];
-    const placedPositions = otherSources.map(s => ({ x: s.x, y: s.y }));
+    const placedPositions = sourceExclusionPoints(otherSources);
     const roundResults = [];
     let currentOtherSources = otherSources.slice();
 
@@ -1342,13 +1528,14 @@
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo,
         precomputedModes: modes, onYield, yieldEvery,
         onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
       });
       roundResults.push(roundResult);
       if(roundResult.best === null) break;
       const placedSub = Object.assign(
-        { name: `Sub ${i+1}`, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+        { name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS,
         { x: roundResult.best.x, y: roundResult.best.y, z: roundResult.best.z }
       );
       placedSubs.push(placedSub);
@@ -1365,7 +1552,7 @@
     // enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo,
       precomputedModes: modes, onYield, yieldEvery, onProgress
     });
 
@@ -1382,13 +1569,24 @@
     precomputeModalField,
     computeFieldAtPoint,
     fieldDbAtPoint,
+    pressureToDb,
+    sampleFieldDbRange,
+    logSpacedFreqs,
+    seatPositions,
+    maxSchroederFrequency,
+    SEAT_AVERAGING,
+    measureAtSeats,
+    gradePlacement,
+    optimizerFreqList,
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
     axialModes,
     estimatedT60,
     schroederFrequency,
+    TIME_ALIGN_STEP_MS,
     timeAlignDelays,
+    timeAlignedSources,
     earPositions,
     fieldDbAtEars,
     rowSeatPositions,
@@ -1409,7 +1607,12 @@
     rowFootprintRect,
     isPointInRect,
     freeFloorFraction,
+    clipRectToRoom,
     isCandidateValid,
+    isSubSource,
+    SPEAKER_CLEARANCE_FT,
+    sourceExclusionPoints,
+    NEW_SUB_DEFAULTS,
     scanGridCandidates,
     countGridCells,
     optimizeSubPlacement,

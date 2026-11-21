@@ -577,25 +577,27 @@
         app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
         refresh();
       });
-      runBtn.addEventListener('click', async () => {
+      async function run(){
         runBtn.disabled = true;
         result.innerHTML = '';
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
-        await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
+        const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
           status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
         });
         if(!body.isConnected) return; // the step was left while the search ran
         runBtn.disabled = false;
         if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
-        outcome = app.optimizerOutcome() || 'none';
+        outcome = kept ? app.optimizerOutcome() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
+        if(!kept) status.textContent = app.OPTIMIZER_DROPPED_TEXT;
         // Bring the card up clear of the sticky footer, but never push its first line off the top.
         const scroller = panel.parentElement, card = result.getBoundingClientRect();
         const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;
         if(hidden > 0) scroller.scrollBy(0, Math.min(hidden, card.top - scroller.getBoundingClientRect().top));
-      });
+      }
+      runBtn.addEventListener('click', run);
       result.addEventListener('click', (e) => {
         const id = e.target.closest('button') && e.target.closest('button').id;
         if(id === 'guideApplyBtn'){
@@ -631,6 +633,7 @@
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();
+      if(app.optimizerRunning()) run(); // the step was left and re-entered mid-search: rejoin it instead of offering a second one
       return refresh;
     }
 

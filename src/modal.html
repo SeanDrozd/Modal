@@ -355,8 +355,7 @@ function applyAppearanceAttrs(mode, theme){
   // every map marker legible over any heatmap color or floor tint.
   const LISTENER_COLOR = '#f5d547';
   const MAP_INK = '#0b0e12';
-  // A source counts as a sub when its passband tops out at or below 150 Hz.
-  function isSubSource(s){ return s.freqHigh <= 150; }
+  const isSubSource = RoomPhysics.isSubSource;
   // "+ Add Main" cycles through these in order, matching standard AVR/Dolby
   // channel abbreviations and layout order (5.1 -> 7.1 -> 9.1, the last two
   // being the "wide" pair some 9-channel receivers add): front left/right,
@@ -425,23 +424,11 @@ function applyAppearanceAttrs(mode, theme){
   // line still tracks the rank-1 seat, but it also shows the spread across
   // every seat below (see allSeatPositions/computeFreqResponseData).
   function primaryRow(){ return listenerRows[0]; }
-  // Flattens every listening row into its individual seats (see
-  // RoomPhysics.rowSeatPositions), tagged with the row's rank and the seat's
-  // offsetIndex so a caller can identify "the" primary seat (rank 0,
-  // offsetIndex 0, i.e. primaryRow()'s own center point) among the list.
-  // Shared by runSubOptimizer (which additionally weights each seat) and the
-  // frequency-response chart (which doesn't weight, since its whole point is
-  // showing the true unweighted spread across every seat).
-  function allSeatPositions(){
-    const out = [];
-    listenerRows.forEach((row, rank) => {
-      const seats = RoomPhysics.rowSeatPositions(row);
-      seats.forEach(seat => {
-        out.push({ x: seat.x, y: seat.y, z: seat.z, rank, offsetIndex: seat.offsetIndex, rowSeatCount: seats.length });
-      });
-    });
-    return out;
-  }
+  // Every seat of every listening row, each with the weight the optimizer
+  // and the result card give it (see RoomPhysics.seatPositions). The
+  // frequency-response chart ignores the weights, since it shows the true
+  // spread across every seat.
+  function allSeatPositions(){ return RoomPhysics.seatPositions(listenerRows); }
   let freq = 60;
   let wallAbsorption = 0.06; // fallback only -- used when a wall has no material assigned; see wallMaterialKeys
   let wallMaterialKeys = { left: 'drywallInsulated', right: 'drywallInsulated', front: 'drywallInsulated', back: 'drywallInsulated' };
@@ -572,16 +559,24 @@ function applyAppearanceAttrs(mode, theme){
   // sidebar's Room fields and the setup guide; the sidebar field is written
   // back so it shows the stored value whichever of the two made the change.
   const ROOM_DIM_FIELDS = { w: 'roomWField', d: 'roomDField', h: 'roomHField' };
+  // A smaller room keeps everything in it: a speaker or seat the wall or
+  // ceiling passed moves in with it, a zone is cut back to the room, and a
+  // zone left wholly outside is removed.
   function setRoomDim(dim, ft){
+    const before = room[dim];
     if(dim === 'h'){
       room.h = Math.min(ROOM_MAX_H_FT, Math.max(ROOM_MIN_FT, ft || 8));
-      for(const r of listenerRows){ if(r.z > room.h) r.z = room.h; }
+      for(const p of listenerRows.concat(sources)){ if(p.z > room.h) p.z = room.h; }
     } else {
       room[dim] = Math.min(ROOM_MAX_WD_FT, Math.max(ROOM_MIN_FT, ft || (dim === 'w' ? 16 : 13.5)));
-      updateFloorCoverageWarning();
+      for(const p of listenerRows.concat(sources)) Object.assign(p, insideRoom(p.x, p.y));
+      const clip = (zones) => zones.map(z => { const r = RoomPhysics.clipRectToRoom(z, room); return r && Object.assign(z, r); }).filter(Boolean);
+      offLimitZones = clip(offLimitZones);
+      allowedZones = clip(allowedZones);
+      preferredZones = clip(preferredZones);
     }
     writeLengthFieldValue(document.querySelector(`#${ROOM_DIM_FIELDS[dim]} .length-field`), room[dim]);
-    draw();
+    if(room[dim] !== before) edited('room');
     return room[dim];
   }
 
@@ -688,7 +683,17 @@ function applyAppearanceAttrs(mode, theme){
     return fallback;
   }
 
+  // Counts the changes that make an optimizer suggestion meaningless: a
+  // scene replaced by loadConfig (undo, redo, a preset load, reset) or a
+  // room resize. Each also drops a pending suggestion, and a search that was
+  // running across one drops its result (see runOptimizerWorkflow).
+  let sceneChangeCount = 0;
+  function sceneChanged(){
+    sceneChangeCount++;
+    resetOptimizerPanel();
+  }
   function loadConfig(cfg){
+    sceneChanged();
     room = JSON.parse(JSON.stringify(cfg.room));
     sources = JSON.parse(JSON.stringify(cfg.sources));
     // Older presets predate the explicit isMain flag (which sources form the
@@ -822,9 +827,18 @@ function applyAppearanceAttrs(mode, theme){
     lastSnapshotJSON = nowJSON;
     updateUndoRedoButtons();
   }
+  // An edit made within the last 500 ms is still waiting on its debounced
+  // snapshot, or, before its redraw has run, has not scheduled one yet. Undo
+  // and redo record it first, so it is the step that gets undone (or, for
+  // redo, a fresh change that clears the redo branch) instead of being
+  // silently folded into the step before it.
+  function flushPendingUndoSnapshot(){
+    if(undoSnapshotTimer) clearTimeout(undoSnapshotTimer);
+    commitUndoSnapshotIfChanged();
+  }
   function undo(){
+    flushPendingUndoSnapshot();
     if(undoStack.length === 0) return;
-    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
     redoStack.push(currentSnapshotJSON());
     const prev = undoStack.pop();
     isRestoringHistory = true;
@@ -835,8 +849,8 @@ function applyAppearanceAttrs(mode, theme){
     updateUndoRedoButtons();
   }
   function redo(){
+    flushPendingUndoSnapshot();
     if(redoStack.length === 0) return;
-    if(undoSnapshotTimer){ clearTimeout(undoSnapshotTimer); undoSnapshotTimer = null; }
     undoStack.push(currentSnapshotJSON());
     const next = redoStack.pop();
     isRestoringHistory = true;
@@ -1151,9 +1165,8 @@ function applyAppearanceAttrs(mode, theme){
       block.querySelector('[data-field="enabled"]').addEventListener('change', function(){
         s.enabled = this.checked;
         block.style.opacity = this.checked ? '1' : '0.5';
-        autoTimeAlign(); syncDelaySlidersFromState(); // the active-source set changed, which time-align depends on
         updateReoptimizeExistingVisibility(); // enabling/disabling a sub changes whether there's anything to re-optimize
-        scheduleDraw();
+        edited('layout'); // the active-source set changed, which time-align depends on
       });
       block.querySelector('[data-field="name"]').addEventListener('input', function(){
         s.name = this.value || ('Source '+s.id);
@@ -1166,15 +1179,13 @@ function applyAppearanceAttrs(mode, theme){
       block.querySelector('[data-action="remove"]').addEventListener('click', () => {
         if(sources.length <= 1){ showStatus('Keep at least one source', false); return; }
         sources = sources.filter(x => x.id !== s.id);
-        autoTimeAlign();
-        renderSrcList();
-        draw();
+        edited('layout', 'sources');
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(sources, idx, -1)){ renderSrcList(); scheduleDraw(); }
+        if(moveArrayItem(sources, idx, -1)) edited('sources');
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(sources, idx, 1)){ renderSrcList(); scheduleDraw(); }
+        if(moveArrayItem(sources, idx, 1)) edited('sources');
       });
       const lvl = block.querySelector('[data-field="levelDb"]');
       lvl.addEventListener('input', function(){
@@ -1205,8 +1216,7 @@ function applyAppearanceAttrs(mode, theme){
       });
       wireLengthField(block, 'z', (ft) => {
         s.z = Math.max(0, Math.min(room.h, ft || 0));
-        autoTimeAlign(); syncDelaySlidersFromState();
-        draw();
+        edited('layout');
       });
     });
     updateReoptimizeExistingVisibility();
@@ -1268,16 +1278,10 @@ function applyAppearanceAttrs(mode, theme){
         if(!removeListenerRow(row.id)) showStatus('Keep at least one listening position', false);
       });
       block.querySelector('[data-action="move-up"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, -1)){
-          autoTimeAlign(); syncDelaySlidersFromState(); // reordering can change which row is rank 1
-          renderListenerRowsList(); scheduleDraw();
-        }
+        if(moveArrayItem(listenerRows, idx, -1)) edited('layout', 'rows'); // reordering can change which row is rank 1
       });
       block.querySelector('[data-action="move-down"]').addEventListener('click', () => {
-        if(moveArrayItem(listenerRows, idx, 1)){
-          autoTimeAlign(); syncDelaySlidersFromState();
-          renderListenerRowsList(); scheduleDraw();
-        }
+        if(moveArrayItem(listenerRows, idx, 1)) edited('layout', 'rows');
       });
       const seatsInput = block.querySelector('[data-field="seats"]');
       seatsInput.addEventListener('change', function(){
@@ -1297,8 +1301,7 @@ function applyAppearanceAttrs(mode, theme){
       });
       wireLengthField(block, 'z', (ft) => {
         row.z = Math.max(0, Math.min(room.h, ft || 0));
-        autoTimeAlign(); syncDelaySlidersFromState();
-        draw();
+        edited('layout');
       });
     });
   }
@@ -1474,8 +1477,7 @@ function applyAppearanceAttrs(mode, theme){
       width, height,
       ...at
     });
-    renderZoneList();
-    draw();
+    edited('zones');
   }
   (function initFurniturePalette(){
     const palette = document.getElementById('furniturePalette');
@@ -1515,8 +1517,7 @@ function applyAppearanceAttrs(mode, theme){
     if(kind === 'offlimit') offLimitZones = offLimitZones.filter(x => x.id !== id);
     else if(kind === 'allowed') allowedZones = allowedZones.filter(x => x.id !== id);
     else preferredZones = preferredZones.filter(x => x.id !== id);
-    renderZoneList();
-    draw();
+    edited('zones');
   }
   function renderZoneList(){
     updateFloorCoverageWarning();
@@ -1615,9 +1616,7 @@ function applyAppearanceAttrs(mode, theme){
   document.getElementById('addMainBtn').addEventListener('click', () => {
     const n = sources.filter(s => s.freqLow >= 80).length; // stagger along the front wall
     sources.push(newMainSource(nextMainName(), Math.min(room.w-1, 2 + n*1.5), 1.5));
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   });
   // Replaces the main speakers with the first `count` standard channels
   // (MAIN_CHANNEL_NAMES order), each at its usual spot for the primary seat
@@ -1626,9 +1625,7 @@ function applyAppearanceAttrs(mode, theme){
   function setMainLayout(count){
     const spots = RoomPhysics.standardSpeakerPositions(room, primaryRow(), MAIN_CHANNEL_NAMES.slice(0, count));
     sources = [...spots.map(p => newMainSource(p.name, p.x, p.y)), ...sources.filter(isSubSource)];
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
     return spots;
   }
 
@@ -1649,9 +1646,7 @@ function applyAppearanceAttrs(mode, theme){
   }
   document.getElementById('addSubBtn').addEventListener('click', () => {
     sources.push(newSubSource());
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   });
   // Adds subs, or removes the most recently added ones, until there are `count`.
   function setSubCount(count){
@@ -1659,9 +1654,7 @@ function applyAppearanceAttrs(mode, theme){
     const dropped = new Set(subs.slice(count).map(s => s.id));
     sources = sources.filter(s => !dropped.has(s.id));
     for(let i = subs.length; i < count; i++) sources.push(newSubSource());
-    autoTimeAlign();
-    renderSrcList();
-    draw();
+    edited('layout', 'sources');
   }
 
   // The row edits below are shared by the sidebar's list and the setup guide.
@@ -1676,16 +1669,13 @@ function applyAppearanceAttrs(mode, theme){
       y: Math.max(1, room.d - 1.5 - n*1.5),
       z: 3.5, facing: 0, seats: 1, spacingFt: 2
     });
-    renderListenerRowsList();
-    draw();
+    edited('rows');
     return true;
   }
   function removeListenerRow(id){
     if(listenerRows.length <= 1) return false;
     listenerRows = listenerRows.filter(r => r.id !== id);
-    autoTimeAlign(); syncDelaySlidersFromState(); // rank 1 may have changed if this row was it
-    renderListenerRowsList();
-    draw();
+    edited('layout', 'rows'); // rank 1 may have changed if this row was it
     return true;
   }
   // Sets a row's seat count, clamped to 1..LISTENER_ROW_MAX_SEATS, and returns what was stored.
@@ -1701,15 +1691,13 @@ function applyAppearanceAttrs(mode, theme){
   document.getElementById('applyRolloffAllBtn').addEventListener('click', () => {
     const slope = parseInt(document.getElementById('bulkRolloffSelect').value, 10);
     sources.forEach(s => { s.rolloffDbPerOct = slope; });
-    renderSrcList();
-    draw();
+    edited('sources');
   });
 
   document.getElementById('autoTimeAlignToggle').addEventListener('change', function(){
     autoTimeAlignEnabled = this.checked;
-    if(autoTimeAlignEnabled){ autoTimeAlign(); renderSrcList(); } // snap into alignment immediately, not just on the next move
     saveSessionSettings();
-    draw();
+    edited('layout'); // turning it on snaps into alignment immediately, not just on the next move
   });
 
   // Recomputes every active source's delay so its direct sound arrives at
@@ -1727,8 +1715,8 @@ function applyAppearanceAttrs(mode, theme){
   // the next move.
   // The delay automatic time-align gives each of these sources, id -> ms.
   function alignedDelays(activeSources){
-    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow());
-    return new Map(results.map(r => [r.id, Math.round(r.delayMs * 10) / 10])); // match the 0.1ms slider step
+    const results = RoomPhysics.timeAlignDelays(activeSources, primaryRow(), RoomPhysics.TIME_ALIGN_STEP_MS); // the 0.1 ms slider step
+    return new Map(results.map(r => [r.id, r.delayMs]));
   }
   function autoTimeAlign(){
     if(!autoTimeAlignEnabled) return;
@@ -1757,6 +1745,30 @@ function applyAppearanceAttrs(mode, theme){
       if(dly) dly.value = s.delayMs;
       if(out) out.textContent = s.delayMs.toFixed(1);
     });
+  }
+
+  // ---- Edits ----
+  // Every edit to the scene ends in one call to edited(), naming what it
+  // changed, and edited() runs every follow-up those changes need, so no
+  // edit site has to remember them:
+  //   'layout'   where a source or seat stands, which sources are active, or
+  //              which row ranks first: automatic time-align runs again
+  //   'sources'  the source list itself: its sidebar list is rebuilt
+  //   'rows'     the listening rows: their sidebar list is rebuilt
+  //   'zones'    the zones: their list and the floor coverage warning are rebuilt
+  //   'room'     the room's size: a pending optimizer suggestion, or a running
+  //              search's result, is dropped, and all of the above run
+  // It then redraws on the next frame, and the redraw records the undo step.
+  // An edit with no follow-up (a level, a name, a filter slope) only redraws.
+  function edited(...what){
+    const has = (kind) => what.includes(kind) || what.includes('room');
+    if(what.includes('room')) sceneChanged();
+    if(has('layout')) autoTimeAlign();
+    if(has('sources')) renderSrcList();
+    else if(has('layout')) syncDelaySlidersFromState(); // cheap, no DOM rebuild: a drag edits the layout on every mousemove
+    if(has('rows')) renderListenerRowsList();
+    if(has('zones')) renderZoneList();
+    scheduleDraw();
   }
 
   // ---- Physics: delegated to RoomPhysics (inlined above, from src/room-physics.js) ----
@@ -1815,15 +1827,6 @@ function applyAppearanceAttrs(mode, theme){
     const activeSources = sourceList.filter(s => s.enabled !== false);
     return RoomPhysics.fieldDbAtPoint(px, py, pz, activeSources, atFreq, physicsCtx());
   }
-  // Shared by the two spots below that can't delegate to fieldDbAtPoint the way
-  // dbAtFreq now does -- they operate on already-precomputed per-pixel field
-  // data (a heatmap render), not raw sources+frequency, so there's no
-  // "sources+freq" call to hand off to.
-  function magToDb(re, im){
-    const mag = Math.sqrt(re*re + im*im);
-    return 20 * Math.log10(Math.max(mag, 1e-6));
-  }
-
   // ---- Two-ear listener sampling ----
   function earPositions(lst){
     return RoomPhysics.earPositions(lst, lst.facing ?? 0);
@@ -1858,22 +1861,21 @@ function applyAppearanceAttrs(mode, theme){
     };
   }
 
-  // Shared by both optimizer workflows below, so a future tuning change
-  // (sample count, weighting formula) can't be applied to one and silently
-  // missed in the other.
-  function buildOptimizerFreqList(freqLow, freqHigh){
-    const freqList = [];
-    const freqStep = Math.max(2, (freqHigh - freqLow) / 12); // ~12 samples across the band
-    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
-    return freqList;
-  }
-  // Rank (list order) and in-row seat position both scale how much that
-  // seat's score contributes (see RoomPhysics.scoreSubPosition's weighting).
-  function buildOptimizerListenerPositions(){
-    return allSeatPositions().map(seat => ({
-      x: seat.x, y: seat.y, z: seat.z,
-      weight: RoomPhysics.rowRankWeight(seat.rank) * RoomPhysics.seatCenterWeight(seat.offsetIndex, seat.rowSeatCount)
+  // A private copy of everything a search reads. The page stays live while
+  // a search runs (it yields to the browser between chunks), so the search
+  // works on this copy and an edit made meanwhile cannot change the room,
+  // sources, zones or seats under it. timeAlignTo is set when applying the
+  // result will re-run automatic time-align, so candidates are scored with
+  // the delays they will really get.
+  function optimizerScene(){
+    const scene = JSON.parse(JSON.stringify({
+      physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+      sources: sourcesEnabled ? sources.filter(s => s.enabled !== false) : [],
+      listenerPositions: allSeatPositions(),
+      timeAlignTo: autoTimeAlignEnabled ? primaryRow() : undefined
     }));
+    scene.room = scene.physicsCtx.room;
+    return scene;
   }
 
   async function runSubOptimizer(){
@@ -1886,14 +1888,13 @@ function applyAppearanceAttrs(mode, theme){
 
     if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
 
-    const freqList = buildOptimizerFreqList(freqLow, freqHigh);
-    const activeMains = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
-    const listenerPositions = buildOptimizerListenerPositions();
+    const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
+    const scene = optimizerScene();
 
     const result = await RoomPhysics.optimizeMultipleSubsAsync({
-      room, otherSources: activeMains, numSubs, freqList, listenerPositions,
-      physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
-      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode,
+      room: scene.room, otherSources: scene.sources, numSubs, freqList, listenerPositions: scene.listenerPositions,
+      physicsCtx: scene.physicsCtx, offLimitZones: scene.offLimitZones, allowedZones: scene.allowedZones, preferredZones: scene.preferredZones,
+      gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode, timeAlignTo: scene.timeAlignTo,
       onProgress: optimizerStatusUpdater(status, numSubs),
       onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
     });
@@ -1947,20 +1948,20 @@ function applyAppearanceAttrs(mode, theme){
 
     if(freqHigh <= freqLow){ status.innerHTML = '<span style="color:var(--bad)">Frequency range is invalid.</span>'; return; }
 
-    const freqList = buildOptimizerFreqList(freqLow, freqHigh);
+    const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
 
-    // Gated by sourcesEnabled (the master "All" mute toggle), matching every
-    // other active-sources computation in this file (e.g. runSubOptimizer's
-    // activeMains) -- otherwise this workflow would keep optimizing against
-    // sources the rest of the app currently treats as muted.
-    const existingSubs = sourcesEnabled ? sources.filter(s => s.enabled !== false && isSubSource(s)) : [];
-    const otherSources = sourcesEnabled ? sources.filter(s => s.enabled !== false && !isSubSource(s)) : [];
+    // scene.sources is gated by sourcesEnabled (the master "All" mute
+    // toggle), matching every other active-sources computation in this
+    // file. Otherwise this workflow would keep optimizing against sources
+    // the rest of the app currently treats as muted.
+    const scene = optimizerScene();
+    const { room, offLimitZones, allowedZones, preferredZones, listenerPositions, timeAlignTo } = scene;
+    const existingSubs = scene.sources.filter(isSubSource);
+    const otherSources = scene.sources.filter(s => !isSubSource(s));
     if(existingSubs.length === 0){
       status.innerHTML = '<span style="color:var(--bad)">No existing subs to re-optimize.</span>';
       return;
     }
-
-    const listenerPositions = buildOptimizerListenerPositions();
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
     let refinedSubs, lastBest, lastAllCandidates, movedCount;
@@ -1968,8 +1969,9 @@ function applyAppearanceAttrs(mode, theme){
     if(existingSubs.length === 1){
       const result = await RoomPhysics.optimizeSubPlacementAsync({
         room, otherSources, freqList, listenerPositions,
-        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
+        physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
+        excludePoints: RoomPhysics.sourceExclusionPoints(otherSources), candidateTemplate: existingSubs[0], timeAlignTo,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
       const moved = result.best !== null && (result.best.x !== existingSubs[0].x || result.best.y !== existingSubs[0].y);
@@ -1980,8 +1982,8 @@ function applyAppearanceAttrs(mode, theme){
     } else {
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
-        physicsCtx: physicsCtx(), offLimitZones, allowedZones, preferredZones,
-        gridStepFt: step, mode: optimizerMode,
+        physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
+        gridStepFt: step, mode: optimizerMode, timeAlignTo,
         onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield
       });
       refinedSubs = result.placedSubs;
@@ -2254,7 +2256,7 @@ function applyAppearanceAttrs(mode, theme){
   // separate so verifyGPUAgainstCPU's intent reads clearly at the call site).
   function fieldDbAtPoint(roomX, roomY, precomputed){
     const { re, im } = computeFieldAtPoint(roomX, roomY, primaryRow().z, precomputed);
-    return magToDb(re, im);
+    return RoomPhysics.pressureToDb(re, im);
   }
 
   // ---- Autofit dB range (manual, button-triggered) ----
@@ -2271,7 +2273,7 @@ function applyAppearanceAttrs(mode, theme){
   // frequencies) so the fitted range covers whichever is showing.
   function autofitColorRange(){
     const precomputed = precomputeField();
-    const heatmapRange = sampleFieldDbRange(precomputed, room.w, room.d, primaryRow().z);
+    const heatmapRange = RoomPhysics.sampleFieldDbRange(precomputed, room, primaryRow().z);
     let min = heatmapRange.min, max = heatmapRange.max;
     if(freqResponseData && freqResponseData.points){
       for(const p of freqResponseData.points){
@@ -2290,26 +2292,6 @@ function applyAppearanceAttrs(mode, theme){
     syncLegendDbRange();
     saveSessionSettings();
     draw();
-  }
-
-  // Cheap CPU-only sample of the field's dB range across the room floor plan
-  // (independent of render mode/resolution) -- just enough points for
-  // autofitColorRange to get a representative min/max, not a substitute for
-  // the actual RES x RES render.
-  function sampleFieldDbRange(precomputed, w, d, pz){
-    const n = 10;
-    let min = Infinity, max = -Infinity;
-    for(let j = 0; j < n; j++){
-      const py = (j/(n-1)) * d;
-      for(let i = 0; i < n; i++){
-        const px = (i/(n-1)) * w;
-        const { re, im } = computeFieldAtPoint(px, py, pz, precomputed);
-        const db = magToDb(re, im);
-        if(db < min) min = db;
-        if(db > max) max = db;
-      }
-    }
-    return { min, max };
   }
 
   function draw(){
@@ -2894,15 +2876,6 @@ function applyAppearanceAttrs(mode, theme){
   // on a recompute of the curve itself.
   const FREQ_RESPONSE_MIN_HZ = 20;
   const FREQ_RESPONSE_NUM_POINTS = 80;
-  function logSpacedFreqs(minHz, maxHz, n){
-    const logMin = Math.log10(minHz), logMax = Math.log10(maxHz);
-    const freqs = [];
-    for(let i = 0; i < n; i++){
-      const t = i / (n - 1);
-      freqs.push(Math.pow(10, logMin + t * (logMax - logMin)));
-    }
-    return freqs;
-  }
   // "Nice" round-number gridline frequencies for whatever [minHz,maxHz] the
   // chart currently spans -- the upper bound moves with the room's Schroeder
   // frequency, so a fixed tick list would either crowd or under-fill the
@@ -2921,20 +2894,9 @@ function applyAppearanceAttrs(mode, theme){
   // estimatedT60), so pinning the chart's axis to "Schroeder AT the current
   // slider position" would make the chart's own scale wobble as you drag the
   // frequency slider, which is a distracting side effect for an axis bound.
-  // Sampling across a fixed, generous range and taking the worst case (the
-  // frequency where the room is least absorptive, i.e. highest T60) gives a
-  // stable axis that doesn't depend on wherever the slider happens to be.
-  function maxSchroederAcrossRange(){
-    const SEARCH_MIN_HZ = 20, SEARCH_MAX_HZ = 300, SEARCH_POINTS = 24;
-    let maxFs = 0;
-    for(let i = 0; i < SEARCH_POINTS; i++){
-      const f = SEARCH_MIN_HZ + (SEARCH_MAX_HZ - SEARCH_MIN_HZ) * i / (SEARCH_POINTS - 1);
-      const t60 = estimatedT60(room, f, physicsCtx());
-      const fs = schroederFrequency(room, t60);
-      if(fs > maxFs) maxFs = fs;
-    }
-    return maxFs;
-  }
+  // RoomPhysics.maxSchroederFrequency takes the worst case over a fixed,
+  // generous range instead, a stable axis that doesn't depend on wherever
+  // the slider happens to be.
 
   // ---- Dynamic frequency ceiling (sweep slider + frequency-response chart) ----
   // Both the main frequency slider/sweep range and the frequency-response
@@ -2961,7 +2923,7 @@ function applyAppearanceAttrs(mode, theme){
   const FREQ_RANGE_FLOOR_HZ = 120;
   const FREQ_RANGE_CEILING_HZ = RoomPhysics.MODE_CUTOFF_HZ - 50; // stay comfortably under the physics engine's own mode-enumeration cutoff
   function dynamicFreqCeilingHz(){
-    return Math.min(FREQ_RANGE_CEILING_HZ, Math.max(FREQ_RANGE_FLOOR_HZ, maxSchroederAcrossRange() + FREQ_RANGE_HEADROOM_HZ));
+    return Math.min(FREQ_RANGE_CEILING_HZ, Math.max(FREQ_RANGE_FLOOR_HZ, RoomPhysics.maxSchroederFrequency(physicsCtx()) + FREQ_RANGE_HEADROOM_HZ));
   }
 
   // Keeps the #freq slider's max attribute (and the live freq value, if it
@@ -3034,7 +2996,7 @@ function applyAppearanceAttrs(mode, theme){
     // dynamicFreqCeilingHz) -- keeps the chart's x-axis and the sweep range
     // always in sync, rather than two independently-tuned bounds.
     const maxHz = dynamicFreqCeilingHz();
-    const freqs = logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
+    const freqs = RoomPhysics.logSpacedFreqs(FREQ_RESPONSE_MIN_HZ, maxHz, FREQ_RESPONSE_NUM_POINTS);
     const ctx = physicsCtx();
     const seats = allSeatPositions();
     // The rank-1 row's own center point (primaryRow()) is NOT necessarily one
@@ -3049,38 +3011,25 @@ function applyAppearanceAttrs(mode, theme){
     // spread across real seats someone actually sits in, not a geometric
     // reference point that may not correspond to any seat.
     const primary = primaryRow();
-    const centers = seats.concat([{ x: primary.x, y: primary.y, z: primary.z }]);
-    const primaryIndex = centers.length - 1;
+    const reference = { x: primary.x, y: primary.y, z: primary.z };
+    const now = RoomPhysics.measureAtSeats(seats, reference, freqs, activeSources, ctx);
 
-    const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, activeSources, ctx, { radiusFt: 2, numPoints: 20 });
-
-    let afterPerCenterDb = null;
+    let after = null;
     if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
       // applyInPlace (re-optimizing EXISTING subs): these are the same subs,
       // just refined, so REPLACE each by matching id rather than concatenating
       // -- concatenating would double-count each one at both its old and new
       // position. Otherwise (adding brand-new subs): concatenate, as before.
-      const afterSources = sourcesWithSuggestion(activeSources);
-      afterPerCenterDb = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, afterSources, ctx, { radiusFt: 2, numPoints: 20 }).perCenterDb;
+      after = RoomPhysics.measureAtSeats(seats, reference, freqs, sourcesWithSuggestion(activeSources), ctx);
     }
 
-    const points = freqs.map((f, j) => {
-      const dbAtSeat = seats.map((s, i) => perCenterDb[i][j]); // real seats only -- band spread
-      const point = {
-        freq: f,
-        db: perCenterDb[primaryIndex][j],
-        bandMin: Math.min(...dbAtSeat),
-        bandMax: Math.max(...dbAtSeat),
-        afterDb: null, afterBandMin: null, afterBandMax: null
-      };
-      if(afterPerCenterDb){
-        const afterDbAtSeat = seats.map((s, i) => afterPerCenterDb[i][j]);
-        point.afterDb = afterPerCenterDb[primaryIndex][j];
-        point.afterBandMin = Math.min(...afterDbAtSeat);
-        point.afterBandMax = Math.max(...afterDbAtSeat);
-      }
-      return point;
-    });
+    const points = freqs.map((f, j) => ({
+      freq: f,
+      db: now.referenceDb[j], bandMin: now.seatMinDb[j], bandMax: now.seatMaxDb[j],
+      afterDb: after ? after.referenceDb[j] : null,
+      afterBandMin: after ? after.seatMinDb[j] : null,
+      afterBandMax: after ? after.seatMaxDb[j] : null
+    }));
     freqResponseData = { points, maxHz };
   }
 
@@ -3500,11 +3449,15 @@ function applyAppearanceAttrs(mode, theme){
   // Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z as the common redo alternate) -- skipped
   // while focus is in a text-editing field so the browser's own native
   // undo/redo for that field's text still works as expected, rather than
-  // being hijacked by the app-level history.
+  // being hijacked by the app-level history. Sliders, checkboxes and other
+  // inputs keep focus after use but have no text to undo, so they don't count.
+  const TEXT_INPUT_TYPES = new Set(['text', 'number', 'search', 'email', 'url', 'tel', 'password']);
+  function editsText(el){
+    return !!el && (el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && TEXT_INPUT_TYPES.has(el.type)));
+  }
   document.addEventListener('keydown', function(e){
     if(!(e.ctrlKey || e.metaKey)) return;
-    const tag = document.activeElement && document.activeElement.tagName;
-    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if(editsText(document.activeElement)) return;
     const key = e.key.toLowerCase();
     if(key === 'z' && !e.shiftKey){ e.preventDefault(); undo(); }
     else if(key === 'y' || (key === 'z' && e.shiftKey)){ e.preventDefault(); redo(); }
@@ -3670,29 +3623,48 @@ function applyAppearanceAttrs(mode, theme){
   // Runs one of the two optimizer workflows: refine the existing subs in
   // place (`reoptimize`) or search for positions for new ones. Shared by the
   // sidebar buttons and the setup guide. Once it resolves, optimizerResult
-  // holds the suggestion, if the search found one.
-  async function startOptimizer(reoptimize){
+  // holds the suggestion, if the search found one. Only one search runs at
+  // a time: a call made while one is in flight joins it.
+  let optimizerRun = null; // the promise of the search in flight, if any
+  function startOptimizer(reoptimize){
+    if(!optimizerRun) optimizerRun = runOptimizerWorkflow(reoptimize).finally(() => { optimizerRun = null; });
+    return optimizerRun;
+  }
+  // Resolves to false when the result was dropped because the room changed
+  // during the search, true otherwise.
+  const OPTIMIZER_DROPPED_TEXT = 'The room changed while the search ran, so its result was dropped. Run it again.';
+  async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
     setOptimizerButtonsDisabled(true);
     const acceptBtn = document.getElementById('acceptOptimizerBtn');
     acceptBtn.style.display = 'none';
     try {
+      const changesAtStart = sceneChangeCount;
       await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
+      if(sceneChangeCount !== changesAtStart){
+        clearOptimizerResult();
+        document.getElementById('optimizerStatus').textContent = OPTIMIZER_DROPPED_TEXT;
+        return false;
+      }
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
         acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
         acceptBtn.style.display = 'block';
       }
+      return true;
     } finally {
       setOptimizerButtonsDisabled(false);
     }
   }
   document.getElementById('runOptimizerBtn').addEventListener('click', () => startOptimizer(false));
   document.getElementById('reoptimizeExistingBtn').addEventListener('click', () => startOptimizer(true));
-  function clearOptimizerResult(){
+  function resetOptimizerPanel(){
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
     document.getElementById('acceptOptimizerBtn').style.display = 'none';
+  }
+  function clearOptimizerResult(){
+    resetOptimizerPanel();
     draw();
   }
   document.getElementById('clearOptimizerBtn').addEventListener('click', clearOptimizerResult);
@@ -3712,9 +3684,8 @@ function applyAppearanceAttrs(mode, theme){
         sources.push(s); // already has a real id assigned when created in runSubOptimizer
       }
     }
-    autoTimeAlign();
-    renderSrcList();
-    clearOptimizerResult();
+    resetOptimizerPanel();
+    edited('layout', 'sources');
   }
   document.getElementById('acceptOptimizerBtn').addEventListener('click', applyOptimizerResult);
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
@@ -3793,18 +3764,24 @@ function applyAppearanceAttrs(mode, theme){
     return null;
   }
 
+  // The placeholder size a zone has from the press until the first drag
+  // movement; zoneMouseMove never makes one this small.
+  const NEW_ZONE_PLACEHOLDER_FT = 0.01;
   function zoneMouseDown(evt){
-    const {x,y,scale,cssScale} = getRoomCoords(evt);
+    let {x,y,scale,cssScale} = getRoomCoords(evt);
 
-    // 1. drawing a brand-new zone
+    // 1. drawing a brand-new zone, started inside the room even when the
+    // press lands in the margin around it
     if(zoneDrawMode){
+      x = Math.max(0, Math.min(room.w, x));
+      y = Math.max(0, Math.min(room.d, y));
       const id = nextId++;
       if(zoneDrawMode === 'offlimit'){
-        offLimitZones.push({ id, name: 'Off-limits ' + id, x, y, width: 0.01, height: 0.01 });
+        offLimitZones.push({ id, name: 'Off-limits ' + id, x, y, width: NEW_ZONE_PLACEHOLDER_FT, height: NEW_ZONE_PLACEHOLDER_FT });
       } else if(zoneDrawMode === 'allowed'){
-        allowedZones.push({ id, name: 'Allowed ' + id, x, y, width: 0.01, height: 0.01 });
+        allowedZones.push({ id, name: 'Allowed ' + id, x, y, width: NEW_ZONE_PLACEHOLDER_FT, height: NEW_ZONE_PLACEHOLDER_FT });
       } else if(zoneDrawMode === 'preferred'){
-        preferredZones.push({ id, name: 'Preferred ' + id, x, y, width: 0.01, height: 0.01 });
+        preferredZones.push({ id, name: 'Preferred ' + id, x, y, width: NEW_ZONE_PLACEHOLDER_FT, height: NEW_ZONE_PLACEHOLDER_FT });
       }
       zoneEditTarget = { kind: zoneDrawMode, id, mode: 'creating', startX: x, startY: y };
       return true;
@@ -3870,8 +3847,13 @@ function applyAppearanceAttrs(mode, theme){
   function zoneMouseUp(){
     if(!zoneEditTarget) return false;
     const wasCreating = zoneEditTarget.mode === 'creating';
+    const list = zoneArrayFor(zoneEditTarget.kind);
+    const z = list.find(zz => zz.id === zoneEditTarget.id);
     zoneEditTarget = null;
-    if(wasCreating){
+    if(wasCreating && z && z.width <= NEW_ZONE_PLACEHOLDER_FT){
+      // A click with no drag: no zone. Draw mode stays on for the real drag.
+      list.splice(list.indexOf(z), 1);
+    } else if(wasCreating){
       // Auto-exit draw mode after one rectangle is drawn, so the NEXT click
       // selects/moves/resizes existing ones instead of always creating another.
       zoneDrawMode = null;
@@ -3880,21 +3862,21 @@ function applyAppearanceAttrs(mode, theme){
       }
       updateZoneDrawHint();
     }
-    renderZoneList();
-    draw();
+    edited('zones');
     return true;
   }
 
+  // (x, y) kept just inside the walls.
+  function insideRoom(x, y){
+    return { x: Math.max(0.2, Math.min(room.w-0.2, x)), y: Math.max(0.2, Math.min(room.d-0.2, y)) };
+  }
   // Moves a source or a listening row (by id) to a point in the room, kept
   // just inside the walls. Used by map drags and by the setup guide's typed
   // wall distances.
   function moveToRoomPoint(id, x, y){
-    const cx = Math.max(0.2, Math.min(room.w-0.2, x)), cy = Math.max(0.2, Math.min(room.d-0.2, y));
-    const s = sources.find(s=>s.id===id);
-    if(s){ s.x = cx; s.y = cy; }
-    else { const r = listenerRows.find(r=>r.id===id); if(r){ r.x = cx; r.y = cy; } }
-    autoTimeAlign(); syncDelaySlidersFromState(); // fires on every mousemove during a drag; both are cheap, no DOM rebuild
-    scheduleDraw();
+    const target = sources.find(s=>s.id===id) || listenerRows.find(r=>r.id===id);
+    if(target) Object.assign(target, insideRoom(x, y));
+    edited('layout');
   }
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
@@ -4009,9 +3991,7 @@ function applyAppearanceAttrs(mode, theme){
           Object.assign(mains.find(s => s.name === p.name), { x: p.x, y: p.y });
         }
       }
-      autoTimeAlign();
-      renderSrcList();
-      draw();
+      edited('layout', 'sources');
     }
     return stored;
   }
@@ -4031,17 +4011,12 @@ function applyAppearanceAttrs(mode, theme){
     if(optimizerResult.applyInPlace && !optimizerResult.best) return null;
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
-    const freqs = logSpacedFreqs(freqLow, freqHigh, 48);
+    const freqs = RoomPhysics.logSpacedFreqs(freqLow, freqHigh, 48);
     const active = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
     const seats = allSeatPositions(), primary = primaryRow();
-    const weights = buildOptimizerListenerPositions().map(p => p.weight); // one per seat, in allSeatPositions order
-    // The row's own center is measured as an extra point; see computeFreqResponseData.
-    const centers = seats.concat([{ x: primary.x, y: primary.y, z: primary.z }]);
-    const measure = (srcs) => {
-      const { perCenterDb } = RoomPhysics.spatiallyAveragedResponseMulti(centers, freqs, srcs, physicsCtx(), { radiusFt: 2, numPoints: 20 });
-      const perSeatDb = perCenterDb.slice(0, seats.length);
-      return { db: perCenterDb[centers.length - 1], stats: RoomPhysics.scoreResponses(perSeatDb, weights, optimizerMode), seatToSeatDb: RoomPhysics.seatToSeatVariationDb(perSeatDb) };
-    };
+    // The row's own center is the reference point; see computeFreqResponseData.
+    const reference = { x: primary.x, y: primary.y, z: primary.z };
+    const measure = (srcs) => RoomPhysics.gradePlacement(seats, reference, freqs, srcs, physicsCtx(), optimizerMode);
     const after = measure(sourcesWithSuggestion(active));
     const before = active.some(isSubSource) ? measure(active) : null;
     return {
@@ -4090,13 +4065,13 @@ function applyAppearanceAttrs(mode, theme){
     getRows: () => listenerRows.map(r => ({
       id: r.id, name: r.name, x: r.x, y: r.y, seats: r.seats, facing: r.facing,
       footprint: RoomPhysics.rowFootprintRect(r, room),
-      hasObstacle: offLimitZones.some(z => r.x >= z.x && r.x <= z.x + z.width && r.y >= z.y && r.y <= z.y + z.height)
+      hasObstacle: offLimitZones.some(z => isPointInZoneRect(r.x, r.y, z))
     })),
     addRow: addListenerRow,
     removeRow: removeListenerRow,
     // These two redraw the sidebar's own row list, which edits rows in place.
-    setRowSeats(id, seats){ setRowSeats(listenerRows.find(r => r.id === id), seats); renderListenerRowsList(); },
-    setRowFacing(id, deg){ listenerRows.find(r => r.id === id).facing = deg; renderListenerRowsList(); draw(); },
+    setRowSeats(id, seats){ setRowSeats(listenerRows.find(r => r.id === id), seats); edited('rows'); },
+    setRowFacing(id, deg){ listenerRows.find(r => r.id === id).facing = deg; edited('rows'); },
     furnitureTypes: Object.entries(FURNITURE_TYPES).map(([type, { label, icon }]) => ({ type, label, icon })),
     addFurniture,
     getZones: () => allZones().map(z => ({ id: z.id, kind: z.kind, name: z.name, isFurniture: !!FURNITURE_TYPES[z.furnitureType], width: z.width, height: z.height })),
@@ -4123,13 +4098,18 @@ function applyAppearanceAttrs(mode, theme){
     setOptimizerMode,
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
-    // search runs. Resolves when it is done; see optimizerOutcome.
+    // search runs. Resolves when it is done, to false when the room changed
+    // meanwhile and the result was dropped; see optimizerOutcome. Called
+    // while a search is already running, it joins that one and takes over
+    // its progress reports.
     async runOptimizer(newSubs, onProgress){
       const reoptimize = sources.some(isSubSource);
-      if(!reoptimize) document.getElementById('optNumSubs').value = newSubs;
+      if(!reoptimize && !optimizerRun) document.getElementById('optNumSubs').value = newSubs;
       optimizerProgressListener = onProgress;
-      try { await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
+      try { return await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
     },
+    OPTIMIZER_DROPPED_TEXT,
+    optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
     wallDistances: (pos) => RoomPhysics.nearestWallDistances(pos, room),
