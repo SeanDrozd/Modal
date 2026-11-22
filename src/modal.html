@@ -250,6 +250,7 @@ function applyAppearanceAttrs(mode, theme){
       </div>
       <button id="runOptimizerBtn" class="full primary" style="margin-top:6px;">Find best sub position</button>
       <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
+      <button id="stopOptimizerBtn" class="full" style="display:none; margin-top:6px;">Stop search</button>
       <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
       <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
       <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
@@ -4016,10 +4017,16 @@ function applyAppearanceAttrs(mode, theme){
 
   // Both optimizer-run buttons disable each other while either is in-flight,
   // since they share the one optimizerResult/preview surface (accept/clear
-  // below act on whichever workflow most recently ran).
+  // below act on whichever workflow most recently ran). Stop shows only then.
   function setOptimizerButtonsDisabled(disabled){
     document.getElementById('runOptimizerBtn').disabled = disabled;
     document.getElementById('reoptimizeExistingBtn').disabled = disabled;
+    document.getElementById('stopOptimizerBtn').style.display = disabled ? 'block' : 'none';
+  }
+  // Stops the search in flight, if any, at its next pause.
+  const STOPPED_BY_USER = 'stopped';
+  function stopOptimizer(){
+    if(optimizerAbort) optimizerAbort.abort(STOPPED_BY_USER);
   }
   // Runs one of the two optimizer workflows: refine the existing subs in
   // place (`reoptimize`) or search for positions for new ones. Shared by the
@@ -4032,9 +4039,10 @@ function applyAppearanceAttrs(mode, theme){
     return optimizerRun;
   }
   // Resolves to false when the search was stopped because the room changed
-  // while it ran (see sceneChanged), to null when the room's modes could
-  // not be worked out, true otherwise.
+  // while it ran (see sceneChanged), to 'stopped' when Stop was pressed, to
+  // null when the room's modes could not be worked out, true otherwise.
   const OPTIMIZER_DROPPED_TEXT = 'The room changed, so the search was stopped. Run it again.';
+  const OPTIMIZER_STOPPED_TEXT = 'Search stopped.';
   const SOLVE_FAILED_TEXT = "Couldn't work out this room's modes, so there is nothing to search. Try moving a wall slightly.";
   async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
@@ -4056,8 +4064,9 @@ function applyAppearanceAttrs(mode, theme){
       if(!signal.aborted) await (reoptimize ? runReoptimizeExistingSubs(signal) : runSubOptimizer(signal)).catch(e => { if(!signal.aborted) throw e; });
       if(signal.aborted){
         clearOptimizerResult();
-        document.getElementById('optimizerStatus').textContent = OPTIMIZER_DROPPED_TEXT;
-        return false;
+        const byUser = signal.reason === STOPPED_BY_USER;
+        document.getElementById('optimizerStatus').textContent = byUser ? OPTIMIZER_STOPPED_TEXT : OPTIMIZER_DROPPED_TEXT;
+        return byUser ? STOPPED_BY_USER : false;
       }
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
         acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
@@ -4071,6 +4080,7 @@ function applyAppearanceAttrs(mode, theme){
   }
   document.getElementById('runOptimizerBtn').addEventListener('click', () => startOptimizer(false));
   document.getElementById('reoptimizeExistingBtn').addEventListener('click', () => startOptimizer(true));
+  document.getElementById('stopOptimizerBtn').addEventListener('click', stopOptimizer);
   function resetOptimizerPanel(){
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
@@ -4679,7 +4689,8 @@ function applyAppearanceAttrs(mode, theme){
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
     // search runs. Resolves when it is done, to false when the room changed
-    // meanwhile and the search was stopped, or to null when the room's
+    // meanwhile and the search was stopped, to 'stopped' when stopOptimizer
+    // stopped it, or to null when the room's
     // modes could not be worked out; see optimizerOutcome. Called
     // while a search is already running, it joins that one and takes over
     // its progress reports.
@@ -4689,7 +4700,9 @@ function applyAppearanceAttrs(mode, theme){
       optimizerProgressListener = onProgress;
       try { return await startOptimizer(reoptimize); } finally { optimizerProgressListener = null; }
     },
+    stopOptimizer,
     OPTIMIZER_DROPPED_TEXT,
+    OPTIMIZER_STOPPED_TEXT,
     SOLVE_FAILED_TEXT,
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,

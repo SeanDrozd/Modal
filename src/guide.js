@@ -753,8 +753,9 @@
         app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
         refresh();
       });
+      // While a search runs, the run button stops it.
       async function run(){
-        runBtn.disabled = true;
+        runBtn.textContent = 'Stop';
         result.innerHTML = '';
         shown = undefined; // the card was just cleared, so the next refresh rebuilds it even for the same outcome as before
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
@@ -762,19 +763,17 @@
           status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
         });
         if(!body.isConnected) return; // the step was left while the search ran
-        runBtn.disabled = false;
-        if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
-        outcome = kept ? latest() || 'none' : null;
+        outcome = kept === true ? latest() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
-        if(!kept) status.textContent = kept === null ? app.SOLVE_FAILED_TEXT : app.OPTIMIZER_DROPPED_TEXT;
+        if(kept !== true) status.textContent = kept === null ? app.SOLVE_FAILED_TEXT : kept === 'stopped' ? app.OPTIMIZER_STOPPED_TEXT : app.OPTIMIZER_DROPPED_TEXT;
         // Bring the card up clear of the sticky footer, but never push its first line off the top.
         const scroller = panel.parentElement, card = result.getBoundingClientRect();
         const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;
         if(hidden > 0) scroller.scrollBy(0, Math.min(hidden, card.top - scroller.getBoundingClientRect().top));
       }
-      runBtn.addEventListener('click', run);
+      runBtn.addEventListener('click', () => app.optimizerRunning() ? app.stopOptimizer() : run());
       result.addEventListener('click', (e) => {
         const id = e.target.closest('button') && e.target.closest('button').id;
         if(id === 'guideApplyBtn'){
