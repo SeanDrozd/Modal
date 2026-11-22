@@ -676,7 +676,7 @@
     // shows only the main seat's curve and can look better or worse than the score.
     const SCORE_COUNTS = {
       balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls, but not level, since the sub\'s gain sets it. The chart shows the main seat only.',
-      nullAvoidance: 'With room correction, the score counts only the deepest null at any seat, since correction can tame the rest. The chart shows the main seat only.'
+      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest. The chart shows the main seat only.'
     };
     const VERDICTS = {
       major: 'Major improvement.',
@@ -803,6 +803,8 @@
       let shown; // what `result` currently shows, so it is rebuilt only on a change
       function refresh(){
         pressOnly(body.querySelector('#guideRoomCorrection'), b => b.dataset.rc === state.roomCorrection);
+        // While a search runs the button stays Stop and the card stays empty; run() refreshes once it ends.
+        if(app.optimizerRunning()) return;
         // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.
         if(outcome && typeof outcome === 'object' && !app.optimizerOutcomePending()) outcome = null;
         if(shown === outcome) return;
@@ -816,7 +818,7 @@
           ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
           : outcome === 'kept'
           ? `<div class="guide-result">${shapeWarning()}${keptGainDb > 0
-            ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb} dB isn't worth moving a sub for, so leave them where they are.</p>`
+            ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb()} dB isn't worth moving a sub for, so leave them where they are.</p>`
             : `<p class="guide-verdict">${VERDICTS.worse}</p>`}</div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }

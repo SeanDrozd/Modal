@@ -1065,7 +1065,11 @@ test('scoreResponses reports the mean, flatness and deepest dip of one response,
 test('scoreResponses takes the worst listener for flatness and the deepest dip, scaled by that listener\'s weight', () => {
   const r = P.scoreResponses([[70, 70, 70], [70, 40, 70]], [1, 0.5], 'nullAvoidance');
   assert.strictEqual(r.worstMinDb, 40); assert.strictEqual(r.worstMinIndex, 1);
-  approx(r.score, 40 + 0.5 * 15, 1e-9); // half of the 15 dB relief for a half-weight listener
+  // half of the 15 dB relief for a half-weight listener, less the weighted
+  // seat-to-seat spread: at the middle frequency the seats sit 10 and 20 dB
+  // from their weighted mean of 60, (1 * 10 + 0.5 * 20) / 1.5 = 40/3, and 0
+  // elsewhere, so 40/9 averaged over the three
+  approx(r.score, 40 + 0.5 * 15 - 40 / 9, 1e-9);
   const b = P.scoreResponses([[70, 70, 70], [70, 40, 70]], [1, 0.5], 'balanced');
   approx(b.avgMean, (70 * 1 + 60 * 0.5) / 1.5, 1e-9);
   approx(b.worstStdDev, Math.sqrt(200), 1e-9);
@@ -1097,18 +1101,58 @@ test('seatToSeatVariationDb is zero for a single seat', () => {
   assert.strictEqual(P.seatToSeatVariationDb([[70, 60, 65]]), 0);
 });
 
-test('comparePlacements grades the change in score', () => {
+test('comparePlacements grades the change in score by the mode\'s own thresholds', () => {
   const s = (score, avgMean) => ({ score, avgMean });
-  const c = P.comparePlacements(s(60, 70), s(67.5, 73));
+  const c = P.comparePlacements(s(60, 70), s(67.5, 73), 'nullAvoidance');
   approx(c.gainDb, 7.5, 1e-9); approx(c.levelGainDb, 3, 1e-9);
   assert.strictEqual(c.verdict, 'major');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(66, 70)).verdict, 'major');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(65.9, 70)).verdict, 'modest');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(62, 70)).verdict, 'modest');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(61.9, 75)).verdict, 'similar'); // louder, but no better by the score
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(60, 70)).verdict, 'similar');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(58.1, 70)).verdict, 'similar');
-  assert.strictEqual(P.comparePlacements(s(60, 70), s(58, 70)).verdict, 'worse');
+  const na = (after, level) => P.comparePlacements(s(60, 70), s(after, level ?? 70), 'nullAvoidance').verdict;
+  assert.deepStrictEqual([na(66), na(65.9), na(62), na(61.9, 75), na(60), na(58.1), na(58)], ['major', 'modest', 'modest', 'similar', 'similar', 'similar', 'worse']);
+  const ev = (after) => P.comparePlacements(s(-6, 70), s(after, 70), 'balanced').verdict;
+  assert.deepStrictEqual([ev(-3), ev(-3.1), ev(-5), ev(-5.1), ev(-6.9), ev(-7)], ['major', 'modest', 'modest', 'similar', 'similar', 'worse']);
+  assert.deepStrictEqual(P.PLACEMENT_GAIN_DB, { balanced: { major: 3, modest: 1 }, nullAvoidance: { major: 6, modest: 2 } });
+  // any other mode grades as balanced, as scoreResponses scores it
+  assert.strictEqual(P.comparePlacements(s(-6, 70), s(-3, 70)).verdict, 'major');
+});
+
+test('seatToSeatSpreadDb is the weighted mean distance from the weighted mean level, and ignores a seat of weight 0', () => {
+  // two equal seats: the same as seatToSeatVariationDb
+  const two = [[70, 60, 65], [74, 70, 65]];
+  approx(P.seatToSeatSpreadDb(two, [1, 1]), P.seatToSeatVariationDb(two), 1e-12);
+  // a weight-0 seat does not count, however far off it is
+  approx(P.seatToSeatSpreadDb([[70, 70], [70, 70], [40, 90]], [1, 0.5, 0]), 0, 1e-12);
+  // weights 1 and 0.5 at 70 and 40 dB: mean 60, (10 + 0.5 * 20) / 1.5 = 40/3
+  approx(P.seatToSeatSpreadDb([[70], [40]], [1, 0.5]), 40 / 3, 1e-12);
+  assert.strictEqual(P.seatToSeatSpreadDb([[70, 60]], [1]), 0);
+});
+
+test('scoreResponses subtracts the weighted seat-to-seat spread in both modes, so a weight-0 seat changes nothing', () => {
+  const main = [72, 66, 70, 68], other = [60, 75, 64, 80];
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const alone = P.scoreResponses([main], [1], mode).score;
+    const withZero = P.scoreResponses([main, other], [1, 0], mode);
+    // a weight-0 seat can still set the null floor in nullAvoidance (less its full relief), so compare against that
+    const floor = mode === 'nullAvoidance' ? Math.min(66, 60 + 15) : alone;
+    approx(withZero.score, floor, 1e-9, `${mode}: a weight-0 seat adds no spread`);
+    const both = P.scoreResponses([main, other], [1, 1], mode).score;
+    const spread = P.seatToSeatSpreadDb([main, other], [1, 1]);
+    assert.ok(spread > 0 && both < (mode === 'nullAvoidance' ? 60 : alone), `${mode}: a second full-weight seat that differs costs its spread`);
+  }
+});
+
+test('scoreResponses does not jump when the worst seat flips between two that nearly tie', () => {
+  // Seat A (weight 1) and seat B (weight 0.25) are equally rough; as B gets
+  // a hair rougher than A it becomes the roughest seat, but its low weight
+  // must not suddenly forgive the roughness A still has.
+  const rough = (amp) => [70 - amp, 70 + amp, 70 - amp, 70 + amp];
+  const score = (b) => P.scoreResponses([rough(6), rough(b)], [1, 0.25], 'balanced').score - -P.seatToSeatSpreadDb([rough(6), rough(b)], [1, 0.25]);
+  approx(score(5.999), score(6.001), 0.01);
+  approx(score(6.001), -6, 1e-9); // A's roughness at full weight still counts
+  // the same for the null floor in nullAvoidance mode
+  const dip = (d) => [70, 70 - d, 70];
+  const na = (d) => P.scoreResponses([dip(20), dip(d)], [1, 0.5], 'nullAvoidance').score + P.seatToSeatSpreadDb([dip(20), dip(d)], [1, 0.5]);
+  approx(na(20.001), na(19.999), 0.01);
+  approx(na(20.001), 50, 1e-9); // seat A's own null, unforgiven
 });
 
 test('balanced grades four subs spread to the wall middles above four side by side in a corner, though the cluster is louder', () => {
@@ -1119,13 +1163,17 @@ test('balanced grades four subs spread to the wall middles above four side by si
   const rows = [{ x: 10, y: 8.15, z: 3.5, seats: 4, spacingFt: 2, facing: 0 }, { x: 10, y: 10.45, z: 3.5, seats: 4, spacingFt: 2, facing: 0 }];
   const seats = P.seatPositions(rows), reference = { x: 10, y: 8.15, z: 3.5 };
   const speakers = [speaker(5.1, 1.5), speaker(10, 1.5), speaker(14.9, 1.5), speaker(1.5, 11.5), speaker(18.5, 11.5)];
-  const freqs = P.logSpacedFreqs(20, 120, 96);
-  const grade = (spots) => P.gradePlacement(seats, reference, freqs, P.timeAlignedSources(speakers.concat(spots.map(sub)), reference, room), ctx, 'balanced');
+  const freqs = P.logSpacedFreqs(20, 120, 192); // the card's frequencies
+  const grade = (spots, f = freqs) => P.gradePlacement(seats, reference, f, P.timeAlignedSources(speakers.concat(spots.map(sub)), reference, room), ctx, 'balanced');
   const cluster = grade([[1.5, 13.75], [3.25, 13.83], [4.85, 13.92], [6.27, 13.75]]);
   const middles = grade([[10, 0.25], [10, 14.75], [0.25, 7.5], [19.75, 7.5]]);
   assert.ok(cluster.stats.avgMean > middles.stats.avgMean + 2, `the cluster is louder (${(cluster.stats.avgMean - middles.stats.avgMean).toFixed(1)} dB)`);
   assert.ok(middles.seatToSeatDb < cluster.seatToSeatDb && middles.stats.worstStdDev < cluster.stats.worstStdDev, 'the middles are more even, seat to seat and across frequency');
-  assert.ok(middles.stats.score > cluster.stats.score + 1, `and grade higher (${(middles.stats.score - cluster.stats.score).toFixed(1)} dB)`);
+  const move = P.comparePlacements(cluster.stats, middles.stats, 'balanced');
+  assert.strictEqual(move.verdict, 'modest', `and grade high enough to be worth the move (${move.gainDb.toFixed(2)} dB)`);
+  // The score does not lurch with the frequency count (it did by 1.7 dB
+  // between 96 and 192 when the worst seat flipped between two near ties).
+  approx(grade([[1.5, 13.75], [3.25, 13.83], [4.85, 13.92], [6.27, 13.75]], P.logSpacedFreqs(20, 120, 96)).stats.score, cluster.stats.score, 0.1);
 });
 
 test('checkSubMoves keeps the current subs unless the picked ones grade meaningfully higher', () => {
@@ -1153,10 +1201,10 @@ test('checkSubMoves keeps the current subs unless the picked ones grade meaningf
   assert.deepStrictEqual(taken.moved, [true, true]);
   approx(taken.gainDb, -gain, 1e-9);
 
-  // A gain under PLACEMENT_GAIN_DB.modest is not worth a move.
+  // A gain under PLACEMENT_GAIN_DB.balanced.modest is not worth a move.
   const small = [sub(11, 0.5, 7), sub(12, 17.5, 7)];
   const smallGain = grade(small) - grade(a);
-  assert.ok(smallGain > 0 && smallGain < P.PLACEMENT_GAIN_DB.modest, `a small gain (${smallGain.toFixed(2)} dB)`);
+  assert.ok(smallGain > 0 && smallGain < P.PLACEMENT_GAIN_DB.balanced.modest, `a small gain (${smallGain.toFixed(2)} dB)`);
   const tooSmall = P.checkSubMoves({ ...base, current: a, picked: small });
   assert.deepStrictEqual(tooSmall.moved, [false, false]);
   assert.deepStrictEqual(tooSmall.placedSubs.map(s => [s.x, s.y]), [[0.5, 0.4], [17.5, 13.6]]);
@@ -1231,7 +1279,7 @@ test('a single-sub search scored the card\'s way picks the spot the card grades 
     seats, reference, freqs: cardFreqs, otherSources: mains, current, picked: at(best), physicsCtx: ctx, mode, timeAlignTo: reference
   });
   const atPoints = check(search(Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12)).best);
-  assert.ok(atPoints.gainDb < P.PLACEMENT_GAIN_DB.modest, `the old single-point pick grades only ${atPoints.gainDb.toFixed(2)} dB better`);
+  assert.ok(atPoints.gainDb < P.PLACEMENT_GAIN_DB.nullAvoidance.modest, `the old single-point pick grades only ${atPoints.gainDb.toFixed(2)} dB better`);
   assert.deepStrictEqual(atPoints.moved, [false]);
 
   const result = search(cardFreqs, P.SEAT_AVERAGING);
@@ -1752,16 +1800,16 @@ test('REGRESSION: polishSubPlacements does not send each sub to the spot by the 
   const result = P.polishSubPlacements({
     room, otherSources: [main(1.5, 2), main(7, 2), main(12, 2), main(1, 10.1), main(17, 10.1)], subs,
     freqList: Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12), listenerPositions: [5, 7, 9].map((x, i) => ({ x, y: 9.4, z: 3.5, weight: i === 1 ? 1 : 0.7 })),
-    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'nullAvoidance', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'balanced', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
   });
-  // The search picks (2.5, 11.5) for sub 1 and (5.5, 1.5) for sub 2; taken
+  // The search picks (4.5, 12.5) for sub 1 and (5.5, 1.5) for sub 2; taken
   // as picked, sub 1 would cross the room from (3, 2) while sub 2 came all
-  // the way back, 23.4 ft of travel in all.
+  // the way back, 24.5 ft of travel in all.
   const n = result.polishResults.length;
-  assert.deepStrictEqual([result.polishResults[n - 2].best, result.polishResults[n - 1].best].map(b => [b.x, b.y]), [[2.5, 11.5], [5.5, 1.5]]);
-  assert.deepStrictEqual(result.placedSubs.map(p => [p.x, p.y]), [[5.5, 1.5], [2.5, 11.5]]);
+  assert.deepStrictEqual([result.polishResults[n - 2].best, result.polishResults[n - 1].best].map(b => [b.x, b.y]), [[4.5, 12.5], [5.5, 1.5]]);
+  assert.deepStrictEqual(result.placedSubs.map(p => [p.x, p.y]), [[5.5, 1.5], [4.5, 12.5]]);
   const travel = result.placedSubs.reduce((sum, p, i) => sum + Math.hypot(p.x - subs[i].x, p.y - subs[i].y), 0);
-  approx(travel, 14.1, 0.05, 'total travel');
+  approx(travel, 12.0, 0.05, 'total travel');
   assert.deepStrictEqual(result.moved, [true, true]);
 });
 
@@ -2595,10 +2643,12 @@ test('preferredZoneBonusDb is 0 with no zones', () => {
   assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, undefined), 0);
 });
 
-test('preferredZoneBonusDb is 0 outside every zone, PREFERRED_ZONE_BONUS_DB inside one', () => {
+test('preferredZoneBonusDb is 0 outside every zone, the mode\'s PREFERRED_ZONE_BONUS_DB inside one', () => {
   const zones = [{ x: 0, y: 0, width: 2, height: 2 }];
-  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, zones), 0, 'outside the zone should get no bonus');
-  assert.strictEqual(P.preferredZoneBonusDb({ x: 1, y: 1 }, zones), P.PREFERRED_ZONE_BONUS_DB, 'inside the zone should get the full bonus');
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 9, y: 9 }, zones, 'balanced'), 0, 'outside the zone should get no bonus');
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 1, y: 1 }, zones, 'balanced'), 1, 'inside the zone should get the full bonus');
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 1, y: 1 }, zones, 'nullAvoidance'), 3);
+  assert.strictEqual(P.preferredZoneBonusDb({ x: 1, y: 1 }, zones), P.PREFERRED_ZONE_BONUS_DB.balanced, 'no mode is balanced');
 });
 
 test('a preferred zone (soft bias) does NOT exclude candidates outside it, unlike an allowed zone', () => {
@@ -2636,7 +2686,7 @@ test('a preferred zone nudges an otherwise near-tied candidate to win', () => {
   // bonus margin) to confirm the bonus can flip the winner.
   const sorted = withoutZone.allCandidates.slice().sort((a,b) => b.score - a.score);
   const top = sorted[0];
-  const runnerUp = sorted.find(c => (c.x !== top.x || c.y !== top.y) && (top.score - c.score) < P.PREFERRED_ZONE_BONUS_DB);
+  const runnerUp = sorted.find(c => (c.x !== top.x || c.y !== top.y) && (top.score - c.score) < P.PREFERRED_ZONE_BONUS_DB.balanced);
   assert.ok(runnerUp, 'expected a runner-up candidate within the bonus margin of the top candidate for this setup');
   const preferredZones = [{ x: runnerUp.x - 0.1, y: runnerUp.y - 0.1, width: 0.2, height: 0.2 }];
   const withZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones }));
@@ -2658,7 +2708,7 @@ test('a preferred zone does NOT flip the winner when the outside candidate is me
   // behind the top candidate in any non-degenerate scenario with enough spread;
   // guard with a skip-if-not-applicable check rather than assuming it.
   const worst = sorted[sorted.length - 1];
-  if((top.score - worst.score) <= P.PREFERRED_ZONE_BONUS_DB) return; // setup too flat for this scenario; nothing to assert
+  if((top.score - worst.score) <= P.PREFERRED_ZONE_BONUS_DB.balanced) return; // setup too flat for this scenario; nothing to assert
   const preferredZones = [{ x: worst.x - 0.1, y: worst.y - 0.1, width: 0.2, height: 0.2 }];
   const withZone = P.optimizeSubPlacement(Object.assign({}, opts, { preferredZones }));
   assert.strictEqual(withZone.best.x, top.x, 'a genuinely better spot outside the preferred zone should still win');
@@ -3511,6 +3561,28 @@ test('fieldFromModeShapes over modeShapesAtPoint is computeFieldAtPoint, formula
       }
     }
   }
+});
+
+test('seatCloudScanner in a big floor-plan room with many seats stores its group sums as floats and stays within 1e-4 dB', () => {
+  // A 30 x 30 ft L room with 10 seats at 192 frequencies has 185 plan
+  // shapes, past the budget where the group sums take about 110 MB in doubles.
+  const fp = P.floorPlanFromTemplate(P.rectanglePolygon(30, 30), 'L');
+  const polygon = fp.polygon || fp, room = { w: 30, d: 30, h: 8, polygon };
+  const ctx = { room, wallAbsorption: 0.1, floorPlan: P.solveFloorPlan(polygon) };
+  const modes = P.enumerateModes(ctx), freqList = P.logSpacedFreqs(20, 120, 192);
+  const seats = Array.from({ length: 10 }, (_, i) => ({ x: 9 + (i % 5) * 2.2, y: 9 + Math.floor(i / 5) * 3, z: 3.5, weight: 1 }));
+  const mains = [{ x: 9, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }, { x: 18, y: 1.5, z: 3, levelDb: 0, delayMs: 0.4, freqLow: 80, freqHigh: 20000, enabled: true }];
+  const sampleShapes = P.centerSampleShapes(seats, modes, P.SEAT_AVERAGING);
+  assert.ok(freqList.length * sampleShapes.flat().length * new Set(modes.map(m => m.shape)).size > 4e6, 'past the budget');
+  const scanner = P.seatCloudScanner({ modes, freqList, otherSources: mains, physicsCtx: ctx, candidateTemplate: P.NEW_SUB_DEFAULTS, subHeightFt: 1, sampleShapes });
+  let worst = 0;
+  for(const [x, y] of [[0.25, 0.25], [5.25, 5.25], [1.25, 28.75]]){
+    const candidate = Object.assign({}, P.NEW_SUB_DEFAULTS, { x, y, z: 1, delayMs: 1.5 });
+    const got = scanner.responses(candidate, mains);
+    const want = P.spatiallyAveragedResponseMulti(seats, freqList, mains.concat([candidate]), ctx, Object.assign({ modes, sampleShapes }, P.SEAT_AVERAGING)).perCenterDb;
+    got.forEach((row, i) => row.forEach((v, j) => { worst = Math.max(worst, Math.abs(v - want[i][j])); }));
+  }
+  assert.ok(worst > 0 && worst < 1e-4, `within 1e-4 dB, and not exact, so the float path ran (${worst.toExponential(1)} dB)`);
 });
 
 test('seatCloudScanner gives spatiallyAveragedResponseMulti\'s responses, in a rectangle and a floor plan, with and without time alignment', () => {

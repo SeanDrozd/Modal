@@ -2085,12 +2085,11 @@
   // sources — mains, other subs) by evaluating the field at multiple frequencies
   // across a target band, at one or more listening positions.
   //
-  // mode: 'balanced' (default) combines three things a good sub position
-  // should deliver:
-  //   1. Reasonably high average level (not stuck in a general low zone)
-  //   2. Low variance across frequency AT EACH listener (flat response — avoids
-  //      being loud at some frequencies and nulled at others, the classic
-  //      "one big room-mode hole" problem)
+  // mode: 'balanced' (default) scores evenness, not level, since the sub's
+  // gain sets the level (see scoreResponses):
+  //   1. Low variance across frequency AT EACH listener (a flat response, not
+  //      loud at some frequencies and nulled at others)
+  //   2. No deep null below the scene's average level
   //   3. Consistency ACROSS listeners (a position that's great at one seat but
   //      terrible at another is a worse practical choice than one that's decent
   //      everywhere, even if its single-seat peak score is lower)
@@ -2099,13 +2098,13 @@
   // they can flatten peaks after the fact, but can't fill in a null (it's a
   // position-dependent cancellation, not a tonal dip a filter can undo), so
   // average level and peak-inclusive variance are irrelevant to them. This
-  // mode scores purely by the worst (lowest) dB anywhere in the band, at the
-  // worst listener position — a maximin objective that directly answers
-  // "how deep is the deepest null this candidate produces," ignoring
-  // everything else 'balanced' cares about.
+  // mode scores by the worst (lowest) dB anywhere in the band, at the worst
+  // listener position, a maximin objective that answers "how deep is the
+  // deepest null this candidate produces", less the seat-to-seat spread,
+  // since one correction curve cannot even out the seats either.
   //
   // Unlike 'balanced' (which naturally spreads multi-sub placements out, since
-  // averaging level/flatness across the room rewards covering different areas),
+  // flatness at every seat rewards covering different areas),
   // a pure maximin objective has NO inherent incentive to avoid clustering --
   // if the best null-avoiding spot for sub 2 happens to be right next to sub 1,
   // nothing here would prefer a more spread-out alternative. alreadyPlaced
@@ -2238,18 +2237,19 @@
     const worstMinDb = worstMinDbEntry.minDb;
 
     // 'balanced' mode scores evenness only: the worst seat's flatness, a deep
-    // null, and how much the level differs from seat to seat
-    // (seatToSeatVariationDb). Level itself does not count, since a sub's
-    // gain sets it: scoring it let the loudest layout win, such as four subs
-    // side by side in a corner, which in a 20 x 15 ft room with 8 seats was
-    // 4 dB louder than four subs at the wall midpoints but worse on flatness
-    // (5.5 against 3.7 dB), the deepest null (12.8 against 8.0 dB) and seat
-    // to seat (4.0 against 1.4 dB). Spreading subs to even out the seats is
-    // the approach of Welti and Toole's multi-sub work at Harman. In
-    // 'nullAvoidance' mode, only the worst null anywhere matters (minus a soft
+    // null, and how much the level differs from seat to seat. Level itself
+    // does not count, since a sub's gain sets it: scoring it let the loudest
+    // layout win, such as four subs side by side in a corner. In one 20 x 15
+    // ft room with 8 seats that cluster was 4 dB louder than four subs at the
+    // wall midpoints but worse on flatness (5.5 against 3.7 dB), the deepest
+    // null (12.8 against 8.0 dB) and seat to seat (4.0 against 1.4 dB).
+    // Spreading subs to even out the seats is the approach of Welti and
+    // Toole's multi-sub work at Harman. In 'nullAvoidance' mode the worst
+    // null anywhere matters, less the seat-to-seat spread (and a soft
     // penalty for clustering near already-placed subs, which scoreSubPosition
-    // subtracts itself). See scoreSubPosition's comment for why average level
-    // and peaks are excluded otherwise.
+    // subtracts itself), since room correction can pull peaks down but can
+    // fill neither a null nor a gap between seats. See scoreSubPosition's
+    // comment for why average level and peaks are excluded otherwise.
     //
     // The null penalty engages once the worst listener's minimum dips 20dB+
     // BELOW THE SCENE'S OWN AVERAGE LEVEL (avgMean), not below a hardcoded
@@ -2265,9 +2265,32 @@
     // no penalty term to scale (its score IS the raw worst dB value), so it's
     // given the analogous relief additively instead -- a low-weight listener's
     // null is partially forgiven (up to RELIEF_DB) rather than discounted.
-    const score = mode === 'nullAvoidance'
-      ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB
-      : -(worstStdDev * BALANCED_FLATNESS_WEIGHT * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight - seatToSeatVariationDb(perListenerDb);
+    //
+    // Each term takes the worst seat after its weight is applied (the
+    // largest stdDev * weight, the lowest null after relief), so two seats
+    // that nearly tie cannot make the score jump as the worst one flips.
+    //
+    // Both modes subtract the seat-to-seat spread (seatToSeatSpreadDb, by
+    // the seats' weights): room correction applies one curve to every seat,
+    // so it cannot even out the seats either.
+    const spreadDb = seatToSeatSpreadDb(perListenerDb, listenerStats.map(s => s.weight));
+    // No seats gives a NaN score, like the rest of this function's
+    // degenerate input (see the empty-input test).
+    let score = NaN;
+    if(listenerStats.length === 0){
+      // left NaN
+    } else if(mode === 'nullAvoidance'){
+      let floor = Infinity;
+      for(const s of listenerStats){ const v = s.minDb + (1 - s.weight) * RELIEF_DB; if(v < floor) floor = v; }
+      score = floor - spreadDb;
+    } else {
+      let rough = -Infinity, nullPenalty = -Infinity;
+      for(const s of listenerStats){
+        rough = Math.max(rough, s.stdDev * s.weight);
+        nullPenalty = Math.max(nullPenalty, Math.max(0, avgMean - s.minDb - 20) * s.weight);
+      }
+      score = -rough * BALANCED_FLATNESS_WEIGHT - nullPenalty * 0.5 - spreadDb;
+    }
 
     return {
       score,
@@ -2292,6 +2315,25 @@
       let min = Infinity, max = -Infinity;
       for(const seat of perSeatDb){ if(seat[j] < min) min = seat[j]; if(seat[j] > max) max = seat[j]; }
       sum += (max - min) / 2;
+    }
+    return sum / numFreqs;
+  }
+  // The seat-to-seat term of scoreResponses: at each frequency, how far the
+  // seats sit from their weighted average level (the weighted mean absolute
+  // deviation), averaged over the frequencies. A seat of weight 0 does not
+  // count. For two seats of equal weight it equals seatToSeatVariationDb.
+  function seatToSeatSpreadDb(perSeatDb, weights){
+    if(perSeatDb.length < 2) return 0;
+    const numFreqs = perSeatDb[0].length;
+    const total = weights.reduce((a, w) => a + w, 0);
+    let sum = 0;
+    for(let j = 0; j < numFreqs; j++){
+      let mean = 0;
+      for(let i = 0; i < perSeatDb.length; i++) mean += weights[i] * perSeatDb[i][j];
+      mean /= total;
+      let dev = 0;
+      for(let i = 0; i < perSeatDb.length; i++) dev += weights[i] * Math.abs(perSeatDb[i][j] - mean);
+      sum += dev / total;
     }
     return sum / numFreqs;
   }
@@ -2330,17 +2372,32 @@
   // placements' scoreResponses results (same listeners, frequencies and
   // mode). gainDb is the change in score, so it is positive when `after` is
   // the better placement by the optimizer's own measure. verdict: 'major' at
-  // PLACEMENT_GAIN_DB.major or more, 'modest' at .modest or more, 'worse'
-  // when `after` scores lower by .modest or more, otherwise 'similar'.
-  const PLACEMENT_GAIN_DB = { major: 6, modest: 2 };
-  function comparePlacements(before, after){
+  // PLACEMENT_GAIN_DB[mode].major or more, 'modest' at .modest or more,
+  // 'worse' when `after` scores lower by .modest or more, otherwise
+  // 'similar'.
+  //
+  // Each mode has its own thresholds, since its scores spread over a
+  // different range. Over every spot one sub could take in 5 rooms (12 x 9
+  // to 18 x 13.5 ft, 1 to 6 seats), the 'balanced' score spread over 2.8 to
+  // 4.4 dB, a tenth of the spots more than 2.3 to 3.5 dB below the best,
+  // and 'nullAvoidance' over 6.7 to 20.9 dB, a tenth more than 6.2 to 15.2
+  // dB below.
+  const PLACEMENT_GAIN_DB = {
+    balanced: { major: 3, modest: 1 },
+    nullAvoidance: { major: 6, modest: 2 }
+  };
+  // The key a mode's constants are under: any mode but 'nullAvoidance'
+  // scores as 'balanced', as in scoreResponses.
+  function scoreModeKey(mode){ return mode === 'nullAvoidance' ? 'nullAvoidance' : 'balanced'; }
+  function comparePlacements(before, after, mode){
     const gainDb = after.score - before.score;
+    const t = PLACEMENT_GAIN_DB[scoreModeKey(mode)];
     return {
       gainDb,
       levelGainDb: after.avgMean - before.avgMean,
-      verdict: gainDb >= PLACEMENT_GAIN_DB.major ? 'major'
-        : gainDb >= PLACEMENT_GAIN_DB.modest ? 'modest'
-        : gainDb <= -PLACEMENT_GAIN_DB.modest ? 'worse' : 'similar'
+      verdict: gainDb >= t.major ? 'major'
+        : gainDb >= t.modest ? 'modest'
+        : gainDb <= -t.modest ? 'worse' : 'similar'
     };
   }
   // Whether refined positions for existing subs are worth suggesting, judged
@@ -2351,7 +2408,7 @@
   // is graded as it stands; the picked one with every source time-aligned to
   // `timeAlignTo` when given, since applying it re-runs automatic time
   // alignment. Returns { placedSubs, moved, gainDb }: the picked subs when
-  // they grade at least PLACEMENT_GAIN_DB.modest higher, since a smaller
+  // they grade at least PLACEMENT_GAIN_DB[mode].modest higher, since a smaller
   // gain is what the card calls "Little to gain" and is not worth moving a
   // sub for; otherwise copies of `current` with every moved[i] false.
   // gainDb is null when the search moved nothing.
@@ -2362,8 +2419,8 @@
     let after = otherSources.concat(picked);
     if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
     const grade = (sources) => gradePlacement(seats, reference, freqs, sources, physicsCtx, mode).stats;
-    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after));
-    if(gainDb < PLACEMENT_GAIN_DB.modest) return keep(gainDb);
+    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after), mode);
+    if(gainDb < PLACEMENT_GAIN_DB[scoreModeKey(mode)].modest) return keep(gainDb);
     return { placedSubs: picked.map(p => Object.assign({}, p)), moved: picked.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
   }
   // The four walls straight to a point's left, right, front and back, each
@@ -2593,12 +2650,15 @@
   // lets a genuinely better spot elsewhere still win, while nudging the optimizer
   // toward the preferred area in close cases. Kept as a simple additive dB-scale
   // bonus rather than a multiplier, so it composes cleanly regardless of the
-  // underlying score's sign or magnitude.
-  const PREFERRED_ZONE_BONUS_DB = 3;
-  function preferredZoneBonusDb(candidatePos, preferredZones){
+  // underlying score's sign or magnitude. Each mode has its own, sized to
+  // the range its scores spread over (see PLACEMENT_GAIN_DB): at 3 dB the
+  // 'balanced' score, which spreads about a third as far, let a small zone
+  // capture the pick almost every time.
+  const PREFERRED_ZONE_BONUS_DB = { balanced: 1, nullAvoidance: 3 };
+  function preferredZoneBonusDb(candidatePos, preferredZones, mode){
     if(!preferredZones || preferredZones.length === 0) return 0;
     const inside = preferredZones.some(zone => isPointInRect(candidatePos.x, candidatePos.y, zone));
-    return inside ? PREFERRED_ZONE_BONUS_DB : 0;
+    return inside ? PREFERRED_ZONE_BONUS_DB[scoreModeKey(mode)] : 0;
   }
 
   // ---- Scoring a grid scan's candidates at averaged seats, fast ----
@@ -2626,6 +2686,7 @@
   // responses(candidate, others): candidate is { x, y, delayMs } at
   // subHeightFt; others are otherSources in the same order, with the
   // delays this candidate's time alignment gives them.
+  const SCANNER_GROUP_BUDGET = 4e6; // values per array before seatCloudScanner stores floats
   function seatCloudScanner(options){
     const { modes, freqList, otherSources, physicsCtx, candidateTemplate, subHeightFt, sampleShapes } = options;
     const plan = modes.floorPlan;
@@ -2679,7 +2740,13 @@
       group[n] = groupOf.get(key);
     });
     const numGroups = groupKeys.length;
-    const groupRe = new Float64Array(size * numGroups), groupIm = new Float64Array(size * numGroups);
+    // The group sums take size * numGroups values each, re and im. Past
+    // SCANNER_GROUP_BUDGET (a big L, T or U room with many seats, where they
+    // reach about 220 MB in doubles) they are stored as floats instead,
+    // which halves that and moves the responses by about 3e-6 dB (measured
+    // in a 30 x 30 ft L and U room with 20 seats).
+    const GroupArray = size * numGroups > SCANNER_GROUP_BUDGET ? Float32Array : Float64Array;
+    const groupRe = new GroupArray(size * numGroups), groupIm = new GroupArray(size * numGroups);
     const modeWeight = new Float64Array(numModes);
     let summedForX = null; // the column groupRe/groupIm hold, or true for a floor plan's one sum
     function sumGroups(x){
@@ -2829,7 +2896,7 @@
         // still win. Applied here rather than inside scoreSubPosition to
         // keep that function's existing, already-tested balanced/
         // nullAvoidance formulas untouched.
-        const bonus = preferredZoneBonusDb({ x, y }, preferredZones);
+        const bonus = preferredZoneBonusDb({ x, y }, preferredZones, mode);
         yield { x, y, z, score: eval_.score + bonus, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
       }
     }
@@ -3128,7 +3195,7 @@
 
   // Async/chunked twin of polishSubPlacements, for the same reason
   // optimizeSubPlacementAsync exists. onProgress is called as
-  // (fraction, k, 'polish', overall) -- k is the index into `subs` currently
+  // (fraction, k, 'polish', overall): k is the index into `subs` currently
   // being re-optimized, matching the polish-phase signal
   // optimizeMultipleSubsAsync already uses internally, and overall (0..1) is
   // how far the whole polish is, counted as POLISH_PASSES passes over every
@@ -3321,6 +3388,7 @@
     standardSpeakerPositions,
     scoreResponses,
     seatToSeatVariationDb,
+    seatToSeatSpreadDb,
     comparePlacements,
     PLACEMENT_GAIN_DB,
     checkSubMoves,
