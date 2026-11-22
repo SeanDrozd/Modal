@@ -743,7 +743,7 @@ test('worstMinDb penalty engages (score is reduced) when the worst listener dips
     `expected a null 20dB+ below the scene average to set up this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
   const expectedPenalty = Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
   assert.ok(expectedPenalty > 0, 'this scenario should actually exercise a nonzero penalty');
-  approx(result.score, result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - expectedPenalty, 1e-6, 'score should equal avgMean minus the stdDev and worstMinDb penalty terms');
+  approx(result.score, -(result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - expectedPenalty, 1e-6, 'score should be minus the stdDev and worstMinDb penalty terms (one listener, so no seat-to-seat term)');
 });
 
 test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the scene average', () => {
@@ -757,7 +757,7 @@ test('worstMinDb penalty is exactly zero when no listener dips 20dB+ below the s
   const result = P.scoreSubPosition(silentCandidate, [loudSource], room, freqs, listeners, ctx);
   assert.ok(result.avgMean - result.worstMinDb <= 20,
     `expected no null 20dB+ below average for this test, got avgMean=${result.avgMean.toFixed(1)} worstMinDb=${result.worstMinDb.toFixed(1)}`);
-  approx(result.score, result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT), 1e-6, 'with the null penalty inactive, score should equal avgMean minus only the stdDev term');
+  approx(result.score, -(result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT), 1e-6, 'with the null penalty inactive, score should be minus only the stdDev term');
 });
 
 console.log("\n-- scoreSubPosition: mode:'nullAvoidance' (for users with room correction/EQ) --");
@@ -1051,11 +1051,15 @@ test('scoreResponses reports the mean, flatness and deepest dip of one response,
   approx(r.avgMean, 70, 1e-9);
   approx(r.worstStdDev, Math.sqrt(40), 1e-9); // squared deviations 0, 36, 144, 4, 16
   assert.strictEqual(r.worstMinDb, 58); assert.strictEqual(r.worstMinIndex, 2);
-  approx(r.score, 70 - Math.sqrt(40), 1e-9); // the dip is 12 dB under the mean, short of the 20 dB where the null penalty starts
+  approx(r.score, -Math.sqrt(40), 1e-9); // the dip is 12 dB under the mean, short of the 20 dB where the null penalty starts
   approx(P.scoreResponses([[70, 76, 58, 72, 74]], [1], 'nullAvoidance').score, 58, 1e-9);
   // a dip 30 dB under the mean costs half of the 10 dB beyond 20
   const deep = P.scoreResponses([[80, 80, 80, 80, 80, 50]], [1], 'balanced');
-  approx(deep.score, deep.avgMean - deep.worstStdDev - (deep.avgMean - 50 - 20) * 0.5, 1e-9);
+  approx(deep.score, -deep.worstStdDev - (deep.avgMean - 50 - 20) * 0.5, 1e-9);
+  // balanced does not count level, since a sub's gain sets it: the same response 10 dB louder scores the same
+  approx(P.scoreResponses([[80, 86, 68, 82, 84]], [1], 'balanced').score, r.score, 1e-9);
+  // but it counts how much the seats differ: seat 2 is 2 and 6 dB above seat 1 (+-1 and +-3, +-2 on average), and swings +-2 dB itself
+  approx(P.scoreResponses([[70, 70], [72, 76]], [1, 1], 'balanced').score, -2 - 2, 1e-9);
 });
 
 test('scoreResponses takes the worst listener for flatness and the deepest dip, scaled by that listener\'s weight', () => {
@@ -1107,6 +1111,23 @@ test('comparePlacements grades the change in score', () => {
   assert.strictEqual(P.comparePlacements(s(60, 70), s(58, 70)).verdict, 'worse');
 });
 
+test('balanced grades four subs spread to the wall middles above four side by side in a corner, though the cluster is louder', () => {
+  // A 20 x 15 ft room with 5 speakers and two rows of four seats, as Sean set it up.
+  const room = { w: 20, d: 15, h: 8 }, ctx = { room, wallAbsorption: 0.06, floorAbsorption: 0.15 };
+  const speaker = (x, y) => ({ x, y, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true });
+  const sub = ([x, y]) => ({ x, y, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true });
+  const rows = [{ x: 10, y: 8.15, z: 3.5, seats: 4, spacingFt: 2, facing: 0 }, { x: 10, y: 10.45, z: 3.5, seats: 4, spacingFt: 2, facing: 0 }];
+  const seats = P.seatPositions(rows), reference = { x: 10, y: 8.15, z: 3.5 };
+  const speakers = [speaker(5.1, 1.5), speaker(10, 1.5), speaker(14.9, 1.5), speaker(1.5, 11.5), speaker(18.5, 11.5)];
+  const freqs = P.logSpacedFreqs(20, 120, 96);
+  const grade = (spots) => P.gradePlacement(seats, reference, freqs, P.timeAlignedSources(speakers.concat(spots.map(sub)), reference, room), ctx, 'balanced');
+  const cluster = grade([[1.5, 13.75], [3.25, 13.83], [4.85, 13.92], [6.27, 13.75]]);
+  const middles = grade([[10, 0.25], [10, 14.75], [0.25, 7.5], [19.75, 7.5]]);
+  assert.ok(cluster.stats.avgMean > middles.stats.avgMean + 2, `the cluster is louder (${(cluster.stats.avgMean - middles.stats.avgMean).toFixed(1)} dB)`);
+  assert.ok(middles.seatToSeatDb < cluster.seatToSeatDb && middles.stats.worstStdDev < cluster.stats.worstStdDev, 'the middles are more even, seat to seat and across frequency');
+  assert.ok(middles.stats.score > cluster.stats.score + 1, `and grade higher (${(middles.stats.score - cluster.stats.score).toFixed(1)} dB)`);
+});
+
 test('checkSubMoves keeps the current subs unless the picked ones grade meaningfully higher', () => {
   const room = { w: 18, d: 14, h: 8 };
   const ctx = { room, wallAbsorption: 0.3 };
@@ -1116,29 +1137,29 @@ test('checkSubMoves keeps the current subs unless the picked ones grade meaningf
     seats: [7, 9, 11].map((x, i) => ({ x, y: 9, z: 3.5, weight: i === 1 ? 1 : 0.7 })), reference: { x: 9, y: 9, z: 3.5 },
     freqs: P.logSpacedFreqs(20, 120, 48), otherSources: [main(1, 4), main(2, 9), main(3, 14)], physicsCtx: ctx, mode: 'balanced'
   };
-  const a = [sub(11, 1.75, 0.4), sub(12, 2.75, 0.4)], b = [sub(11, 0.5, 13.5), sub(12, 16.5, 13.5)];
+  const a = [sub(11, 0.5, 0.4), sub(12, 17.5, 13.6)], b = [sub(11, 9, 0.4), sub(12, 9, 13.6)];
   const grade = (subs) => P.gradePlacement(base.seats, base.reference, base.freqs, base.otherSources.concat(subs), ctx, 'balanced').stats.score;
   const gain = grade(b) - grade(a);
-  assert.ok(gain < -2, `the back-wall pair grades lower here (${gain.toFixed(2)} dB)`);
+  assert.ok(gain < -2, `the front and back wall middles grade lower here (${gain.toFixed(2)} dB)`);
 
   const kept = P.checkSubMoves({ ...base, current: a, picked: b });
-  assert.deepStrictEqual(kept.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  assert.deepStrictEqual(kept.placedSubs.map(s => [s.x, s.y]), [[0.5, 0.4], [17.5, 13.6]]);
   assert.deepStrictEqual(kept.moved, [false, false]);
   approx(kept.gainDb, gain, 1e-9);
   assert.notStrictEqual(kept.placedSubs[0], a[0], 'copies, not the caller\'s subs');
 
   const taken = P.checkSubMoves({ ...base, current: b, picked: a });
-  assert.deepStrictEqual(taken.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  assert.deepStrictEqual(taken.placedSubs.map(s => [s.x, s.y]), [[0.5, 0.4], [17.5, 13.6]]);
   assert.deepStrictEqual(taken.moved, [true, true]);
   approx(taken.gainDb, -gain, 1e-9);
 
   // A gain under PLACEMENT_GAIN_DB.modest is not worth a move.
-  const small = [sub(11, 0.5, 0.4), sub(12, 1.5, 0.4)];
+  const small = [sub(11, 0.5, 7), sub(12, 17.5, 7)];
   const smallGain = grade(small) - grade(a);
   assert.ok(smallGain > 0 && smallGain < P.PLACEMENT_GAIN_DB.modest, `a small gain (${smallGain.toFixed(2)} dB)`);
   const tooSmall = P.checkSubMoves({ ...base, current: a, picked: small });
   assert.deepStrictEqual(tooSmall.moved, [false, false]);
-  assert.deepStrictEqual(tooSmall.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  assert.deepStrictEqual(tooSmall.placedSubs.map(s => [s.x, s.y]), [[0.5, 0.4], [17.5, 13.6]]);
   approx(tooSmall.gainDb, smallGain, 1e-9);
 
   const same = P.checkSubMoves({ ...base, current: a, picked: a.map(s => ({ ...s })) });
@@ -1623,7 +1644,7 @@ test('a new sub is scored as the sub that gets placed (NEW_SUB_DEFAULTS), not as
   const asPlaced = P.scoreSubPosition({ ...P.NEW_SUB_DEFAULTS, ...pos }, [], room, freqList, lp, ctx);
   const asFullRange = P.scoreSubPosition(pos, [], room, freqList, lp, ctx);
   approx(best.score, asPlaced.score, 1e-9, 'score of the winning candidate');
-  assert.ok(Math.abs(asPlaced.score - asFullRange.score) > 1, 'expected the 80Hz low-pass to change the score above 80Hz');
+  assert.ok(Math.abs(asPlaced.score - asFullRange.score) > 0.5, 'expected the 80Hz low-pass to change the score above 80Hz');
   assert.strictEqual(result.placedSubs[0].freqHigh, P.NEW_SUB_DEFAULTS.freqHigh);
 });
 
@@ -1725,19 +1746,22 @@ test('REGRESSION: polishSubPlacements does not send each sub to the spot by the 
   const ctx = { room, wallAbsorption: 0.3 };
   const main = (x, y) => ({ x, y, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 200, enabled: true });
   const subs = [
-    { id: 1, x: 3, y: 12.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 1, x: 3, y: 2, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
     { id: 2, x: 14, y: 12.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
   ];
   const result = P.polishSubPlacements({
     room, otherSources: [main(1.5, 2), main(7, 2), main(12, 2), main(1, 10.1), main(17, 10.1)], subs,
     freqList: Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12), listenerPositions: [5, 7, 9].map((x, i) => ({ x, y: 9.4, z: 3.5, weight: i === 1 ? 1 : 0.7 })),
-    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'balanced', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
+    physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'nullAvoidance', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
   });
-  // The search picks (17.5, 1.5) and (0.5, 11.5); before the fix sub 1 went
-  // across the room to (17.5, 1.5), 31.7 ft of travel in all.
-  assert.deepStrictEqual(result.placedSubs.map(p => [p.x, p.y]), [[0.5, 11.5], [17.5, 1.5]]);
+  // The search picks (2.5, 11.5) for sub 1 and (5.5, 1.5) for sub 2; taken
+  // as picked, sub 1 would cross the room from (3, 2) while sub 2 came all
+  // the way back, 23.4 ft of travel in all.
+  const n = result.polishResults.length;
+  assert.deepStrictEqual([result.polishResults[n - 2].best, result.polishResults[n - 1].best].map(b => [b.x, b.y]), [[2.5, 11.5], [5.5, 1.5]]);
+  assert.deepStrictEqual(result.placedSubs.map(p => [p.x, p.y]), [[5.5, 1.5], [2.5, 11.5]]);
   const travel = result.placedSubs.reduce((sum, p, i) => sum + Math.hypot(p.x - subs[i].x, p.y - subs[i].y), 0);
-  approx(travel, 14.2, 0.05, 'total travel');
+  approx(travel, 14.1, 0.05, 'total travel');
   assert.deepStrictEqual(result.moved, [true, true]);
 });
 
@@ -2349,7 +2373,7 @@ test('REGRESSION: omitting weight on every listener reproduces the exact pre-wei
   const listeners = [{ x: 9, y: 6, z: 3.5 }, { x: 3, y: 10, z: 3.5 }];
   const freqs = [40, 60, 80, 100];
   const result = P.scoreSubPosition({ x: 9, y: 6.75, z: 1 }, [source], room, freqs, listeners, ctx);
-  const expected = result.avgMean - (result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5;
+  const expected = -(result.worstStdDev * P.BALANCED_FLATNESS_WEIGHT) - Math.max(0, result.avgMean - result.worstMinDb - 20) * 0.5 - P.seatToSeatVariationDb(result.perListenerDb);
   approx(result.score, expected, 1e-9, 'unweighted score should exactly match the original formula');
 });
 

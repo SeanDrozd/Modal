@@ -60,7 +60,7 @@
     mode: { term: 'Room mode', text: "A frequency at which bass reflecting between the room's surfaces reinforces itself into a standing wave. At that frequency some parts of the room are loud and others nearly silent." },
     null: { term: 'Null', text: 'A frequency at which reflections cancel the direct sound at one spot, so the level drops sharply there. More power or EQ does not fill a null; moving the sub or the seat does.' },
     roomCorrection: { term: 'Room correction', text: "The AVR's automatic setup: it plays test tones through a supplied microphone, then sets speaker distances, levels and EQ. Audyssey, YPAO, Dirac Live, MCACC, AccuEQ and ARC are common names for it." },
-    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: average level minus response variation, with a further penalty for a null more than 20 dB deep. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
+    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. Level does not count, since the sub\'s gain sets it. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
     variation: { term: 'Response variation', text: 'The standard deviation of level across the frequency range, at the seat where it is largest. Lower is more even.' },
     seatToSeat: { term: 'Seat-to-seat variation', text: 'Half the gap between the loudest and the quietest seat at each frequency, averaged over the range. Lower means every seat gets closer to the same bass.' },
     spatialAverage: { term: 'Spatial averaging', text: 'The response is averaged over 20 points within 2 ft (0.6 m) of the seat, not read at one exact point, much like moving a measurement mic around the listening position.' }
@@ -675,7 +675,7 @@
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
     const SCORE_COUNTS = {
-      balanced: 'The score weighs level, evenness and the deepest null across every seat. The chart shows the main seat only.',
+      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls, but not level, since the sub\'s gain sets it. The chart shows the main seat only.',
       nullAvoidance: 'With room correction, the score counts only the deepest null at any seat, since correction can tame the rest. The chart shows the main seat only.'
     };
     const VERDICTS = {

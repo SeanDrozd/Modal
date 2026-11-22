@@ -232,11 +232,11 @@ function applyAppearanceAttrs(mode, theme){
     <div class="section-body">
       <div class="row"><label>Optimize for</label>
         <select id="optimizerMode" style="width:auto; flex:1;">
-          <option value="balanced">Loud &amp; flat (default)</option>
+          <option value="balanced">Even (default)</option>
           <option value="nullAvoidance">Null avoidance (room correction)</option>
         </select>
       </div>
-      <div class="hint" id="optimizerModeHint">Balances average level and flatness across the band. Switch to "Null avoidance" if you have room correction/EQ available: it ignores level and peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
+      <div class="hint" id="optimizerModeHint">Scores how even the bass is: flat across the band at every seat, the same from seat to seat, and without deep nulls. Level does not count, since the sub's gain sets it. Switch to "Null avoidance" if you have room correction/EQ available: it ignores peaks (which EQ can fix) and scores purely by the deepest null, which EQ can't fill in.</div>
       <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
         <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
         <span style="color:var(--text-dim);font-size:12.5px;">to</span>
