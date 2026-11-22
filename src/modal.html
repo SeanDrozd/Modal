@@ -2126,13 +2126,14 @@ function applyAppearanceAttrs(mode, theme){
 
     if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
-    const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
+    const freqList = resultFreqs(freqLow, freqHigh);
     const scene = optimizerScene();
 
     const result = await RoomPhysics.optimizeMultipleSubsAsync({
       room: scene.room, otherSources: scene.sources, numSubs, freqList, listenerPositions: scene.listenerPositions,
       physicsCtx: scene.physicsCtx, offLimitZones: scene.offLimitZones, allowedZones: scene.allowedZones, preferredZones: scene.preferredZones,
       gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode, timeAlignTo: scene.timeAlignTo,
+      seatAveraging: RoomPhysics.SEAT_AVERAGING,
       onProgress: optimizerStatusUpdater(status, numSubs),
       onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
     });
@@ -2186,7 +2187,7 @@ function applyAppearanceAttrs(mode, theme){
 
     if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
-    const freqList = RoomPhysics.optimizerFreqList(freqLow, freqHigh);
+    const freqList = resultFreqs(freqLow, freqHigh);
 
     // scene.sources is gated by sourcesEnabled (the master "All" mute
     // toggle), matching every other active-sources computation in this
@@ -2202,7 +2203,7 @@ function applyAppearanceAttrs(mode, theme){
     }
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
-    let refinedSubs, lastBest, lastAllCandidates, alternatives;
+    let refinedSubs, lastBest, lastAllCandidates;
 
     if(existingSubs.length === 1){
       const result = await RoomPhysics.optimizeSubPlacementAsync({
@@ -2210,22 +2211,17 @@ function applyAppearanceAttrs(mode, theme){
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
         excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
-        // averaged round each seat like the grading in checkSubMoves below,
-        // or the pick can grade no better than where the sub already is
-        seatAveraging: RoomPhysics.SEARCH_SEAT_AVERAGING,
+        seatAveraging: RoomPhysics.SEAT_AVERAGING,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
       lastBest = result.best;
       lastAllCandidates = result.allCandidates;
-      // the search's runners-up, re-graded below so the card's measure has the final say
-      alternatives = RoomPhysics.topCandidates(result.allCandidates, 5).slice(1)
-        .map(c => [Object.assign({}, existingSubs[0], { x: c.x, y: c.y, z: c.z })]);
     } else {
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
-        gridStepFt: step, mode: optimizerMode, timeAlignTo,
+        gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING,
         onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield
       });
       refinedSubs = result.placedSubs;
@@ -2233,12 +2229,11 @@ function applyAppearanceAttrs(mode, theme){
       lastBest = lastRound ? lastRound.best : null;
       lastAllCandidates = lastRound ? lastRound.allCandidates : [];
     }
-    // The search scores candidates more coarsely than the result card grades
-    // them, so the card's measure grades its pick (and with one sub, its
-    // runners-up) and a move is only suggested when that grades higher too.
+    // A move is only suggested when the result card would grade it
+    // meaningfully higher than the subs as they stand.
     const check = RoomPhysics.checkSubMoves({
       seats: listenerPositions, reference, freqs: resultFreqs(freqLow, freqHigh), otherSources,
-      current: existingSubs, picked: refinedSubs, alternatives, physicsCtx: scene.physicsCtx, mode: optimizerMode, timeAlignTo
+      current: existingSubs, picked: refinedSubs, physicsCtx: scene.physicsCtx, mode: optimizerMode, timeAlignTo
     });
     refinedSubs = check.placedSubs;
     const movedCount = check.moved.filter(Boolean).length;

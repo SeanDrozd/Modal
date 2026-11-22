@@ -1146,69 +1146,49 @@ test('checkSubMoves keeps the current subs unless the picked ones grade meaningf
   assert.deepStrictEqual(same.moved, [false, false]);
 });
 
-test('checkSubMoves grades every alternative and judges the one that grades highest', () => {
-  const room = { w: 18, d: 14, h: 8 };
-  const ctx = { room, wallAbsorption: 0.3 };
-  const main = (id, x) => ({ id, x, y: 1, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true });
-  const sub = (x, y) => ({ id: 11, x, y, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true });
-  const base = {
-    seats: [7, 9, 11].map((x, i) => ({ x, y: 9, z: 3.5, weight: i === 1 ? 1 : 0.7 })), reference: { x: 9, y: 9, z: 3.5 },
-    freqs: P.logSpacedFreqs(20, 120, 48), otherSources: [main(1, 4), main(2, 14)], physicsCtx: ctx, mode: 'nullAvoidance'
-  };
-  const grade = (subs) => P.gradePlacement(base.seats, base.reference, base.freqs, base.otherSources.concat(subs), ctx, base.mode).stats.score;
-  const current = [sub(9, 7)];
-  const spots = [[0.5, 0.5], [17.5, 13.5], [9, 0.5], [0.5, 7], [12, 4]].map(([x, y]) => [sub(x, y)]);
-  const gains = spots.map(subs => grade(subs) - grade(current));
-  const bestIdx = gains.indexOf(Math.max(...gains));
-  assert.ok(gains[bestIdx] >= P.PLACEMENT_GAIN_DB.modest, `some spot is worth a move (${gains.map(g => g.toFixed(1)).join(', ')})`);
-  const pickedIdx = bestIdx === 0 ? 1 : 0;
-  const alternatives = spots.filter((_, i) => i !== pickedIdx).concat([current.map(s => ({ ...s }))]);
-  const result = P.checkSubMoves({ ...base, current, picked: spots[pickedIdx], alternatives });
-  assert.deepStrictEqual(result.placedSubs.map(s => [s.x, s.y]), [[spots[bestIdx][0].x, spots[bestIdx][0].y]]);
-  assert.deepStrictEqual(result.moved, [true]);
-  approx(result.gainDb, gains[bestIdx], 1e-9);
-  // Without them, only the pick is judged.
-  approx(P.checkSubMoves({ ...base, current, picked: spots[pickedIdx] }).gainDb, gains[pickedIdx], 1e-9);
-  // An alternative that is the current placement is not a move.
-  assert.strictEqual(P.checkSubMoves({ ...base, current, picked: current, alternatives: [current] }).gainDb, null);
-});
-
-test('topCandidates returns the highest-scoring candidates, best first', () => {
-  const all = [{ x: 1, score: 3 }, { x: 2, score: 9 }, { x: 3, score: -1 }, { x: 4, score: 5 }];
-  assert.deepStrictEqual(P.topCandidates(all, 2).map(c => c.x), [2, 4]);
-  assert.deepStrictEqual(P.topCandidates(all, 10).map(c => c.x), [2, 4, 1, 3]);
-  assert.deepStrictEqual(all.map(c => c.x), [1, 2, 3, 4], 'the input is not reordered');
-});
-
-test('scoreSubPosition with seatAveraging scores the spatially averaged response at each seat', () => {
+test('scoreSubPosition with SEAT_AVERAGING at the card\'s frequencies is gradePlacement\'s score', () => {
   const room = { w: 12, d: 9, h: 8 };
   const ctx = { room, wallAbsorption: 0.2 };
   const mains = [{ x: 3.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true }];
   const seats = [{ x: 6, y: 5.6, z: 3.5, weight: 1 }, { x: 8, y: 5.6, z: 3.5, weight: 0.5 }];
-  const freqs = P.optimizerFreqList(20, 120);
-  const sub = { x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true };
-  assert.deepStrictEqual(P.SEARCH_SEAT_AVERAGING, { radiusFt: 2, numPoints: 6 });
+  const freqs = P.logSpacedFreqs(20, 120, 48);
+  const sub = { name: 'SW1', x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true };
   for(const mode of ['balanced', 'nullAvoidance']){
-    const got = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, [], undefined, P.SEARCH_SEAT_AVERAGING);
-    const candidate = Object.assign({ name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }, sub);
-    const { perCenterDb } = P.spatiallyAveragedResponseMulti(seats, freqs, mains.concat([candidate]), ctx, P.SEARCH_SEAT_AVERAGING);
-    approx(got.score, P.scoreResponses(perCenterDb, [1, 0.5], mode).score, 1e-9, mode);
+    const got = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, [], undefined, P.SEAT_AVERAGING);
+    const card = P.gradePlacement(seats, seats[0], freqs, mains.concat([sub]), ctx, mode).stats;
+    approx(got.score, card.score, 1e-9, mode);
+    approx(got.worstMinDb, card.worstMinDb, 1e-9, mode);
     const point = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, []);
     assert.ok(Math.abs(point.score - got.score) > 1e-6, `${mode}: averaging changes the score`);
   }
-  // A caller's own mode list gives the same averaged responses.
-  const plain = P.spatiallyAveragedResponseMulti(seats, freqs, mains, ctx, { radiusFt: 2, numPoints: 6 });
-  const withModes = P.spatiallyAveragedResponseMulti(seats, freqs, mains, ctx, { radiusFt: 2, numPoints: 6, modes: P.enumerateModes(ctx) });
-  assert.deepStrictEqual(withModes.perCenterDb, plain.perCenterDb);
+});
+
+test('spatiallyAveragedResponseMulti gives the same responses from a caller\'s modes and sampleShapes', () => {
+  const ctx = { room: { w: 12, d: 9, h: 8 }, wallAbsorption: 0.2 };
+  const sources = [{ x: 3.5, y: 1.5, z: 3, levelDb: 0, delayMs: 2, freqLow: 20, freqHigh: 20000, enabled: true }];
+  const centers = [{ x: 6, y: 5.6, z: 3.5 }, { x: 8, y: 5.6, z: 3.5 }];
+  const freqs = [25, 40, 63, 100];
+  const opts = { radiusFt: 1.5, numPoints: 7 };
+  const plain = P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts);
+  const modes = P.enumerateModes(ctx);
+  assert.deepStrictEqual(P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, { ...opts, modes }).perCenterDb, plain.perCenterDb);
+  // sampleShapes: [center][samplePoint] = modeShapesAtPoint, here built by hand
+  const sampleShapes = centers.map(c => P.sphereSamplePoints(c.x, c.y, c.z, 1.5, 7).map(p => P.modeShapesAtPoint(p.x, p.y, p.z, modes)));
+  assert.deepStrictEqual(P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, { modes, sampleShapes }).perCenterDb, plain.perCenterDb);
+  // and each center matches the single-center function, which sums with computeFieldAtPoint
+  centers.forEach((c, i) => {
+    const single = P.spatiallyAveragedResponse(c.x, c.y, c.z, freqs, sources, ctx, opts);
+    assert.deepStrictEqual(plain.perCenterDb[i], single.map(r => r.db));
+  });
 });
 
 // Regression: in a 12x9 ft room with two mains and one sub, with room
 // correction on, re-optimizing the sub found nothing worth a move wherever
-// the sub started. The search scored one point per seat and so picked the
-// same spot every time, one the result card's averaged grading put no
-// better than mid-room; scored round each seat, its pick grades well
-// clear of the 2 dB a move needs.
-test('a single-sub search with seatAveraging finds a move from mid-room that checkSubMoves keeps', () => {
+// the sub started. The search then scored one point per seat at 13 evenly
+// spaced frequencies and so picked the same spot every time, one the
+// result card's grading put no better than mid-room. Scored the card's
+// way, the search's pick is the spot the card grades highest.
+test('a single-sub search scored the card\'s way picks the spot the card grades highest', () => {
   const room = { w: 12, d: 9, h: 8 };
   const ctx = { room, wallAbsorption: 0.2 };
   const main = (id, x) => ({ id, x, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true, isMain: true });
@@ -1217,21 +1197,55 @@ test('a single-sub search with seatAveraging finds a move from mid-room that che
   const reference = { x: 6, y: 6.5, z: 3.5 };
   const current = [{ id: 9, name: 'SW1', x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true }];
   const mode = 'nullAvoidance';
-  const search = (seatAveraging) => P.optimizeSubPlacement({
-    room, otherSources: mains, freqList: P.optimizerFreqList(20, 120), listenerPositions: seats, physicsCtx: ctx,
+  const cardFreqs = P.logSpacedFreqs(20, 120, 48);
+  const search = (freqList, seatAveraging) => P.optimizeSubPlacement({
+    room, otherSources: mains, freqList, listenerPositions: seats, physicsCtx: ctx,
     offLimitZones: [], gridStepFt: 0.5, subHeightFt: 1, mode, excludePoints: P.sourceExclusionPoints(mains, room),
     candidateTemplate: current[0], timeAlignTo: reference, seatAveraging
-  }).best;
-  const check = (best) => P.checkSubMoves({
-    seats, reference, freqs: P.logSpacedFreqs(20, 120, 48), otherSources: mains, current,
-    picked: [Object.assign({}, current[0], { x: best.x, y: best.y, z: best.z })], physicsCtx: ctx, mode, timeAlignTo: reference
   });
-  const atPoints = check(search());
-  assert.ok(atPoints.gainDb < P.PLACEMENT_GAIN_DB.modest, `the single-point pick grades only ${atPoints.gainDb.toFixed(2)} dB better`);
+  const at = (c) => [Object.assign({}, current[0], { x: c.x, y: c.y, z: c.z })];
+  const check = (best) => P.checkSubMoves({
+    seats, reference, freqs: cardFreqs, otherSources: mains, current, picked: at(best), physicsCtx: ctx, mode, timeAlignTo: reference
+  });
+  const atPoints = check(search(Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12)).best);
+  assert.ok(atPoints.gainDb < P.PLACEMENT_GAIN_DB.modest, `the old single-point pick grades only ${atPoints.gainDb.toFixed(2)} dB better`);
   assert.deepStrictEqual(atPoints.moved, [false]);
-  const averaged = check(search(P.SEARCH_SEAT_AVERAGING));
-  assert.ok(averaged.gainDb >= 3, `the averaged pick grades ${averaged.gainDb.toFixed(2)} dB better`);
-  assert.deepStrictEqual(averaged.moved, [true]);
+
+  const result = search(cardFreqs, P.SEAT_AVERAGING);
+  const kept = check(result.best);
+  assert.ok(kept.gainDb >= 6, `the card-scored pick grades ${kept.gainDb.toFixed(2)} dB better`);
+  assert.deepStrictEqual(kept.moved, [true]);
+  // every candidate's search score is the card's grade of the sub there
+  const grade = (c) => P.gradePlacement(seats, reference, cardFreqs, P.timeAlignedSources(mains.concat(at(c)), reference, room), ctx, mode).stats.score;
+  for(let i = 0; i < result.allCandidates.length; i += 37) approx(result.allCandidates[i].score, grade(result.allCandidates[i]), 1e-9);
+  approx(result.best.score, grade(result.best), 1e-9);
+});
+
+test('optimizeMultipleSubs and polishSubPlacements score with seatAveraging when given', () => {
+  const room = { w: 12, d: 9, h: 8 };
+  const ctx = { room, wallAbsorption: 0.2 };
+  const mains = [{ id: 1, x: 6, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true, isMain: true }];
+  const seats = [{ x: 6, y: 6.5, z: 3.5, weight: 1 }];
+  const freqs = [30, 50, 70, 90];
+  const base = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx, offLimitZones: [], gridStepFt: 1.5, subHeightFt: 1, mode: 'balanced' };
+  // the last scan's best score is scoreSubPosition's for that sub against the rest, averaged or not
+  const lastScore = (result, seatAveraging) => {
+    const last = result.polishResults[result.polishResults.length - 1].best;
+    const rest = result.placedSubs.filter(s => s.x !== last.x || s.y !== last.y);
+    const sub = result.placedSubs.find(s => s.x === last.x && s.y === last.y);
+    return [last.score, P.scoreSubPosition(sub, mains.concat(rest), room, freqs, seats, ctx, 'balanced', [], undefined, seatAveraging).score];
+  };
+  for(const seatAveraging of [undefined, P.SEAT_AVERAGING]){
+    const placed = P.optimizeMultipleSubs({ ...base, numSubs: 2, seatAveraging });
+    assert.strictEqual(placed.placedSubs.length, 2);
+    const [got, expected] = lastScore(placed, seatAveraging);
+    approx(got, expected, 1e-9, seatAveraging ? 'averaged' : 'single point');
+    const polished = P.polishSubPlacements({ ...base, subs: placed.placedSubs, seatAveraging });
+    const [gotP, expectedP] = lastScore(polished, seatAveraging);
+    approx(gotP, expectedP, 1e-9, seatAveraging ? 'averaged polish' : 'single-point polish');
+  }
+  const point = P.optimizeMultipleSubs({ ...base, numSubs: 2 }), averaged = P.optimizeMultipleSubs({ ...base, numSubs: 2, seatAveraging: P.SEAT_AVERAGING });
+  assert.notStrictEqual(point.roundResults[0].best.score, averaged.roundResults[0].best.score, 'the two measures score differently');
 });
 
 test('checkSubMoves grades the picked subs time-aligned when asked, the current ones as they stand', () => {
@@ -1714,7 +1728,7 @@ test('REGRESSION: polishSubPlacements does not send each sub to the spot by the 
   ];
   const result = P.polishSubPlacements({
     room, otherSources: [main(1.5, 2), main(7, 2), main(12, 2), main(1, 10.1), main(17, 10.1)], subs,
-    freqList: P.optimizerFreqList(20, 120), listenerPositions: [5, 7, 9].map((x, i) => ({ x, y: 9.4, z: 3.5, weight: i === 1 ? 1 : 0.7 })),
+    freqList: Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12), listenerPositions: [5, 7, 9].map((x, i) => ({ x, y: 9.4, z: 3.5, weight: i === 1 ? 1 : 0.7 })),
     physicsCtx: ctx, offLimitZones: [], allowedZones: [], gridStepFt: 1, mode: 'balanced', timeAlignTo: { x: 7, y: 9.4, z: 3.5, facing: 0 }
   });
   // The search picks (17.5, 1.5) and (0.5, 11.5); before the fix sub 1 went
@@ -2447,6 +2461,24 @@ testAsync('optimizeSubPlacementAsync actually awaits onYield at the expected chu
   assert.strictEqual(yieldCount, expectedYields, `expected ${expectedYields} yields for ${totalCells} cells at yieldEvery=5, got ${yieldCount}`);
 });
 
+testAsync('optimizeSubPlacementAsync without yieldEvery yields by elapsed time, not by cell count', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const ctx = { room, wallAbsorption: 0.51 };
+  const opts = { room, otherSources: [], freqList: [60], listenerPositions: [{x:9,y:9,z:3.5}], physicsCtx: ctx, offLimitZones: [], gridStepFt: 1, subHeightFt: 1 };
+  const totalCells = P.countGridCells(room, 1);
+  // A clock that moves 30 ms each time it is read: 60 ms have passed at
+  // every second cell, over the 50 ms between yields.
+  const realNow = Date.now;
+  let clock = 0, yieldCount = 0;
+  Date.now = () => (clock += 30);
+  let result;
+  try {
+    result = await P.optimizeSubPlacementAsync(Object.assign({}, opts, { onYield: () => { yieldCount++; return Promise.resolve(); } }));
+  } finally { Date.now = realNow; }
+  assert.strictEqual(yieldCount, Math.floor(totalCells / 2) + 1, `${yieldCount} yields for ${totalCells} cells`);
+  assert.deepStrictEqual(result.best, P.optimizeSubPlacement(opts).best);
+});
+
 testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex, phase) pairs', async () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
@@ -2720,7 +2752,7 @@ test('maxSchroederFrequency is the highest Schroeder frequency over 24 samples f
   assert.ok(P.maxSchroederFrequency(ctx) > P.schroederFrequency(ctx.room, P.estimatedT60(ctx.room, 80, ctx)), 'the drywall resonance near 80 Hz is not the least absorptive frequency');
 });
 
-console.log('\n-- seatPositions / measureAtSeats / gradePlacement / optimizerFreqList --');
+console.log('\n-- seatPositions / measureAtSeats / gradePlacement --');
 
 test('seatPositions flattens rows in rank order with each seat\'s rank, offset and weight', () => {
   const rows = [
@@ -2773,14 +2805,6 @@ test('gradePlacement scores the seats with their weights and reports seat-to-sea
     assert.deepStrictEqual(g.stats, P.scoreResponses(m.perSeatDb, [0.5, 1, 0.5, 0.5], mode));
     approx(g.seatToSeatDb, P.seatToSeatVariationDb(m.perSeatDb), 1e-12);
   }
-});
-
-test('optimizerFreqList steps about 12 times across the band, never under 2 Hz apart', () => {
-  const wide = P.optimizerFreqList(20, 120);
-  assert.strictEqual(wide.length, 13);
-  approx(wide[0], 20, 1e-12); approx(wide[12], 120, 1e-9);
-  approx(wide[1] - wide[0], 100 / 12, 1e-9);
-  assert.deepStrictEqual(P.optimizerFreqList(20, 30), [20, 22, 24, 26, 28, 30]);
 });
 
 console.log('\n-- Floor-plan modes for right-angle rooms (polygonArea / isPointInPolygon / solveFloorPlan) --');
@@ -3306,7 +3330,7 @@ test('floor-plan modes: the coarse preview grid stays close to the full one in a
 test('the sub optimizer runs on floor-plan modes and scores the spots as the rectangle formula does', () => {
   const mains = [{ x: 5, y: 0.75, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
   const options = (physicsCtx) => ({
-    room: rectRoom, otherSources: mains, freqList: P.optimizerFreqList(20, 120), physicsCtx, gridStepFt: 2.5,
+    room: rectRoom, otherSources: mains, freqList: Array.from({ length: 13 }, (_, i) => 20 + i * 100 / 12), physicsCtx, gridStepFt: 2.5,
     listenerPositions: [{ x: 10, y: 9, z: 3.5 }, { x: 12, y: 9, z: 3.5 }], candidateTemplate: P.NEW_SUB_DEFAULTS
   });
   const formula = P.optimizeSubPlacement(options({ room: rectRoom, wallAbsorption: 0.05 }));
@@ -3321,6 +3345,23 @@ test('the sub optimizer runs on floor-plan modes and scores the spots as the rec
   assert.ok(diffs[diffs.length - 1] < 1.5, `largest score difference ${diffs[diffs.length - 1]} dB`);
   approx(numeric.best.score, formula.best.score, 0.1);
   assert.deepStrictEqual([numeric.best.x, numeric.best.y], [formula.best.x, formula.best.y]);
+});
+
+test('fieldFromModeShapes over modeShapesAtPoint is computeFieldAtPoint, formula and floor-plan modes alike', () => {
+  const sources = [{ x: 6, y: 0.75, z: 1, levelDb: 0, delayMs: 3, freqLow: 20, freqHigh: 20000 }, { x: 15, y: 4, z: 3, levelDb: -3, delayMs: 0, freqLow: 20, freqHigh: 20000 }];
+  // the last point is outside the L's floor, where the plan mirrors it back in
+  const points = [[12, 10, 3.5], [3.3, 2.1, 0.4], [19.9, 14.2, 7.6], [23, 19, 3]];
+  for(const ctx of [{ room: rectRoom, wallAbsorption: 0.05 }, { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan }]){
+    const modes = P.enumerateModes(ctx);
+    for(const freq of [31, 57.5, 110]){
+      const precomputed = P.precomputeModalField(sources, freq, ctx, modes);
+      for(const [x, y, z] of points){
+        const shapes = P.modeShapesAtPoint(x, y, z, modes);
+        assert.strictEqual(shapes.length, modes.length);
+        assert.deepStrictEqual(P.fieldFromModeShapes(shapes, precomputed), P.computeFieldAtPoint(x, y, z, precomputed));
+      }
+    }
+  }
 });
 
 test('estimatedT60 and schroederFrequency use a polygon room\'s own floor area and walls', () => {

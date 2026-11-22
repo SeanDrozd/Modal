@@ -414,6 +414,49 @@
     return { re, im };
   }
 
+  // Every mode's shape function at one point (feet), in the order of
+  // `modes` (enumerateModes output). The shapes depend only on the room and
+  // the point, not on the sources or the frequency, so a caller that
+  // evaluates the same point again and again (a seat across a frequency
+  // sweep, or across every candidate of a sub search) works them out once
+  // and sums with fieldFromModeShapes instead of computeFieldAtPoint.
+  function modeShapesAtPoint(px, py, pz, modes){
+    const pxM = px * FT_TO_M, pyM = py * FT_TO_M, pzM = pz * FT_TO_M;
+    const out = new Float64Array(modes.length);
+    const plan = modes.floorPlan;
+    if(plan){
+      const { cells, weights } = floorPlanStencil(plan, px, py);
+      const { numModes, shapes } = plan;
+      const cosZ = [];
+      for(let i = 0; i < modes.length; ){
+        const shape = modes[i].shape;
+        let phi = 0;
+        for(let q = 0; q < cells.length; q++) phi += weights[q] * shapes[cells[q] * numModes + shape];
+        for(; i < modes.length && modes[i].shape === shape; i++){
+          const mode = modes[i];
+          out[i] = phi * (cosZ[mode.nz] ?? (cosZ[mode.nz] = Math.cos(mode.invLz * pzM)));
+        }
+      }
+      return out;
+    }
+    for(let i = 0; i < modes.length; i++){
+      const mode = modes[i];
+      out[i] = Math.cos(mode.invLx * pxM) * Math.cos(mode.invLy * pyM) * Math.cos(mode.invLz * pzM);
+    }
+    return out;
+  }
+  // computeFieldAtPoint for a point given as its modeShapesAtPoint (from the
+  // same modes `precomputed` was built with). The same sum in the same
+  // order, so the same result.
+  function fieldFromModeShapes(shapes, precomputed){
+    let re = 0, im = 0;
+    for(let i = 0; i < precomputed.length; i++){
+      re += precomputed[i].coefRe * shapes[i];
+      im += precomputed[i].coefIm * shapes[i];
+    }
+    return { re, im };
+  }
+
   // Factors computeFieldAtPoint's sum for a whole map at one listening
   // height. Every mode shape is cos(kx*x)*cos(ky*y)*cos(kz*z), and only a
   // few distinct kx values exist (11 for a 20 x 15 x 8 ft room's 261 modes),
@@ -1656,19 +1699,22 @@
   // centers: [{x,y,z}, ...]
   // Returns { freqs, perCenterDb }, where perCenterDb[i][j] is the dB at
   // centers[i] for freqs[j] (same order as the input freqs array).
-  // opts.modes: the room's enumerateModes(ctx), when the caller has it already.
+  // The mode shapes at every sample point are worked out once and shared
+  // by every frequency (see modeShapesAtPoint). A caller that averages at
+  // the same centers again and again, with other sources each time, can
+  // pass what does not change between its calls:
+  //   opts.modes: the room's enumerateModes(ctx).
+  //   opts.sampleShapes: centerSampleShapes(centers, modes, opts).
   function spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts){
-    const radiusFt = opts?.radiusFt ?? 2;
-    const numPoints = opts?.numPoints ?? 20;
     const modes = opts?.modes || enumerateModes(ctx);
-    const centerSamples = centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints));
+    const sampleShapes = opts?.sampleShapes || centerSampleShapes(centers, modes, opts);
     const perCenterDb = centers.map(() => []);
     for(const freq of freqs){
       const precomputed = precomputeModalField(sources, freq, ctx, modes);
-      centerSamples.forEach((samplePoints, i) => {
+      sampleShapes.forEach((samplePoints, i) => {
         let sumPower = 0;
-        for(const p of samplePoints){
-          const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed);
+        for(const shapes of samplePoints){
+          const { re, im } = fieldFromModeShapes(shapes, precomputed);
           sumPower += re*re + im*im;
         }
         const avgPower = sumPower / samplePoints.length;
@@ -1676,6 +1722,15 @@
       });
     }
     return { freqs, perCenterDb };
+  }
+
+  // modeShapesAtPoint at every point of the averaging cloud (opts.radiusFt,
+  // opts.numPoints, as spatiallyAveragedResponseMulti) round each center:
+  // [center][samplePoint] = shapes.
+  function centerSampleShapes(centers, modes, opts){
+    const radiusFt = opts?.radiusFt ?? 2;
+    const numPoints = opts?.numPoints ?? 20;
+    return centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints).map(p => modeShapesAtPoint(p.x, p.y, p.z, modes)));
   }
 
   // ---- Shortest path inside a floor plan ----
@@ -2092,7 +2147,11 @@
   // measureAtSeats does with SEAT_AVERAGING, instead of the level at the
   // single point. A null at one point is often only inches wide, so a
   // single-point score can rank a position by a null the averaged measure
-  // barely sees, and miss one it does.
+  // barely sees, and miss one it does. With SEAT_AVERAGING and the result
+  // card's own frequencies as freqList, the score is the card's grade of
+  // the placement (gradePlacement's stats.score), so a search ranks
+  // positions the way its result will be judged. seatAveraging may also
+  // carry spatiallyAveragedResponseMulti's sampleShapes for the listeners.
   function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
@@ -2236,13 +2295,6 @@
   // and at one reference point, the top row's own center, which is not
   // always a seat.
   const SEAT_AVERAGING = { radiusFt: 2, numPoints: 20 };
-  // The same 2 ft cloud with fewer points, for a sub search that scores
-  // every grid position this way (scoreSubPosition's seatAveraging). Scored
-  // at single points, a search ranks positions by nulls inches wide and can
-  // pick a spot the result card grades worse than where the sub already is;
-  // 6 points ranks positions close to how the 20-point card does, at about
-  // 2 to 4 times the cost of single points, where all 20 cost 4 to 13 times.
-  const SEARCH_SEAT_AVERAGING = { radiusFt: 2, numPoints: 6 };
   // seats: from seatPositions. reference: {x, y, z}. Returns perSeatDb
   // [seat][freqIndex], referenceDb [freqIndex], and the quietest and loudest
   // seat at each frequency (seatMinDb, seatMaxDb).
@@ -2286,9 +2338,8 @@
     };
   }
   // Whether refined positions for existing subs are worth suggesting, judged
-  // the way the result card grades them (gradePlacement over `freqs`) rather
-  // than by the search's own coarser score, which can rank a pick above the
-  // current placement while the card ranks it below. `current` and `picked`
+  // the way the result card grades them (gradePlacement over `freqs`).
+  // `current` and `picked`
   // are the same subs in the same order, now and as the search placed them;
   // `otherSources` are the rest of the active sources. The current placement
   // is graded as it stands; the picked one with every source time-aligned to
@@ -2297,33 +2348,17 @@
   // they grade at least PLACEMENT_GAIN_DB.modest higher, since a smaller
   // gain is what the card calls "Little to gain" and is not worth moving a
   // sub for; otherwise copies of `current` with every moved[i] false.
-  // gainDb is null when the search moved nothing. `alternatives`
-  // (optional) are more placements like `picked`, such as the search's
-  // runners-up (topCandidates): every one is graded too, and the one that
-  // grades highest is the one judged, so the final choice is made by the
-  // card's measure rather than the search's.
+  // gainDb is null when the search moved nothing.
   function checkSubMoves(options){
-    const { seats, reference, freqs, otherSources, current, picked, physicsCtx, mode, timeAlignTo, alternatives } = options;
+    const { seats, reference, freqs, otherSources, current, picked, physicsCtx, mode, timeAlignTo } = options;
     const keep = (gainDb) => ({ placedSubs: current.map(s => Object.assign({}, s)), moved: current.map(() => false), gainDb });
-    const isCurrent = (subs) => subs.every((p, i) => p.x === current[i].x && p.y === current[i].y && p.z === current[i].z);
-    const choices = [picked].concat(alternatives || []).filter(subs => !isCurrent(subs));
-    if(choices.length === 0) return keep(null);
+    if(picked.every((p, i) => p.x === current[i].x && p.y === current[i].y && p.z === current[i].z)) return keep(null);
+    let after = otherSources.concat(picked);
+    if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
     const grade = (sources) => gradePlacement(seats, reference, freqs, sources, physicsCtx, mode).stats;
-    const before = grade(otherSources.concat(current));
-    let best = null, gainDb = -Infinity;
-    for(const subs of choices){
-      let after = otherSources.concat(subs);
-      if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
-      const gain = comparePlacements(before, grade(after)).gainDb;
-      if(gain > gainDb){ gainDb = gain; best = subs; }
-    }
+    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after));
     if(gainDb < PLACEMENT_GAIN_DB.modest) return keep(gainDb);
-    return { placedSubs: best.map(p => Object.assign({}, p)), moved: best.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
-  }
-  // The `count` highest-scoring entries of a search's allCandidates, best
-  // first, as checkSubMoves' shortlist to grade the card's way.
-  function topCandidates(allCandidates, count){
-    return allCandidates.slice().sort((a, b) => b.score - a.score).slice(0, count);
+    return { placedSubs: picked.map(p => Object.assign({}, p)), moved: picked.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
   }
   // The four walls straight to a point's left, right, front and back, each
   // with the distance to it and where it is: { left: { wall: 'left',
@@ -2579,16 +2614,6 @@
   //     that point would give it with the candidate in place, recomputed
   //     per candidate, instead of the delays the sources came in with.
   // seatAveraging: see scoreSubPosition.
-  // The frequencies a sub search samples: about 12 steps from freqLow up to
-  // freqHigh, never closer than 2 Hz apart. Coarser than the result card's
-  // 48, since every candidate position is scored at each of them.
-  function optimizerFreqList(freqLow, freqHigh){
-    const freqList = [];
-    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
-    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
-    return freqList;
-  }
-
   function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
@@ -2608,6 +2633,8 @@
     // Only other subs count toward nullAvoidance's spread penalty; a point
     // with its own keepOut is a main speaker (see sourceExclusionPoints).
     const spreadPoints = (excludePoints || []).filter(p => !p.keepOut);
+    // The listeners' averaging clouds are the same for every candidate.
+    const averaging = seatAveraging && Object.assign({}, seatAveraging, { sampleShapes: centerSampleShapes(listenerPositions, modes, seatAveraging) });
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
@@ -2621,7 +2648,7 @@
           others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo, room);
           candidate = others.pop();
         }
-        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes, seatAveraging);
+        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes, averaging);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -2676,29 +2703,33 @@
   // search logic to keep correct.
   //
   // options additionally accepts:
-  //   onYield: () => Promise   -- awaited every yieldEvery scanned cells (default 150)
+  //   onYield: () => Promise: awaited every yieldEvery scanned cells, or
+  //     without yieldEvery about every YIELD_INTERVAL_MS of scanning, since
+  //     how long a cell takes varies widely with the seats, the frequencies
+  //     and seatAveraging
   //   onProgress: (fraction) => void -- called with 0 before scanning starts, then
   //                                      scanned/totalGridCells at each yield point
-  //   yieldEvery: number -- chunk size, default 150
+  //   yieldEvery: number: chunk size in cells
+  const YIELD_INTERVAL_MS = 50;
   async function optimizeSubPlacementAsync(options){
     const { onYield, onProgress, yieldEvery } = options;
-    const chunkSize = yieldEvery || 150;
     const totalGridCells = countGridCells(options.room, options.gridStepFt);
     if(onProgress) onProgress(0);
     if(onYield) await onYield();
 
     const results = [];
     let best = null;
-    let scanned = 0;
+    let scanned = 0, lastYield = Date.now();
     for(const entry of scanGridCandidates(options)){
       scanned++;
       if(entry !== null){
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
       }
-      if(scanned % chunkSize === 0){
+      if(yieldEvery ? scanned % yieldEvery === 0 : Date.now() - lastYield >= YIELD_INTERVAL_MS){
         if(onProgress) onProgress(scanned / totalGridCells);
         if(onYield) await onYield();
+        lastYield = Date.now();
       }
     }
 
@@ -2736,7 +2767,7 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number
@@ -2768,7 +2799,7 @@
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging
       });
       roundResults.push(roundResult);
       if(roundResult.best === null){
@@ -2795,7 +2826,7 @@
     // value through here reproduces the exact prior inlined behavior.
     const polish = polishSubPlacements({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -2862,7 +2893,7 @@
   function polishSubPlacements(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const placedSubs = subs.map(s => Object.assign({}, s));
@@ -2887,7 +2918,7 @@
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo
+            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
@@ -2918,7 +2949,7 @@
   async function polishSubPlacementsAsync(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
       onYield, onProgress, yieldEvery, precomputedModes
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
@@ -2936,7 +2967,7 @@
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo,
+            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging,
             precomputedModes: modes, onYield, yieldEvery,
             onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
           });
@@ -2966,7 +2997,7 @@
   async function optimizeMultipleSubsAsync(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
       onYield, onProgress, yieldEvery
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
@@ -2982,7 +3013,7 @@
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo,
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
         precomputedModes: modes, onYield, yieldEvery,
         onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
       });
@@ -3006,7 +3037,7 @@
     // enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
       precomputedModes: modes, onYield, yieldEvery, onProgress
     });
 
@@ -3058,6 +3089,8 @@
     enumerateModes,
     precomputeModalField,
     computeFieldAtPoint,
+    modeShapesAtPoint,
+    fieldFromModeShapes,
     fieldRowSums,
     fieldDbAtPoint,
     pressureToDb,
@@ -3066,10 +3099,8 @@
     seatPositions,
     maxSchroederFrequency,
     SEAT_AVERAGING,
-    SEARCH_SEAT_AVERAGING,
     measureAtSeats,
     gradePlacement,
-    optimizerFreqList,
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
@@ -3099,7 +3130,6 @@
     comparePlacements,
     PLACEMENT_GAIN_DB,
     checkSubMoves,
-    topCandidates,
     wallsAround,
     nearestWallDistances,
     rowFootprintRect,
