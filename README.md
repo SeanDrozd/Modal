@@ -30,7 +30,7 @@ Symmetric sub placement looks tidy but excites the room's modes symmetrically, o
 - **Sources and seats.** Any number of mains and subs with level, delay, crossover range and slope, and height. Delays auto time-align to the main seat. Multiple ranked seat rows of 1 to 5 seats.
 - **Room construction.** Per-wall, floor and ceiling materials, each with a frequency-dependent absorption curve, plus corner bass traps modeled from lab measurements.
 - **Views.** Floor plan or pressure map, frequency sweep, frequency response chart with the spread across all seats and an optimizer preview overlay. GPU rendering with CPU fallback.
-- **Quality of life.** Undo/redo, saved room presets, feet/meters, Auto/Light/Dark with four color themes, tablet support (768px and up, touch and pen).
+- **Quality of life.** Undo/redo, saved room presets, room files to move a room to another browser or device (the guide can open one on its first page), feet/meters, Auto/Light/Dark with four color themes, tablet support (768px and up, touch and pen).
 
 ## How it works
 

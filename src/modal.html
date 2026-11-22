@@ -77,6 +77,11 @@ function applyAppearanceAttrs(mode, theme){
       <button id="reloadBtn" class="small">Reload</button>
     </div>
     <div class="presets">
+      <button id="saveFileBtn" class="small">Save to file</button>
+      <button id="openFileBtn" class="small">Open file...</button>
+      <input type="file" id="roomFileInput" accept=".json,application/json" hidden>
+    </div>
+    <div class="presets">
       <button id="deleteBtn" class="small danger">Delete</button>
     </div>
     <div id="saveAsRow" style="display:none; gap:6px; margin-top:8px;">
@@ -1183,6 +1188,64 @@ function applyAppearanceAttrs(mode, theme){
   }
   document.getElementById('presetSelect').addEventListener('change', function(){
     loadPresetByName(this.value);
+  });
+
+  // ---- Room files ----
+  // A room file holds the same config a saved preset does (makeConfig), so
+  // loadConfig's migrations cover files saved by older versions too. It lets
+  // a room move to another browser or device, and survives cleared site data.
+  const ROOM_FILE_KIND = 'modal-room';
+  const ROOM_FILE_VERSION = 1;
+  function saveRoomFile(name){
+    name = name || currentPresetName || 'My room';
+    const text = JSON.stringify({ kind: ROOM_FILE_KIND, version: ROOM_FILE_VERSION, name, config: makeConfig() }, null, 2);
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name.replace(/[\\/:*?"<>|]+/g, '-') + '.modal.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Safari can still be reading the blob right after click(), so it is freed later.
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    return name;
+  }
+  // Loads a room file and keeps it as a saved room under its own name, or
+  // that name with " (2)" and so on when a different room already has it.
+  // Resolves to { name, saved }, saved false when the browser would not
+  // store it; rejects with a message for the user when the
+  // file is not a room file, leaving the current room as it was.
+  async function openRoomFile(file){
+    const notRoom = new Error(`"${file.name}" is not a Modal room file.`);
+    let data;
+    try { data = JSON.parse(await file.text()); } catch(e){ throw notRoom; }
+    const cfg = data && data.kind === ROOM_FILE_KIND ? data.config : null;
+    const r = cfg && cfg.room;
+    if(!r || ![r.w, r.d, r.h].every(Number.isFinite) || !Array.isArray(cfg.sources)) throw notRoom;
+    if(data.version > ROOM_FILE_VERSION) throw new Error(`"${file.name}" was saved by a newer version of Modal. Reload the page to update, then open it again.`);
+    const before = makeConfig();
+    try { loadConfig(cfg); } catch(e){ loadConfig(before); draw(); throw notRoom; }
+    const base = String(data.name || file.name.replace(/(\.modal)?\.json$/i, '')).trim() || 'My room';
+    const loaded = JSON.stringify(makeConfig());
+    let name = base;
+    for(let n = 2; presets[name] && JSON.stringify(presets[name]) !== loaded; n++) name = `${base} (${n})`;
+    const ok = await savePresetAs(name);
+    draw();
+    return { name, saved: ok };
+  }
+  document.getElementById('saveFileBtn').addEventListener('click', () => {
+    const name = saveRoomFile();
+    showStatus(`Saved "${name}" to a file`, true);
+  });
+  document.getElementById('openFileBtn').addEventListener('click', () => document.getElementById('roomFileInput').click());
+  document.getElementById('roomFileInput').addEventListener('change', async function(){
+    const file = this.files[0];
+    this.value = ''; // so choosing the same file again still fires change
+    if(!file) return;
+    try {
+      const { name, saved } = await openRoomFile(file);
+      showStatus(saved ? `Opened "${name}"` : `Opened "${name}", but it could not be kept in Saved configurations`, saved);
+    } catch(e){ showStatus(e.message, false); }
   });
   document.getElementById('reloadBtn').addEventListener('click', () => {
     const sel = document.getElementById('presetSelect');
@@ -4758,6 +4821,8 @@ function applyAppearanceAttrs(mode, theme){
       if(replaces && replaces !== name) delete presets[replaces];
       return savePresetAs(name);
     },
+    saveRoomFile,
+    openRoomFile,
     // Draws the page in the light palette while printing, then puts the
     // on-screen appearance back.
     setPrintAppearance(on){
