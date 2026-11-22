@@ -2118,8 +2118,11 @@ function applyAppearanceAttrs(mode, theme){
   // The solved floor plan is not copied: nothing changes it once solved.
   // How the result card grades a placement (see optimizerOutcome): the
   // response across the optimizer's band at these frequencies, with the main
-  // row's own center as the reference point.
-  const resultFreqs = (freqLow, freqHigh) => RoomPhysics.logSpacedFreqs(freqLow, freqHigh, 48);
+  // row's own center as the reference point. 192 frequencies: with 48, a
+  // deep null between two of them could read up to 6 dB shallower than it
+  // is with room correction on, and 96 still missed one by 2 dB; at 192 a
+  // grade is within 0.15 dB of one taken at 384 (20 to 120 Hz).
+  const resultFreqs = (freqLow, freqHigh) => RoomPhysics.logSpacedFreqs(freqLow, freqHigh, 192);
   function resultReference(){
     const primary = primaryRow();
     return { x: primary.x, y: primary.y, z: primary.z };
