@@ -124,13 +124,16 @@
     // viewBefore: the map view to put back when the guide closes.
     // seenWelcome: the welcome step is shown once, not on every later visit.
     // launchDone: the guide has been finished or left once, so the app no
-    // longer opens in it.
-    let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, roomCorrection: null, seatingMarked: false, viewBefore: null, seenWelcome: false, launchDone: false };
+    // longer opens in it. autosaveName: the name the Room step asked for,
+    // or null when the guide is not saving the room as it goes (see
+    // autosave). autosavedAs: the name it last saved the room under.
+    let state = { active: false, step: 0, roomShape: 'closed', plannedSubs: 1, roomCorrection: null, seatingMarked: false, viewBefore: null, seenWelcome: false, launchDone: false, autosaveName: null, autosavedAs: null };
     try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY))); } catch(e){ /* start from the defaults above */ }
     // Saved before rooms could be L-shaped: that answer was "L-shaped or
     // irregular", and the room in the model is still a rectangle, so it
     // keeps its warning until the Room step is answered again.
     if(state.roomShape === 'irregular') state.roomShape = 'other';
+    const DEFAULT_ROOM_NAME = 'My room';
     function save(){
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch(e){ /* progress just won't survive a reload */ }
     }
@@ -276,6 +279,8 @@
       ];
       body.innerHTML = `
         <h2 tabindex="-1">Your room</h2>
+        ${state.autosaveName === null ? '' : `
+        <div class="guide-field"><label for="guideRoomName">Room name<span>Saved after each step</span></label><input type="text" id="guideRoomName" placeholder="${DEFAULT_ROOM_NAME}" maxlength="60"></div>`}
         <h3>Room shape</h3>
         <p>The floor seen from above, with the front wall at the top. The front wall is the one your screen and front speakers are on.</p>
         <div class="guide-cards two-col" id="guideTemplates">${choiceCards(ROOM_TEMPLATES.map(t => ({ ...t, extra: templatePicture(t.id) })), 'data-template', null)}</div>
@@ -295,6 +300,12 @@
           <h4>${c.title}</h4>
           <div class="guide-cards ${c.part === 'walls' ? 'one-col' : 'two-col'}" data-construction="${c.part}">${choiceCards(c.items, 'data-material', null)}</div>`).join('')}
         <p class="guide-note" id="guideMixedWalls" hidden>Your walls are set one by one under Walls. Choosing here sets them all.</p>`;
+
+      const nameInput = body.querySelector('#guideRoomName');
+      if(nameInput){
+        nameInput.value = state.autosaveName;
+        nameInput.addEventListener('input', () => { state.autosaveName = nameInput.value.trim(); save(); });
+      }
 
       const syncConstruction = () => {
         const now = app.getConstruction();
@@ -814,7 +825,7 @@
         <div id="guideSheet"></div>
         <div class="guide-no-print">
           <h3>Keep it</h3>
-          <div class="guide-field"><label for="guidePresetName">Name</label><input type="text" id="guidePresetName" value="My room" maxlength="60"></div>
+          <div class="guide-field"><label for="guidePresetName">Name</label><input type="text" id="guidePresetName" value="${esc(app.currentPresetName() || DEFAULT_ROOM_NAME)}" maxlength="60"></div>
           <div class="guide-actions">
             <button id="guideSaveBtn">Save this room</button>
             <button id="guidePrintBtn">Print / save as PDF</button>
@@ -886,7 +897,21 @@
       closeTerm();
       if(app.getZoneDrawMode()) app.toggleZoneDraw(app.getZoneDrawMode()); // an armed drawing tool does not carry over
     }
+    // Someone with no saved rooms has the room saved, under the name the
+    // Room step asks for, each time they leave one of the steps that
+    // describe it (Room to Obstacles), so a reload or a closed tab does not
+    // lose it. It stops once the guide is finished, or once another room is
+    // loaded or saved in the full tool.
+    function autosave(fromStep){
+      if(state.autosaveName === null || fromStep < 1 || fromStep > 5) return;
+      if(app.currentPresetName() !== state.autosavedAs){ state.autosaveName = null; return; }
+      const name = state.autosaveName || DEFAULT_ROOM_NAME;
+      app.savePreset(name, state.autosavedAs);
+      state.autosavedAs = name;
+    }
     function goTo(step){
+      autosave(state.step);
+      if(step > 0 && state.autosaveName === null && state.autosavedAs === null && app.presetNames().length === 0) state.autosaveName = '';
       state.step = Math.max(0, Math.min(STEPS.length - 1, step));
       if(state.step > 0){
         state.seenWelcome = true;
@@ -934,6 +959,8 @@
     // Leaves the guide for the full tool. The step is kept, so reopening
     // the guide carries on from it; finishing starts it over from the room.
     function close(finished){
+      autosave(state.step);
+      if(finished) state.autosaveName = state.autosavedAs = null;
       setActive(false);
       leaveStep();
       document.body.classList.remove('guide-shows-field');

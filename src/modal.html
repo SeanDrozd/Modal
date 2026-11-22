@@ -4693,7 +4693,14 @@ function applyAppearanceAttrs(mode, theme){
       const seat = primaryRow(), seatDistanceFt = RoomPhysics.soundPathFt(s, seat, room);
       return { name: s.name, walls: namedWallDistances(s), seatDistanceFt, aroundCorner: seatDistanceFt > Math.hypot(s.x - seat.x, s.y - seat.y, s.z - seat.z) + 0.01 };
     }),
-    savePreset: savePresetAs,
+    presetNames: () => Object.keys(presets).filter(n => n !== '__meta__'),
+    currentPresetName: () => currentPresetName,
+    // Saves the room as `name`, dropping the preset it was saved as before
+    // (`replaces`) when that name differs, so a renamed room is not kept twice.
+    savePreset(name, replaces){
+      if(replaces && replaces !== name) delete presets[replaces];
+      return savePresetAs(name);
+    },
     // Draws the page in the light palette while printing, then puts the
     // on-screen appearance back.
     setPrintAppearance(on){
