@@ -252,6 +252,7 @@ function applyAppearanceAttrs(mode, theme){
       <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
       <button id="stopOptimizerBtn" class="full" style="display:none; margin-top:6px;">Stop search</button>
       <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
+      <progress id="optimizerProgress" class="search-progress" max="1" value="0" hidden aria-label="Search progress"></progress>
       <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
       <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
         <label style="font-size:12.5px;">Show score heatmap</label>
@@ -2074,10 +2075,15 @@ function applyAppearanceAttrs(mode, theme){
   // (called with just (fraction), so roundIndex/phase come through as undefined --
   // numSubs===1 already ignores roundIndex, and phase undefined already means
   // "Optimizing", so this reads correctly with no special-casing).
-  let optimizerProgressListener = null; // (fraction, subIndex, numSubs, phase) => void, set by the setup guide while it runs a search
+  let optimizerProgressListener = null; // (fraction, subIndex, numSubs, phase, overall) => void, set by the setup guide while it runs a search
+  // Reports a search's progress: the current grid scan's fraction in the
+  // status text, and how far the whole search is (overall, from the
+  // multi-sub optimizers; a one-sub search is one scan) on the bar.
   function optimizerStatusUpdater(status, numSubs){
-    return (fraction, roundIndex, phase) => {
-      if(optimizerProgressListener) optimizerProgressListener(fraction, roundIndex ?? 0, numSubs, phase);
+    return (fraction, roundIndex, phase, overall) => {
+      overall = overall ?? fraction;
+      document.getElementById('optimizerProgress').value = overall;
+      if(optimizerProgressListener) optimizerProgressListener(fraction, roundIndex ?? 0, numSubs, phase, overall);
       const subLabel = numSubs > 1 ? `sub ${roundIndex+1} of ${numSubs}` : 'position';
       const verb = phase === 'polish' ? 'Refining' : 'Optimizing';
       status.textContent = fraction === 0
@@ -4025,6 +4031,9 @@ function applyAppearanceAttrs(mode, theme){
     document.getElementById('runOptimizerBtn').disabled = disabled;
     document.getElementById('reoptimizeExistingBtn').disabled = disabled;
     document.getElementById('stopOptimizerBtn').style.display = disabled ? 'block' : 'none';
+    const progress = document.getElementById('optimizerProgress');
+    progress.hidden = !disabled;
+    progress.value = 0;
   }
   // Stops the search in flight, if any, at its next pause.
   const STOPPED_BY_USER = 'stopped';
@@ -4690,7 +4699,7 @@ function applyAppearanceAttrs(mode, theme){
     }),
     setOptimizerMode,
     // Refines the existing subs, or with none searches for `newSubs` new
-    // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
+    // ones. onProgress(fraction, subIndex, numSubs, phase, overall) is called as the
     // search runs. Resolves when it is done, to false when the room changed
     // meanwhile and the search was stopped, to 'stopped' when stopOptimizer
     // stopped it, or to null when the room's

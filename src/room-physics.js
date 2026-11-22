@@ -3131,9 +3131,11 @@
 
   // Async/chunked twin of polishSubPlacements, for the same reason
   // optimizeSubPlacementAsync exists. onProgress is called as
-  // (fraction, k, 'polish') -- k is the index into `subs` currently being
-  // re-optimized, matching the polish-phase signal optimizeMultipleSubsAsync
-  // already uses internally.
+  // (fraction, k, 'polish', overall) -- k is the index into `subs` currently
+  // being re-optimized, matching the polish-phase signal
+  // optimizeMultipleSubsAsync already uses internally, and overall (0..1) is
+  // how far the whole polish is, counted as POLISH_PASSES passes over every
+  // sub. A polish that settles early stops short of 1.
   async function polishSubPlacementsAsync(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
@@ -3157,7 +3159,7 @@
             excludePoints, minSeparationFt: separation, mode,
             candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging,
             precomputedModes: modes, onYield, yieldEvery, signal,
-            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
+            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish', (pass * placedSubs.length + k + fraction) / (POLISH_PASSES * placedSubs.length)) : undefined
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue;
@@ -3176,9 +3178,12 @@
 
   // Async/chunked twin of optimizeMultipleSubs, for the same reason
   // optimizeSubPlacementAsync exists: lets a UI caller run a multi-sub search
-  // without freezing the tab. onProgress is called as (fraction, roundIndex) so
-  // a caller can show e.g. "Optimizing sub 2 of 3... 40%" without tracking round
-  // boundaries itself. Unlike optimizeMultipleSubs, enumerateModes is computed
+  // without freezing the tab. onProgress is called as (fraction, roundIndex,
+  // phase, overall) so a caller can show e.g. "Optimizing sub 2 of 3... 40%"
+  // without tracking round boundaries itself; phase is undefined in the
+  // greedy rounds, and overall (0..1) is how far the whole search is, the
+  // greedy rounds and every polish pass counted as one grid scan each. A
+  // polish that settles early stops short of 1. Unlike optimizeMultipleSubs, enumerateModes is computed
   // once for the whole run (not once per round) and threaded through via
   // precomputedModes -- purely a perf win, produces numerically identical
   // placements, since physicsCtx never changes between rounds.
@@ -3190,6 +3195,8 @@
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = enumerateModes(physicsCtx);
+    const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
+    const totalScans = numSubs + polishScans;
 
     const placedSubs = [];
     const placedPositions = sourceExclusionPoints(otherSources, room);
@@ -3203,7 +3210,7 @@
         excludePoints: placedPositions, minSeparationFt: separation, mode,
         candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
         precomputedModes: modes, onYield, yieldEvery, signal,
-        onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
+        onProgress: onProgress ? (fraction) => onProgress(fraction, i, undefined, (i + fraction) / totalScans) : undefined
       });
       roundResults.push(roundResult);
       if(roundResult.best === null) break;
@@ -3217,16 +3224,16 @@
     }
 
     // Coordinate-descent polish -- see polishSubPlacementsAsync for the full
-    // explanation. onProgress gets a third argument, 'polish', only during
-    // these rounds; the greedy rounds' calls above are unchanged (still just
-    // (fraction, i)), so the existing onProgress contract for callers that
-    // only look at the first two arguments keeps working as-is. `modes`
+    // explanation. onProgress's third argument is 'polish' only during
+    // these rounds, and its overall share is scaled onto the scans left
+    // after the greedy rounds. `modes`
     // (already computed above) is passed through as precomputedModes to avoid
     // enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
-      precomputedModes: modes, onYield, yieldEvery, signal, onProgress
+      precomputedModes: modes, onYield, yieldEvery, signal,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, (numSubs + overall * polishScans) / totalScans) : undefined
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };

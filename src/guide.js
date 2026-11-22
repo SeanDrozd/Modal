@@ -728,10 +728,12 @@
           <p class="guide-hint">These can be changed under Optimizer and Expert in the full tool.</p>
         </details>
         <button class="primary guide-run" id="guideOptimizeBtn">Optimize sub placement</button>
+        <progress class="search-progress" id="guideOptimizeProgress" max="1" value="0" hidden aria-label="Search progress"></progress>
         <p class="guide-hint" id="guideOptimizeStatus" role="status" aria-live="polite"></p>
         <div id="guideResult"></div>`;
       const runBtn = body.querySelector('#guideOptimizeBtn');
       const status = body.querySelector('#guideOptimizeStatus');
+      const progress = body.querySelector('#guideOptimizeProgress');
       const result = body.querySelector('#guideResult');
       // What the last search led to: null (nothing yet), 'none' (no valid
       // position), 'applied', 'kept' (nothing measured better than where the
@@ -759,10 +761,14 @@
         result.innerHTML = '';
         shown = undefined; // the card was just cleared, so the next refresh rebuilds it even for the same outcome as before
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
-        const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
+        progress.value = 0;
+        progress.hidden = false;
+        const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase, overall) => {
+          progress.value = overall;
           status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
         });
         if(!body.isConnected) return; // the step was left while the search ran
+        progress.hidden = true;
         outcome = kept === true ? latest() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);

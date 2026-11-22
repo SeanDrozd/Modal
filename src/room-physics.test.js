@@ -2524,6 +2524,29 @@ testAsync('optimizeMultipleSubsAsync reports onProgress as (fraction, roundIndex
   }
 });
 
+testAsync('optimizeMultipleSubsAsync and polishSubPlacementsAsync report overall progress across every grid scan', async () => {
+  const room = { w: 14, d: 11, h: 8 };
+  const ctx = { room, wallAbsorption: 0.2 };
+  const opts = { room, otherSources: [], freqList: [40, 60, 90], listenerPositions: [{ x: 7, y: 7, z: 3.5 }], physicsCtx: ctx, offLimitZones: [], gridStepFt: 1, subHeightFt: 1, yieldEvery: 7 };
+  for(const run of [
+    (onProgress) => P.optimizeMultipleSubsAsync({ ...opts, numSubs: 3, onProgress }),
+    (onProgress) => P.polishSubPlacementsAsync({ ...opts, subs: [{ x: 1, y: 1, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }, { x: 13, y: 10, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }, { x: 7, y: 1, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80 }], onProgress })
+  ]){
+    const calls = [];
+    const result = await run((fraction, index, phase, overall) => calls.push({ fraction, index, phase, overall }));
+    assert.strictEqual(calls[0].overall, 0);
+    for(let i = 1; i < calls.length; i++) assert.ok(calls[i].overall >= calls[i - 1].overall - 1e-12, `overall went back at call ${i}`);
+    for(const c of calls) assert.ok(c.overall >= 0 && c.overall <= 1);
+    // every scan's start lands on its share: scan s of totalScans starts at s / totalScans
+    const scans = result.roundResults ? 3 + 2 * 3 : 2 * 3;
+    const starts = calls.filter(c => c.fraction === 0).map(c => c.overall);
+    starts.forEach((o, s) => approx(o, s / scans, 1e-12));
+    // the scans run are the greedy rounds plus every polish scan, and the last report is near the end of the last one
+    assert.strictEqual(starts.length, (result.roundResults ? result.roundResults.length : 0) + result.polishResults.length);
+    assert.ok(calls.at(-1).overall <= starts.length / scans + 1e-12 && calls.at(-1).overall > (starts.length - 1) / scans);
+  }
+});
+
 testAsync('optimizeSubPlacementAsync and optimizeMultipleSubsAsync work with no onYield/onProgress supplied', async () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
