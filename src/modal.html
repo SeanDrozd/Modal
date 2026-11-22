@@ -3949,7 +3949,13 @@ function applyAppearanceAttrs(mode, theme){
   for(const id of ['optFreqLow','optFreqHigh','optNumSubs']){
     document.getElementById(id).addEventListener('change', saveSessionSettings);
   }
+  // A result found in the other mode no longer applies, so a change of mode
+  // drops it and stops a search in flight.
   function setOptimizerMode(mode){
+    if(mode !== optimizerMode){
+      stopOptimizer();
+      clearOptimizerResult();
+    }
     optimizerMode = mode;
     document.getElementById('optimizerMode').value = mode;
     saveSessionSettings();

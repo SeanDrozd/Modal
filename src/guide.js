@@ -752,7 +752,9 @@
         if(!btn) return;
         state.roomCorrection = btn.dataset.rc;
         save();
-        app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
+        const mode = ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode;
+        if(mode !== app.getOptimizerMode()) outcome = null; // the result shown was found in the other mode, and the app drops it
+        app.setOptimizerMode(mode);
         refresh();
       });
       // While a search runs, the run button stops it.
