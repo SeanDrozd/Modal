@@ -241,7 +241,23 @@
             <button data-unit="ft">Feet &amp; inches</button>
             <button data-unit="m">Meters</button>
           </div>
-        </div>`;
+        </div>
+        <h3>Already set up a room?</h3>
+        <p>Open a room file saved from Modal, on this device or another, to go straight to its plan.</p>
+        <div class="guide-actions"><button id="guideOpenFileBtn">Open a room file</button></div>
+        <input type="file" id="guideRoomFile" accept=".json,application/json" hidden>
+        <p class="guide-hint" id="guideOpenStatus" role="status" aria-live="polite"></p>`;
+      const fileInput = body.querySelector('#guideRoomFile');
+      body.querySelector('#guideOpenFileBtn').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files[0];
+        fileInput.value = ''; // so choosing the same file again still fires change
+        if(!file) return;
+        try {
+          await app.openRoomFile(file);
+          goTo(STEPS.length - 1);
+        } catch(e){ body.querySelector('#guideOpenStatus').textContent = e.message; }
+      });
       const sync = () => body.querySelectorAll('#guideUnits button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.unit === app.getLengthUnit())));
       body.querySelector('#guideUnits').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
@@ -837,6 +853,7 @@
           <div class="guide-field"><label for="guidePresetName">Name</label><input type="text" id="guidePresetName" value="${esc(app.currentPresetName() || DEFAULT_ROOM_NAME)}" maxlength="60"></div>
           <div class="guide-actions">
             <button id="guideSaveBtn">Save this room</button>
+            <button id="guideSaveFileBtn">Save to a file</button>
             <button id="guidePrintBtn">Print / save as PDF</button>
           </div>
           <p class="guide-hint" id="guideSaveStatus" role="status" aria-live="polite"></p>
@@ -847,6 +864,10 @@
         const out = body.querySelector('#guideSaveStatus');
         if(!name){ out.textContent = 'Enter a name first.'; return; }
         out.textContent = await app.savePreset(name) ? `Saved as "${name}". It is under Saved rooms in the full tool.` : 'Save failed.';
+      });
+      body.querySelector('#guideSaveFileBtn').addEventListener('click', () => {
+        const name = app.saveRoomFile(body.querySelector('#guidePresetName').value.trim());
+        body.querySelector('#guideSaveStatus').textContent = `Saved "${name}" to a file. Open it with "Open file" in the full tool or on the guide's first page, in any browser.`;
       });
       body.querySelector('#guidePrintBtn').addEventListener('click', () => window.print());
 
