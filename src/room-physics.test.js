@@ -1107,7 +1107,7 @@ test('comparePlacements grades the change in score', () => {
   assert.strictEqual(P.comparePlacements(s(60, 70), s(58, 70)).verdict, 'worse');
 });
 
-test('checkSubMoves keeps the current subs unless the picked ones grade higher', () => {
+test('checkSubMoves keeps the current subs unless the picked ones grade meaningfully higher', () => {
   const room = { w: 18, d: 14, h: 8 };
   const ctx = { room, wallAbsorption: 0.3 };
   const main = (id, x) => ({ id, x, y: 1, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true });
@@ -1131,6 +1131,15 @@ test('checkSubMoves keeps the current subs unless the picked ones grade higher',
   assert.deepStrictEqual(taken.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
   assert.deepStrictEqual(taken.moved, [true, true]);
   approx(taken.gainDb, -gain, 1e-9);
+
+  // A gain under PLACEMENT_GAIN_DB.modest is not worth a move.
+  const small = [sub(11, 0.5, 0.4), sub(12, 1.5, 0.4)];
+  const smallGain = grade(small) - grade(a);
+  assert.ok(smallGain > 0 && smallGain < P.PLACEMENT_GAIN_DB.modest, `a small gain (${smallGain.toFixed(2)} dB)`);
+  const tooSmall = P.checkSubMoves({ ...base, current: a, picked: small });
+  assert.deepStrictEqual(tooSmall.moved, [false, false]);
+  assert.deepStrictEqual(tooSmall.placedSubs.map(s => [s.x, s.y]), [[1.75, 0.4], [2.75, 0.4]]);
+  approx(tooSmall.gainDb, smallGain, 1e-9);
 
   const same = P.checkSubMoves({ ...base, current: a, picked: a.map(s => ({ ...s })) });
   assert.strictEqual(same.gainDb, null, 'nothing moved, nothing graded');

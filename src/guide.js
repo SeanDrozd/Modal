@@ -661,6 +661,12 @@
         </svg>
         <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">Suggested</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
     }
+    // What the optimizer score is made of in each mode, since the chart below
+    // shows only the main seat's curve and can look better or worse than the score.
+    const SCORE_COUNTS = {
+      balanced: 'The score weighs level, evenness and the deepest null across every seat. The chart shows the main seat only.',
+      nullAvoidance: 'With room correction, the score counts only the deepest null at any seat, since correction can tame the rest. The chart shows the main seat only.'
+    };
     const VERDICTS = {
       major: 'Major improvement.',
       modest: 'Modest improvement.',
@@ -675,6 +681,7 @@
         ${shapeWarning()}
         ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
         ${b ? change('Optimizer score' + term('score'), null, signedDb(o.comparison.gainDb, 1)) : ''}
+        ${b ? `<p class="guide-hint">${SCORE_COUNTS[app.getOptimizerMode()]}</p>` : ''}
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
         ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
@@ -718,7 +725,13 @@
       // What the last search led to: null (nothing yet), 'none' (no valid
       // position), 'applied', 'kept' (nothing measured better than where the
       // subs are), or the outcome object while a suggestion is pending.
-      const latest = () => app.optimizerUnchanged() ? 'kept' : app.optimizerOutcome();
+      let keptGainDb = null; // with 'kept': how much better the best placement found scored, or null
+      const latest = () => {
+        const unchanged = app.optimizerUnchanged();
+        if(!unchanged) return app.optimizerOutcome();
+        keptGainDb = unchanged.gainDb;
+        return 'kept';
+      };
       let outcome = latest();
 
       body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
@@ -784,7 +797,9 @@
         result.innerHTML = outcome === 'none'
           ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
           : outcome === 'kept'
-          ? `<div class="guide-result">${shapeWarning()}<p class="guide-verdict">${VERDICTS.worse}</p></div>`
+          ? `<div class="guide-result">${shapeWarning()}${keptGainDb > 0
+            ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb} dB isn't worth moving a sub for, so leave them where they are.</p>`
+            : `<p class="guide-verdict">${VERDICTS.worse}</p>`}</div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();

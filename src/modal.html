@@ -2238,8 +2238,10 @@ function applyAppearanceAttrs(mode, theme){
 
     if(movedCount === 0){
       // Nothing to suggest: the map keeps the score heatmap but shows no move.
-      optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: [], applyInPlace: true, unchanged: true };
-      status.innerHTML = `<span style="color:var(--good)">No improvement found. The current position${existingSubs.length > 1 ? 's measure' : ' measures'} better than any the search found.</span>`;
+      optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: [], applyInPlace: true, unchanged: true, gainDb: check.gainDb };
+      status.innerHTML = `<span style="color:var(--good)">${check.gainDb > 0
+        ? `Little to gain. The best positions found score only ${check.gainDb.toFixed(1)} dB better, under the ${RoomPhysics.PLACEMENT_GAIN_DB.modest} dB worth a move.`
+        : `No improvement found. The current position${existingSubs.length > 1 ? 's measure' : ' measures'} better than any the search found.`}</span>`;
       document.getElementById('optimizerResultRow').style.display = 'flex';
       draw();
       return;
@@ -4665,8 +4667,12 @@ function applyAppearanceAttrs(mode, theme){
     SOLVE_FAILED_TEXT,
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
-    // The last search refined the existing subs and found nothing better than where they are.
-    optimizerUnchanged: () => !!(optimizerResult && optimizerResult.unchanged),
+    // The last search refined the existing subs and found nothing worth a
+    // move: { gainDb }, how much better the best found placement scored
+    // (null when the search moved nothing). Null otherwise.
+    optimizerUnchanged: () => optimizerResult && optimizerResult.unchanged ? { gainDb: optimizerResult.gainDb } : null,
+    minMoveGainDb: RoomPhysics.PLACEMENT_GAIN_DB.modest,
+    getOptimizerMode: () => optimizerMode,
     optimizerOutcomePending: () => !!(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length),
     wallDistances: namedWallDistances,
     // RoomPhysics.wallsAround, each wall with its name as the Walls list shows it
