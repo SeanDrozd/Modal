@@ -1704,7 +1704,9 @@
   // the same centers again and again, with other sources each time, can
   // pass what does not change between its calls:
   //   opts.modes: the room's enumerateModes(ctx).
-  //   opts.sampleShapes: centerSampleShapes(centers, modes, opts).
+  //   opts.sampleShapes: centerSampleShapes(centers, modes, opts), one entry
+  //     per center in the same order. It is the cloud, so opts.radiusFt and
+  //     opts.numPoints are not read when it is given.
   function spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts){
     const modes = opts?.modes || enumerateModes(ctx);
     const sampleShapes = opts?.sampleShapes || centerSampleShapes(centers, modes, opts);
@@ -2122,7 +2124,7 @@
   // reduce EXACTLY to its pre-weighting form when no caller passes weights --
   // this is a hard backward-compatibility requirement, not just a default.
   //
-  // precomputedModes (optional, last arg): enumerateModes(physicsCtx) only
+  // precomputedModes (optional): enumerateModes(physicsCtx) only
   // depends on room geometry + wall materials, never on candidatePos -- a
   // grid-search optimizer calling this once per candidate (hundreds to
   // thousands of times per run) was redoing that same work every single
@@ -2148,10 +2150,13 @@
   // single point. A null at one point is often only inches wide, so a
   // single-point score can rank a position by a null the averaged measure
   // barely sees, and miss one it does. With SEAT_AVERAGING and the result
-  // card's own frequencies as freqList, the score is the card's grade of
-  // the placement (gradePlacement's stats.score), so a search ranks
-  // positions the way its result will be judged. seatAveraging may also
-  // carry spatiallyAveragedResponseMulti's sampleShapes for the listeners.
+  // card's own frequencies as freqList, the responses scored are the ones
+  // the card grades, so a search ranks positions the way its result will
+  // be judged: the score is gradePlacement's stats.score, less the
+  // nullAvoidance spread penalty below when other subs are near (and
+  // scanGridCandidates adds its preferred-zone bonus on top). seatAveraging
+  // may also carry spatiallyAveragedResponseMulti's sampleShapes for the
+  // listeners.
   function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
@@ -2706,7 +2711,8 @@
   //   onYield: () => Promise: awaited every yieldEvery scanned cells, or
   //     without yieldEvery about every YIELD_INTERVAL_MS of scanning, since
   //     how long a cell takes varies widely with the seats, the frequencies
-  //     and seatAveraging
+  //     and seatAveraging. Timed with performance.now(), which never runs
+  //     backwards as the system clock can.
   //   onProgress: (fraction) => void -- called with 0 before scanning starts, then
   //                                      scanned/totalGridCells at each yield point
   //   yieldEvery: number: chunk size in cells
@@ -2719,17 +2725,17 @@
 
     const results = [];
     let best = null;
-    let scanned = 0, lastYield = Date.now();
+    let scanned = 0, lastYield = performance.now();
     for(const entry of scanGridCandidates(options)){
       scanned++;
       if(entry !== null){
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
       }
-      if(yieldEvery ? scanned % yieldEvery === 0 : Date.now() - lastYield >= YIELD_INTERVAL_MS){
+      if(yieldEvery ? scanned % yieldEvery === 0 : performance.now() - lastYield >= YIELD_INTERVAL_MS){
         if(onProgress) onProgress(scanned / totalGridCells);
         if(onYield) await onYield();
-        lastYield = Date.now();
+        lastYield = performance.now();
       }
     }
 
@@ -3104,6 +3110,7 @@
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
+    centerSampleShapes,
     axialModes,
     estimatedT60,
     schroederFrequency,

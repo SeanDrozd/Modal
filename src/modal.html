@@ -2061,8 +2061,8 @@ function applyAppearanceAttrs(mode, theme){
   // Runs the optimizer via RoomPhysics.optimizeMultipleSubsAsync -- the same
   // tested implementation optimizeMultipleSubs uses, just the async/chunked
   // twin so a long search yields to the browser instead of freezing the tab
-  // (onYield below pauses on an animation frame every 150 scanned candidates
-  // by default; onProgress drives the live "Optimizing sub X... NN%" text).
+  // (onYield below pauses on an animation frame about every 50 ms of
+  // searching; onProgress drives the live "Optimizing sub X... NN%" text).
   // Naming/id assignment stays here, since it depends on this file's own
   // sources/nextId state, not anything RoomPhysics knows about.
   // Shared status-text builder for both optimizer workflows (add new subs /
@@ -2124,7 +2124,7 @@ function applyAppearanceAttrs(mode, theme){
     const numSubs = Math.max(1, Math.round(parseFloat(document.getElementById('optNumSubs').value) || 1));
     const status = document.getElementById('optimizerStatus');
 
-    if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
+    if(freqLow <= 0 || freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
     const freqList = resultFreqs(freqLow, freqHigh);
     const scene = optimizerScene();
@@ -2185,7 +2185,7 @@ function applyAppearanceAttrs(mode, theme){
     const step = optGridStepFt;
     const status = document.getElementById('optimizerStatus');
 
-    if(freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
+    if(freqLow <= 0 || freqHigh <= freqLow){ optimizerStopped('Frequency range is invalid.'); return; }
 
     const freqList = resultFreqs(freqLow, freqHigh);
 

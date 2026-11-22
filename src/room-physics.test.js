@@ -1172,8 +1172,10 @@ test('spatiallyAveragedResponseMulti gives the same responses from a caller\'s m
   const plain = P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts);
   const modes = P.enumerateModes(ctx);
   assert.deepStrictEqual(P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, { ...opts, modes }).perCenterDb, plain.perCenterDb);
-  // sampleShapes: [center][samplePoint] = modeShapesAtPoint, here built by hand
-  const sampleShapes = centers.map(c => P.sphereSamplePoints(c.x, c.y, c.z, 1.5, 7).map(p => P.modeShapesAtPoint(p.x, p.y, p.z, modes)));
+  // centerSampleShapes: [center][samplePoint] = modeShapesAtPoint of that point of the cloud
+  const sampleShapes = P.centerSampleShapes(centers, modes, opts);
+  assert.deepStrictEqual(sampleShapes, centers.map(c => P.sphereSamplePoints(c.x, c.y, c.z, 1.5, 7).map(p => P.modeShapesAtPoint(p.x, p.y, p.z, modes))));
+  assert.deepStrictEqual(P.centerSampleShapes(centers.slice(0, 1), modes).map(c => c.length), [20], 'the default cloud has 20 points');
   assert.deepStrictEqual(P.spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, { modes, sampleShapes }).perCenterDb, plain.perCenterDb);
   // and each center matches the single-center function, which sums with computeFieldAtPoint
   centers.forEach((c, i) => {
@@ -2468,13 +2470,13 @@ testAsync('optimizeSubPlacementAsync without yieldEvery yields by elapsed time, 
   const totalCells = P.countGridCells(room, 1);
   // A clock that moves 30 ms each time it is read: 60 ms have passed at
   // every second cell, over the 50 ms between yields.
-  const realNow = Date.now;
+  const realNow = performance.now;
   let clock = 0, yieldCount = 0;
-  Date.now = () => (clock += 30);
+  performance.now = () => (clock += 30);
   let result;
   try {
     result = await P.optimizeSubPlacementAsync(Object.assign({}, opts, { onYield: () => { yieldCount++; return Promise.resolve(); } }));
-  } finally { Date.now = realNow; }
+  } finally { performance.now = realNow; }
   assert.strictEqual(yieldCount, Math.floor(totalCells / 2) + 1, `${yieldCount} yields for ${totalCells} cells`);
   assert.deepStrictEqual(result.best, P.optimizeSubPlacement(opts).best);
 });
@@ -2667,6 +2669,43 @@ testAsync('async twins match the sync optimizers with timeAlignTo, speaker clear
   const asyncPolish = await P.polishSubPlacementsAsync(polishOpts);
   assert.deepStrictEqual(asyncPolish.placedSubs, syncPolish.placedSubs);
   assert.deepStrictEqual(asyncPolish.polishResults.map(r => r.best), syncPolish.polishResults.map(r => r.best));
+});
+
+// These are the entry points the page calls, each with its own line passing
+// seatAveraging on, so each is held to its sync twin with it set.
+testAsync('async twins score with seatAveraging exactly as the sync optimizers do', async () => {
+  const room = { w: 12, d: 9, h: 8 };
+  const ctx = { room, wallAbsorption: 0.2 };
+  const listener = { x: 6, y: 6.5, z: 3.5 };
+  const mains = [{ id: 1, x: 6, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }];
+  const base = {
+    room, otherSources: mains, freqList: [30, 50, 70, 90], listenerPositions: [listener], physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1.5, subHeightFt: 1, mode: 'balanced', timeAlignTo: listener
+  };
+  const averaged = { ...base, seatAveraging: P.SEAT_AVERAGING };
+  const scores = (result) => result.allCandidates.map(c => c.score);
+
+  const single = await P.optimizeSubPlacementAsync(averaged);
+  assert.deepStrictEqual(scores(single), scores(P.optimizeSubPlacement(averaged)));
+  assert.notDeepStrictEqual(scores(single), scores(P.optimizeSubPlacement(base)), 'averaging changes the scores');
+
+  const multi = await P.optimizeMultipleSubsAsync({ ...averaged, numSubs: 2 });
+  const multiSync = P.optimizeMultipleSubs({ ...averaged, numSubs: 2 });
+  assert.deepStrictEqual(multi.placedSubs, multiSync.placedSubs);
+  assert.deepStrictEqual(multi.roundResults.map(scores), multiSync.roundResults.map(scores));
+  assert.deepStrictEqual(multi.polishResults.map(scores), multiSync.polishResults.map(scores));
+  assert.notDeepStrictEqual(multi.roundResults.map(scores), P.optimizeMultipleSubs({ ...base, numSubs: 2 }).roundResults.map(scores));
+
+  const subs = [
+    { id: 3, x: 1.5, y: 7.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 4, x: 10.5, y: 7.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const polish = await P.polishSubPlacementsAsync({ ...averaged, subs, subHeightFt: undefined });
+  const polishSync = P.polishSubPlacements({ ...averaged, subs, subHeightFt: undefined });
+  assert.deepStrictEqual(polish.placedSubs, polishSync.placedSubs);
+  assert.ok(polish.polishResults.length >= 2);
+  assert.deepStrictEqual(polish.polishResults.map(scores), polishSync.polishResults.map(scores));
+  assert.notDeepStrictEqual(polish.polishResults.map(scores), P.polishSubPlacements({ ...base, subs, subHeightFt: undefined }).polishResults.map(scores));
 });
 
 console.log('\n-- pressureToDb / sampleFieldDbRange / logSpacedFreqs / maxSchroederFrequency --');
