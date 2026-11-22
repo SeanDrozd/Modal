@@ -3466,6 +3466,60 @@ test('fieldFromModeShapes over modeShapesAtPoint is computeFieldAtPoint, formula
   }
 });
 
+test('seatCloudScanner gives spatiallyAveragedResponseMulti\'s responses, in a rectangle and a floor plan, with and without time alignment', () => {
+  const mains = [{ x: 7, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }, { x: 13, y: 1.5, z: 3, levelDb: -2, delayMs: 1.3, freqLow: 80, freqHigh: 20000, enabled: true }];
+  const seats = [{ x: 10, y: 9, z: 3.5 }, { x: 12.5, y: 11, z: 3.5 }];
+  const freqs = P.logSpacedFreqs(20, 120, 17);
+  const averaging = { radiusFt: 2, numPoints: 9 };
+  const listener = { x: 10, y: 9, z: 3.5 };
+  for(const ctx of [{ room: rectRoom, wallAbsorption: 0.05 }, { room: lRoom, wallAbsorption: 0.05, floorPlan: lPlan }]){
+    const modes = P.enumerateModes(ctx);
+    const sampleShapes = P.centerSampleShapes(seats, modes, averaging);
+    // the candidate's own level and passband, and none (the scoring defaults)
+    for(const template of [{ levelDb: -4, delayMs: 0, freqLow: 20, freqHigh: 90, rolloffDbPerOct: 12 }, undefined]){
+      const scanner = P.seatCloudScanner({ modes, freqList: freqs, otherSources: mains, physicsCtx: ctx, candidateTemplate: template, subHeightFt: 1.5, sampleShapes });
+      // several candidates down two columns, so the column sums are redone and reused
+      for(const [x, y] of [[2.5, 3], [2.5, 12.5], [9, 6], [9, 17.5], [2.5, 7]]){
+        for(const aligned of [false, true]){
+          let others = mains, candidate = Object.assign({}, template, { x, y, z: 1.5 });
+          if(aligned){
+            others = P.timeAlignedSources(mains.concat([Object.assign({ delayMs: 0 }, candidate)]), listener, ctx.room);
+            candidate = others.pop();
+          }
+          const want = P.spatiallyAveragedResponseMulti(seats, freqs, others.concat([Object.assign({ name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }, candidate)]), ctx, { modes, sampleShapes }).perCenterDb;
+          const got = scanner.responses(candidate, others);
+          assert.strictEqual(got.length, seats.length);
+          got.forEach((row, i) => row.forEach((db, j) => approx(db, want[i][j], 1e-9)));
+        }
+      }
+    }
+  }
+});
+
+test('scanGridCandidates with seatAveraging scores every candidate as scoreSubPosition does, spread penalty and time alignment included', () => {
+  const room = { w: 14, d: 11, h: 8 }, ctx = { room, wallAbsorption: 0.1 };
+  const mains = [{ x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }, { x: 9.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }];
+  const placedSub = { x: 1, y: 10, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true };
+  const others = mains.concat([placedSub]);
+  const seats = [{ x: 7, y: 7, z: 3.5, weight: 1 }, { x: 9, y: 7, z: 3.5, weight: 0.5 }];
+  const freqs = P.logSpacedFreqs(20, 120, 12);
+  const averaging = { radiusFt: 2, numPoints: 6 };
+  const excludePoints = P.sourceExclusionPoints(others, room);
+  const spreadPoints = excludePoints.filter(p => !p.keepOut);
+  const modes = P.enumerateModes(ctx);
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const entries = [...P.scanGridCandidates({ room, otherSources: others, freqList: freqs, listenerPositions: seats, physicsCtx: ctx, offLimitZones: [], gridStepFt: 1.5, subHeightFt: 1, excludePoints, minSeparationFt: 3, mode, candidateTemplate: placedSub, timeAlignTo: seats[0], seatAveraging: averaging })].filter(Boolean);
+    assert.ok(entries.length > 20);
+    for(const e of entries){
+      const aligned = P.timeAlignedSources(others.concat([Object.assign({}, placedSub, { x: e.x, y: e.y, z: 1 })]), seats[0], room);
+      const candidate = aligned.pop();
+      const want = P.scoreSubPosition(candidate, aligned, room, freqs, seats, ctx, mode, spreadPoints, modes, averaging);
+      approx(e.score, want.score, 1e-9);
+      approx(e.worstMinDb, want.worstMinDb, 1e-9);
+    }
+  }
+});
+
 test('estimatedT60 and schroederFrequency use a polygon room\'s own floor area and walls', () => {
   const asRect = { w: 20, d: 15, h: 8 }, asPolygon = { w: 20, d: 15, h: 8, polygon: rectPolygon(20, 15) };
   const ctx = { wallAbsorption: 0.1, floorAbsorption: 0.2, ceilingMaterial: P.WALL_MATERIALS.suspendedTile };

@@ -2157,11 +2157,10 @@
   // scanGridCandidates adds its preferred-zone bonus on top). seatAveraging
   // may also carry spatiallyAveragedResponseMulti's sampleShapes for the
   // listeners.
+  // What a candidate is scored as where the candidate itself does not say.
+  const CANDIDATE_SOURCE_DEFAULTS = { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
   function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
-    const candidateSource = Object.assign(
-      { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
-      candidatePos
-    );
+    const candidateSource = Object.assign({}, CANDIDATE_SOURCE_DEFAULTS, candidatePos);
     const allSources = otherSources.concat([candidateSource]);
     const modes = precomputedModes || enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
 
@@ -2185,6 +2184,11 @@
       });
     }
 
+    return scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced);
+  }
+  // scoreSubPosition's verdict on a candidate's responses at the listeners
+  // (perListenerDb[listener][freqIndex], in dB), however they were computed.
+  function scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced){
     const combined = scoreResponses(perListenerDb, listenerPositions.map(lp => lp.weight), mode);
     return {
       score: mode === 'nullAvoidance' ? combined.score - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room) : combined.score,
@@ -2600,6 +2604,166 @@
     return inside ? PREFERRED_ZONE_BONUS_DB : 0;
   }
 
+  // ---- Scoring a grid scan's candidates at averaged seats, fast ----
+  // spatiallyAveragedResponseMulti's responses (dB, [seat][freqIndex]) for
+  // otherSources plus one candidate sub, for every candidate of one grid
+  // scan: the same sums, arranged so the work that is the same for every
+  // candidate is done once.
+  //   - The field is a sum over sources, so each other source's field at
+  //     every cloud point is worked out once, at zero delay. A candidate's
+  //     time alignment only turns each one by its own delay's phase.
+  //   - The candidate's own field at a cloud point is a sum over modes of
+  //     its mode shape times a factor that does not depend on where it is.
+  //     In a rectangle a mode's shape is cos(kx x) cos(ky y) cos(kz z), and
+  //     only a few distinct ky exist, so for each grid column x the modes
+  //     sharing a ky are pre-summed (as fieldRowSums does for the map) and a
+  //     candidate sums those few. In a floor plan the shape is the plan's
+  //     shape at (x, y) times cos(kz z), so the modes sharing a shape are
+  //     pre-summed once for the whole scan.
+  // The results equal spatiallyAveragedResponseMulti's to rounding (about
+  // 1e-14 dB), since the same terms are added in another order.
+  // options: modes (enumerateModes), freqList, otherSources, physicsCtx,
+  // candidateTemplate (the sub's level and passband, over
+  // CANDIDATE_SOURCE_DEFAULTS), subHeightFt, and
+  // sampleShapes (centerSampleShapes of the listeners).
+  // responses(candidate, others): candidate is { x, y, delayMs } at
+  // subHeightFt; others are otherSources in the same order, with the
+  // delays this candidate's time alignment gives them.
+  function seatCloudScanner(options){
+    const { modes, freqList, otherSources, physicsCtx, candidateTemplate, subHeightFt, sampleShapes } = options;
+    const plan = modes.floorPlan;
+    const numFreqs = freqList.length, numModes = modes.length;
+    const points = sampleShapes.flat(), numPoints = points.length;
+    const cloudSizes = sampleShapes.map(c => c.length);
+    const size = numFreqs * numPoints; // one value per (frequency, cloud point)
+
+    // Each other source's field at zero delay.
+    const sourceFields = otherSources.map(src => {
+      const re = new Float64Array(size), im = new Float64Array(size);
+      const alone = [Object.assign({}, src, { delayMs: 0 })];
+      freqList.forEach((freq, fi) => {
+        const precomputed = precomputeModalField(alone, freq, physicsCtx, modes);
+        points.forEach((shapes, p) => {
+          const v = fieldFromModeShapes(shapes, precomputed);
+          re[fi * numPoints + p] = v.re;
+          im[fi * numPoints + p] = v.im;
+        });
+      });
+      return { re, im };
+    });
+
+    // A unit source's factor for each mode and frequency, An / (kn^2 - k^2 - j k deltaN),
+    // as precomputeModalField builds it, and the candidate's level at each frequency.
+    const factorRe = new Float64Array(numModes * numFreqs), factorIm = new Float64Array(numModes * numFreqs);
+    freqList.forEach((freq, fi) => {
+      const k = 2 * Math.PI * freq / C;
+      modes.forEach((mode, n) => {
+        const Dr = mode.kn * mode.kn - k * k, Di = -k * mode.deltaN, denom = Dr * Dr + Di * Di;
+        factorRe[n * numFreqs + fi] = denom > 0 ? mode.An * Dr / denom : 0;
+        factorIm[n * numFreqs + fi] = denom > 0 ? -mode.An * Di / denom : 0;
+      });
+    });
+    const candidateSource = Object.assign({}, CANDIDATE_SOURCE_DEFAULTS, candidateTemplate);
+    const candidateGain = freqList.map(freq => {
+      const freqGain = sourceGainAtFreq(candidateSource, freq);
+      return freqGain >= 0.0005 ? Math.pow(10, candidateSource.levelDb / 20) * freqGain : 0;
+    });
+    const shapeAt = new Float64Array(numModes * numPoints); // [mode][point]
+    points.forEach((shapes, p) => { for(let n = 0; n < numModes; n++) shapeAt[n * numPoints + p] = shapes[n]; });
+
+    // The groups the candidate's modes are pre-summed in: by ky in a
+    // rectangle, by floor-plan shape in a floor plan.
+    const zM = subHeightFt * FT_TO_M;
+    const groupKeys = [], group = new Int32Array(numModes);
+    const groupOf = new Map();
+    modes.forEach((mode, n) => {
+      const key = plan ? mode.shape : mode.invLy;
+      if(!groupOf.has(key)){ groupOf.set(key, groupKeys.length); groupKeys.push(key); }
+      group[n] = groupOf.get(key);
+    });
+    const numGroups = groupKeys.length;
+    const groupRe = new Float64Array(size * numGroups), groupIm = new Float64Array(size * numGroups);
+    const modeWeight = new Float64Array(numModes);
+    let summedForX = null; // the column groupRe/groupIm hold, or true for a floor plan's one sum
+    function sumGroups(x){
+      if(plan ? summedForX === true : summedForX === x) return;
+      summedForX = plan ? true : x;
+      const xM = x * FT_TO_M;
+      modes.forEach((mode, n) => {
+        modeWeight[n] = (plan ? 1 : Math.cos(mode.invLx * xM)) * Math.cos(mode.invLz * zM);
+      });
+      groupRe.fill(0); groupIm.fill(0);
+      addModeGroups(modeWeight, group, factorRe, factorIm, shapeAt, groupRe, groupIm, numModes, numFreqs, numPoints, numGroups);
+    }
+
+    const fieldRe = new Float64Array(size), fieldIm = new Float64Array(size);
+    return {
+      responses(candidate, others){
+        sumGroups(candidate.x);
+        const delayMs = candidate.delayMs ?? CANDIDATE_SOURCE_DEFAULTS.delayMs;
+        fieldRe.fill(0); fieldIm.fill(0);
+        others.forEach((src, i) => addTurnedField(sourceFields[i].re, sourceFields[i].im, src.delayMs, freqList, numPoints, fieldRe, fieldIm));
+        const groupWeight = plan
+          ? floorPlanShapesAt(plan, candidate.x, candidate.y)
+          : Float64Array.from(groupKeys, ky => Math.cos(ky * candidate.y * FT_TO_M));
+        return cloudResponsesDb(groupWeight, groupRe, groupIm, numGroups, fieldRe, fieldIm, candidateGain, delayMs, freqList, numPoints, cloudSizes);
+      }
+    };
+  }
+  // seatCloudScanner's inner loops, each in a function of its own so the
+  // engine optimizes it on its own.
+  // groupRe/Im[(f, point) * numGroups + group] += modeWeight * factor * shape, over the modes.
+  function addModeGroups(modeWeight, group, factorRe, factorIm, shapeAt, groupRe, groupIm, numModes, numFreqs, numPoints, numGroups){
+    for(let n = 0; n < numModes; n++){
+      const w = modeWeight[n], g = group[n];
+      if(w === 0) continue;
+      for(let fi = 0; fi < numFreqs; fi++){
+        const fr = w * factorRe[n * numFreqs + fi], fim = w * factorIm[n * numFreqs + fi];
+        const out = fi * numPoints * numGroups + g, shapes = n * numPoints;
+        for(let p = 0; p < numPoints; p++){
+          const sh = shapeAt[shapes + p];
+          groupRe[out + p * numGroups] += fr * sh;
+          groupIm[out + p * numGroups] += fim * sh;
+        }
+      }
+    }
+  }
+  // field += a source's zero-delay field turned by its delay's phase at each frequency.
+  function addTurnedField(re, im, delayMs, freqList, numPoints, fieldRe, fieldIm){
+    for(let fi = 0; fi < freqList.length; fi++){
+      const phase = 2 * Math.PI * freqList[fi] * (delayMs / 1000), c = Math.cos(phase), sn = Math.sin(phase);
+      for(let p = fi * numPoints, end = p + numPoints; p < end; p++){
+        fieldRe[p] += re[p] * c - im[p] * sn;
+        fieldIm[p] += re[p] * sn + im[p] * c;
+      }
+    }
+  }
+  // The averaged dB at each cloud, [cloud][freqIndex], of the other sources'
+  // field plus the candidate's: its groups weighted by groupWeight, at its
+  // level and delay.
+  function cloudResponsesDb(groupWeight, groupRe, groupIm, numGroups, fieldRe, fieldIm, gain, delayMs, freqList, numPoints, cloudSizes){
+    const out = cloudSizes.map(() => new Array(freqList.length));
+    for(let fi = 0; fi < freqList.length; fi++){
+      const phase = 2 * Math.PI * freqList[fi] * (delayMs / 1000);
+      const ar = gain[fi] * Math.cos(phase), ai = gain[fi] * Math.sin(phase);
+      let p = fi * numPoints;
+      for(let c = 0; c < cloudSizes.length; c++){
+        let sumPower = 0;
+        for(let j = 0; j < cloudSizes[c]; j++, p++){
+          let sr = 0, si = 0;
+          for(let g = 0, base = p * numGroups; g < numGroups; g++){
+            sr += groupWeight[g] * groupRe[base + g];
+            si += groupWeight[g] * groupIm[base + g];
+          }
+          const re = fieldRe[p] + ar * sr - ai * si, im = fieldIm[p] + ar * si + ai * sr;
+          sumPower += re * re + im * im;
+        }
+        out[c][fi] = 10 * Math.log10(Math.max(sumPower / cloudSizes[c], 1e-12));
+      }
+    }
+    return out;
+  }
+
   // ---- Shared grid-candidate scan ----
   // A generator, not a plain function, so the exact same "walk the grid,
   // validate a candidate, score it" logic can drive both a synchronous caller
@@ -2638,8 +2802,13 @@
     // Only other subs count toward nullAvoidance's spread penalty; a point
     // with its own keepOut is a main speaker (see sourceExclusionPoints).
     const spreadPoints = (excludePoints || []).filter(p => !p.keepOut);
-    // The listeners' averaging clouds are the same for every candidate.
-    const averaging = seatAveraging && Object.assign({}, seatAveraging, { sampleShapes: centerSampleShapes(listenerPositions, modes, seatAveraging) });
+    // With seatAveraging every candidate is scored by a grid scanner (see
+    // seatCloudScanner), which gives the same responses as scoreSubPosition
+    // without redoing, per candidate, the work they all share.
+    const scanner = seatAveraging && seatCloudScanner({
+      modes, freqList, otherSources, physicsCtx, candidateTemplate, subHeightFt: z,
+      sampleShapes: centerSampleShapes(listenerPositions, modes, seatAveraging)
+    });
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
@@ -2653,7 +2822,9 @@
           others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo, room);
           candidate = others.pop();
         }
-        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes, averaging);
+        const eval_ = scanner
+          ? scoreCandidateResponses(scanner.responses(candidate, others), candidate, room, listenerPositions, mode, spreadPoints)
+          : scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -3121,6 +3292,7 @@
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
+    seatCloudScanner,
     centerSampleShapes,
     axialModes,
     estimatedT60,
