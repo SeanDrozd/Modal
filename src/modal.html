@@ -2202,7 +2202,7 @@ function applyAppearanceAttrs(mode, theme){
     }
 
     const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
-    let refinedSubs, lastBest, lastAllCandidates;
+    let refinedSubs, lastBest, lastAllCandidates, alternatives;
 
     if(existingSubs.length === 1){
       const result = await RoomPhysics.optimizeSubPlacementAsync({
@@ -2218,6 +2218,9 @@ function applyAppearanceAttrs(mode, theme){
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
       lastBest = result.best;
       lastAllCandidates = result.allCandidates;
+      // the search's runners-up, re-graded below so the card's measure has the final say
+      alternatives = RoomPhysics.topCandidates(result.allCandidates, 5).slice(1)
+        .map(c => [Object.assign({}, existingSubs[0], { x: c.x, y: c.y, z: c.z })]);
     } else {
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
@@ -2231,10 +2234,11 @@ function applyAppearanceAttrs(mode, theme){
       lastAllCandidates = lastRound ? lastRound.allCandidates : [];
     }
     // The search scores candidates more coarsely than the result card grades
-    // them, so its pick is only suggested when the card grades it higher too.
+    // them, so the card's measure grades its pick (and with one sub, its
+    // runners-up) and a move is only suggested when that grades higher too.
     const check = RoomPhysics.checkSubMoves({
       seats: listenerPositions, reference, freqs: resultFreqs(freqLow, freqHigh), otherSources,
-      current: existingSubs, picked: refinedSubs, physicsCtx: scene.physicsCtx, mode: optimizerMode, timeAlignTo
+      current: existingSubs, picked: refinedSubs, alternatives, physicsCtx: scene.physicsCtx, mode: optimizerMode, timeAlignTo
     });
     refinedSubs = check.placedSubs;
     const movedCount = check.moved.filter(Boolean).length;

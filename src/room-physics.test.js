@@ -1146,6 +1146,40 @@ test('checkSubMoves keeps the current subs unless the picked ones grade meaningf
   assert.deepStrictEqual(same.moved, [false, false]);
 });
 
+test('checkSubMoves grades every alternative and judges the one that grades highest', () => {
+  const room = { w: 18, d: 14, h: 8 };
+  const ctx = { room, wallAbsorption: 0.3 };
+  const main = (id, x) => ({ id, x, y: 1, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true });
+  const sub = (x, y) => ({ id: 11, x, y, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true });
+  const base = {
+    seats: [7, 9, 11].map((x, i) => ({ x, y: 9, z: 3.5, weight: i === 1 ? 1 : 0.7 })), reference: { x: 9, y: 9, z: 3.5 },
+    freqs: P.logSpacedFreqs(20, 120, 48), otherSources: [main(1, 4), main(2, 14)], physicsCtx: ctx, mode: 'nullAvoidance'
+  };
+  const grade = (subs) => P.gradePlacement(base.seats, base.reference, base.freqs, base.otherSources.concat(subs), ctx, base.mode).stats.score;
+  const current = [sub(9, 7)];
+  const spots = [[0.5, 0.5], [17.5, 13.5], [9, 0.5], [0.5, 7], [12, 4]].map(([x, y]) => [sub(x, y)]);
+  const gains = spots.map(subs => grade(subs) - grade(current));
+  const bestIdx = gains.indexOf(Math.max(...gains));
+  assert.ok(gains[bestIdx] >= P.PLACEMENT_GAIN_DB.modest, `some spot is worth a move (${gains.map(g => g.toFixed(1)).join(', ')})`);
+  const pickedIdx = bestIdx === 0 ? 1 : 0;
+  const alternatives = spots.filter((_, i) => i !== pickedIdx).concat([current.map(s => ({ ...s }))]);
+  const result = P.checkSubMoves({ ...base, current, picked: spots[pickedIdx], alternatives });
+  assert.deepStrictEqual(result.placedSubs.map(s => [s.x, s.y]), [[spots[bestIdx][0].x, spots[bestIdx][0].y]]);
+  assert.deepStrictEqual(result.moved, [true]);
+  approx(result.gainDb, gains[bestIdx], 1e-9);
+  // Without them, only the pick is judged.
+  approx(P.checkSubMoves({ ...base, current, picked: spots[pickedIdx] }).gainDb, gains[pickedIdx], 1e-9);
+  // An alternative that is the current placement is not a move.
+  assert.strictEqual(P.checkSubMoves({ ...base, current, picked: current, alternatives: [current] }).gainDb, null);
+});
+
+test('topCandidates returns the highest-scoring candidates, best first', () => {
+  const all = [{ x: 1, score: 3 }, { x: 2, score: 9 }, { x: 3, score: -1 }, { x: 4, score: 5 }];
+  assert.deepStrictEqual(P.topCandidates(all, 2).map(c => c.x), [2, 4]);
+  assert.deepStrictEqual(P.topCandidates(all, 10).map(c => c.x), [2, 4, 1, 3]);
+  assert.deepStrictEqual(all.map(c => c.x), [1, 2, 3, 4], 'the input is not reordered');
+});
+
 test('scoreSubPosition with seatAveraging scores the spatially averaged response at each seat', () => {
   const room = { w: 12, d: 9, h: 8 };
   const ctx = { room, wallAbsorption: 0.2 };

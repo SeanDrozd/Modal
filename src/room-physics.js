@@ -2297,17 +2297,33 @@
   // they grade at least PLACEMENT_GAIN_DB.modest higher, since a smaller
   // gain is what the card calls "Little to gain" and is not worth moving a
   // sub for; otherwise copies of `current` with every moved[i] false.
-  // gainDb is null when the search moved nothing.
+  // gainDb is null when the search moved nothing. `alternatives`
+  // (optional) are more placements like `picked`, such as the search's
+  // runners-up (topCandidates): every one is graded too, and the one that
+  // grades highest is the one judged, so the final choice is made by the
+  // card's measure rather than the search's.
   function checkSubMoves(options){
-    const { seats, reference, freqs, otherSources, current, picked, physicsCtx, mode, timeAlignTo } = options;
+    const { seats, reference, freqs, otherSources, current, picked, physicsCtx, mode, timeAlignTo, alternatives } = options;
     const keep = (gainDb) => ({ placedSubs: current.map(s => Object.assign({}, s)), moved: current.map(() => false), gainDb });
-    if(picked.every((p, i) => p.x === current[i].x && p.y === current[i].y && p.z === current[i].z)) return keep(null);
-    let after = otherSources.concat(picked);
-    if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
+    const isCurrent = (subs) => subs.every((p, i) => p.x === current[i].x && p.y === current[i].y && p.z === current[i].z);
+    const choices = [picked].concat(alternatives || []).filter(subs => !isCurrent(subs));
+    if(choices.length === 0) return keep(null);
     const grade = (sources) => gradePlacement(seats, reference, freqs, sources, physicsCtx, mode).stats;
-    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after));
+    const before = grade(otherSources.concat(current));
+    let best = null, gainDb = -Infinity;
+    for(const subs of choices){
+      let after = otherSources.concat(subs);
+      if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
+      const gain = comparePlacements(before, grade(after)).gainDb;
+      if(gain > gainDb){ gainDb = gain; best = subs; }
+    }
     if(gainDb < PLACEMENT_GAIN_DB.modest) return keep(gainDb);
-    return { placedSubs: picked.map(p => Object.assign({}, p)), moved: picked.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
+    return { placedSubs: best.map(p => Object.assign({}, p)), moved: best.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
+  }
+  // The `count` highest-scoring entries of a search's allCandidates, best
+  // first, as checkSubMoves' shortlist to grade the card's way.
+  function topCandidates(allCandidates, count){
+    return allCandidates.slice().sort((a, b) => b.score - a.score).slice(0, count);
   }
   // The four walls straight to a point's left, right, front and back, each
   // with the distance to it and where it is: { left: { wall: 'left',
@@ -3083,6 +3099,7 @@
     comparePlacements,
     PLACEMENT_GAIN_DB,
     checkSubMoves,
+    topCandidates,
     wallsAround,
     nearestWallDistances,
     rowFootprintRect,
