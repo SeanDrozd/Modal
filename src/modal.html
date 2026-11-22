@@ -260,6 +260,8 @@ function applyAppearanceAttrs(mode, theme){
         <button id="clearOptimizerBtn" class="small" style="margin-left:auto;">Clear result</button>
       </div>
       <button id="acceptOptimizerBtn" class="full" style="display:none; margin-top:6px;">Add suggested sub(s) as sources</button>
+      <button id="resetSuggestionBtn" class="full" style="display:none; margin-top:6px;">Back to suggested spots</button>
+      <div class="hint" id="suggestionDragHint" style="display:none;">Can't put a sub exactly there? Drag its star on the map. The response chart follows it.</div>
     </div>
   </div>
 
@@ -2186,7 +2188,7 @@ function applyAppearanceAttrs(mode, theme){
     const lastRound = result.polishResults.length
       ? result.polishResults[result.polishResults.length - 1]
       : result.roundResults[result.roundResults.length - 1] || null;
-    optimizerResult = lastRound ? { best: lastRound.best, allCandidates: lastRound.allCandidates, gridStepFt: step, placedSubs } : null;
+    optimizerResult = lastRound ? { best: lastRound.best, allCandidates: lastRound.allCandidates, gridStepFt: step, placedSubs, suggestedSubs: copySubs(placedSubs) } : null;
 
     if(placedSubs.length === 0){
       status.innerHTML = '<span style="color:var(--bad)">No valid candidate positions found. Check your off-limits/allowed zones.</span>';
@@ -2280,7 +2282,7 @@ function applyAppearanceAttrs(mode, theme){
       draw();
       return;
     }
-    optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: refinedSubs, applyInPlace: true };
+    optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: refinedSubs, suggestedSubs: copySubs(refinedSubs), applyInPlace: true };
 
     const keptCount = existingSubs.length - movedCount;
     const posList = refinedSubs.map(s => `(${formatLength(s.x)},${formatLength(s.y)})`).join(', ');
@@ -2877,6 +2879,18 @@ function applyAppearanceAttrs(mode, theme){
     ctx.restore();
   }
 
+  // A 5-point star centred on (px, py), as the current path.
+  function starPath(px, py){
+    const outerR = 12, innerR = 5;
+    ctx.beginPath();
+    for(let i=0; i<10; i++){
+      const r = i % 2 === 0 ? outerR : innerR;
+      const angle = (Math.PI/5)*i - Math.PI/2;
+      const sx = px + r*Math.cos(angle), sy = py + r*Math.sin(angle);
+      if(i===0) ctx.moveTo(sx,sy); else ctx.lineTo(sx,sy);
+    }
+    ctx.closePath();
+  }
   function drawOptimizerWinner(offX, offY, scale){
     if(!optimizerResult || optimizerResult.unchanged) return;
     // Prefer showing every placed sub (multi-sub result); fall back to just
@@ -2887,6 +2901,16 @@ function applyAppearanceAttrs(mode, theme){
     if(points.length === 0) return;
 
     ctx.save();
+    // A star the person moved: a hollow star where the search put it.
+    (optimizerResult.suggestedSubs || []).forEach((o, i) => {
+      if(o.x === points[i].x && o.y === points[i].y) return;
+      starPath(offX + o.x*scale, offY + o.y*scale);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill();
+      ctx.setLineDash([3, 2]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#000000'; ctx.stroke();
+      ctx.setLineDash([]);
+    });
     for(const b of points){
       const px = offX + b.x*scale, py = offY + b.y*scale;
       // A refined existing sub: a line from where it is now to the suggestion.
@@ -2898,16 +2922,7 @@ function applyAppearanceAttrs(mode, theme){
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      // 5-point star
-      const outerR = 12, innerR = 5;
-      for(let i=0; i<10; i++){
-        const r = i % 2 === 0 ? outerR : innerR;
-        const angle = (Math.PI/5)*i - Math.PI/2;
-        const sx = px + r*Math.cos(angle), sy = py + r*Math.sin(angle);
-        if(i===0) ctx.moveTo(sx,sy); else ctx.lineTo(sx,sy);
-      }
-      ctx.closePath();
+      starPath(px, py);
       ctx.fill();
       ctx.stroke();
       ctx.font = 'bold 15.5px sans-serif';
@@ -3388,10 +3403,11 @@ function applyAppearanceAttrs(mode, theme){
   //     optimizer's pending suggestion (optimizerResult.placedSubs) added to
   //     the source list -- null when no suggestion is currently pending.
   let freqResponseData = null;
-  function sourcesWithSuggestion(activeSources){
+  // `subs` defaults to the pending suggestion as it stands now, after any star drags.
+  function sourcesWithSuggestion(activeSources, subs = optimizerResult.placedSubs){
     const suggested = optimizerResult.applyInPlace
-      ? activeSources.map(s => optimizerResult.placedSubs.find(p => p.id === s.id) || s)
-      : activeSources.concat(optimizerResult.placedSubs);
+      ? activeSources.map(s => subs.find(p => p.id === s.id) || s)
+      : activeSources.concat(subs);
     // Applying the suggestion re-runs automatic time-align (applyOptimizerResult), so it is shown with the delays that will give.
     if(!autoTimeAlignEnabled || suggested.length < 2) return suggested;
     const delays = alignedDelays(suggested);
@@ -3495,7 +3511,7 @@ function applyAppearanceAttrs(mode, theme){
     } else {
       const parts = [];
       if(hasSpread) parts.push('Shaded blue = range across all listening positions.');
-      if(hasAfter) parts.push("Green = optimizer's suggested placement, not yet added.");
+      if(hasAfter) parts.push(suggestionMoved() ? 'Green = the suggested placement with your moved stars, not yet added.' : "Green = optimizer's suggested placement, not yet added.");
       legendEl.textContent = parts.join(' ');
     }
   }
@@ -4089,6 +4105,7 @@ function applyAppearanceAttrs(mode, theme){
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
         acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
         acceptBtn.style.display = 'block';
+        document.getElementById('suggestionDragHint').style.display = 'block';
       }
       return true;
     } finally {
@@ -4104,6 +4121,8 @@ function applyAppearanceAttrs(mode, theme){
     document.getElementById('optimizerStatus').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
     document.getElementById('acceptOptimizerBtn').style.display = 'none';
+    document.getElementById('resetSuggestionBtn').style.display = 'none';
+    document.getElementById('suggestionDragHint').style.display = 'none';
   }
   function clearOptimizerResult(){
     resetOptimizerPanel();
@@ -4136,10 +4155,47 @@ function applyAppearanceAttrs(mode, theme){
     edited('layout', 'sources');
   }
   document.getElementById('acceptOptimizerBtn').addEventListener('click', applyOptimizerResult);
+
+  // ---- Moving a suggested sub ----
+  // The person can drag a pending suggestion's stars to a spot they can
+  // actually use; the response chart, the guide's result card and Apply
+  // then all use the moved spots. `suggestedSubs` keeps where the search put
+  // them, so they can be put back.
+  const copySubs = (subs) => subs.map(s => ({ ...s }));
+  // The stars that can be dragged: none while there is no suggestion.
+  function pendingStars(){
+    return optimizerResult && !optimizerResult.unchanged && optimizerResult.suggestedSubs ? optimizerResult.placedSubs : [];
+  }
+  function suggestionMoved(){
+    return pendingStars().some((p, i) => p.x !== optimizerResult.suggestedSubs[i].x || p.y !== optimizerResult.suggestedSubs[i].y);
+  }
+  // Bumped once a moved suggestion has settled, so the guide re-grades it no
+  // more often than the response chart is recomputed.
+  let suggestionVersion = 0, suggestionTimer = null;
+  function suggestionChanged(){
+    document.getElementById('resetSuggestionBtn').style.display = suggestionMoved() ? 'block' : 'none';
+    clearTimeout(suggestionTimer);
+    suggestionTimer = setTimeout(() => { suggestionVersion++; scheduleDraw(); }, 200);
+    scheduleDraw();
+  }
+  function moveSuggestedSub(id, x, y){
+    const star = pendingStars().find(p => p.id === id);
+    if(!star) return; // the suggestion went mid-drag (Undo, say)
+    Object.assign(star, insideRoom(x, y));
+    suggestionChanged();
+  }
+  function resetSuggestedSubs(){
+    if(!pendingStars().length) return;
+    optimizerResult.placedSubs = copySubs(optimizerResult.suggestedSubs);
+    suggestionChanged();
+    clearTimeout(suggestionTimer); // nothing to wait for: a button press, not a drag
+    suggestionVersion++;
+  }
+  document.getElementById('resetSuggestionBtn').addEventListener('click', resetSuggestedSubs);
   document.getElementById('showHeatmapToggle').addEventListener('change', () => draw());
 
   // ---- Dragging ----
-  let dragTarget = null; // source id, listenerRow id, or null -- ids are unique across both (shared nextId counter)
+  let dragTarget = null; // source id, listenerRow id, { star: id } (see hitTest), or null. Ids are unique across sources and rows (shared nextId counter).
 
   function getRoomCoords(evt){
     const rect = canvas.getBoundingClientRect();
@@ -4203,12 +4259,19 @@ function applyAppearanceAttrs(mode, theme){
   // placed. Ids come from the same shared `nextId` counter as sources/
   // zones, so a matched id is unambiguous -- moveTarget below checks
   // `sources` first, then `listenerRows`, same as any other id-keyed list.
+  // A suggested sub's star is hit too, as { star: id } since a refined sub's
+  // star has that sub's own id. A star wins a tie, so a star drawn on top of
+  // the sub it refines is the one grabbed.
   function hitTest(evt){
     const {x,y,cssScale} = getRoomCoords(evt);
     let nearest = null, nearestDist = hitRadiusFt(evt, 0.8, cssScale);
     for(const p of sources.concat(listenerRows)){
       const d = Math.hypot(x - p.x, y - p.y);
       if(d < nearestDist){ nearest = p.id; nearestDist = d; }
+    }
+    for(const p of pendingStars()){
+      const d = Math.hypot(x - p.x, y - p.y);
+      if(d <= nearestDist){ nearest = { star: p.id }; nearestDist = d; }
     }
     return nearest;
   }
@@ -4420,7 +4483,8 @@ function applyAppearanceAttrs(mode, theme){
   }
   function moveTarget(evt){
     const {x,y} = getRoomCoords(evt);
-    moveToRoomPoint(dragTarget, x, y);
+    if(dragTarget.star != null) moveSuggestedSub(dragTarget.star, x, y);
+    else moveToRoomPoint(dragTarget, x, y);
   }
   // Pointer Events give mouse, touch and pen one code path. Capturing the
   // pointer on the canvas keeps move/up events coming even when the drag
@@ -4600,9 +4664,14 @@ function applyAppearanceAttrs(mode, theme){
     const measure = (srcs) => RoomPhysics.gradePlacement(seats, reference, freqs, srcs, physicsCtx(), optimizerMode);
     const after = measure(sourcesWithSuggestion(active));
     const before = active.some(isSubSource) ? measure(active) : null;
+    // With stars moved, `after` is the moved placement, and `vsSuggested`
+    // compares it with the spots the search found.
+    const moved = suggestionMoved();
+    const suggested = moved ? measure(sourcesWithSuggestion(active, optimizerResult.suggestedSubs)) : null;
     return {
-      freqs, before, after, seats: seats.length,
+      freqs, before, after, seats: seats.length, moved, version: suggestionVersion,
       comparison: before ? RoomPhysics.comparePlacements(before.stats, after.stats, optimizerMode) : null,
+      vsSuggested: suggested ? RoomPhysics.comparePlacements(suggested.stats, after.stats, optimizerMode) : null,
       // from: where a refined existing sub stands now; null for a new sub.
       subs: optimizerResult.placedSubs.map(p => {
         const current = optimizerResult.applyInPlace && sources.find(s => s.id === p.id);
@@ -4740,6 +4809,10 @@ function applyAppearanceAttrs(mode, theme){
     },
     applyOptimizerResult,
     clearOptimizerResult,
+    // Puts every dragged star back where the search put it.
+    resetSuggestedSubs,
+    // Changes once a dragged star settles; optimizerOutcome().version is the value it was measured at.
+    suggestionVersion: () => suggestionVersion,
     // The green-to-red map of how every candidate position scored.
     getScoreHeatmap: () => document.getElementById('showHeatmapToggle').checked,
     setScoreHeatmap(on){ document.getElementById('showHeatmapToggle').checked = on; draw(); },

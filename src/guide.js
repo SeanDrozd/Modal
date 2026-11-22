@@ -670,7 +670,7 @@
       return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz">
           ${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
         </svg>
-        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">Suggested</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
+        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">${o.moved ? 'Moved' : 'Suggested'}</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
     }
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
@@ -684,14 +684,22 @@
       similar: 'Little to gain. The current placement is already close to the best one found.',
       worse: 'No improvement found. The current placement measures better than the best one the search found, so leave it as it is.'
     };
+    // The same verdicts for spots the person moved a star to.
+    const MOVED_VERDICTS = {
+      major: 'Major improvement, even with the moved spots.',
+      modest: 'Modest improvement, even with the moved spots.',
+      similar: 'Little to gain. With the moved spots, this placement is about as good as the current one.',
+      worse: 'Worse than the current placement. Try another spot, or go back to the suggested spots.'
+    };
     function resultCard(o){
       const change = (label, before, after) => `<div class="guide-stat"><span>${label}</span><strong>${before != null ? `${before} → ` : ''}${after}</strong></div>`;
       const b = o.before, a = o.after;
       const nullText = (m) => `${fmtDb(m.stats.worstMinDb - m.stats.avgMean)} at ${o.freqs[m.stats.worstMinIndex].toFixed(0)} Hz`;
       return `
         ${shapeWarning()}
-        ${o.comparison ? `<p class="guide-verdict">${VERDICTS[o.comparison.verdict]}</p>` : ''}
+        ${o.comparison ? `<p class="guide-verdict">${(o.moved ? MOVED_VERDICTS : VERDICTS)[o.comparison.verdict]}</p>` : ''}
         ${b ? change('Optimizer score' + term('score'), null, signedDb(o.comparison.gainDb, 1)) : ''}
+        ${o.moved ? change('Score versus suggested spots' + term('score'), null, signedDb(o.vsSuggested.gainDb, 1)) : ''}
         ${b ? `<p class="guide-hint">${SCORE_COUNTS[app.getOptimizerMode()]}</p>` : ''}
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
@@ -704,8 +712,12 @@
           const stays = sub.from && sub.from.x === sub.x && sub.from.y === sub.y;
           return `<li><strong>${esc(sub.name)}</strong>: ${stays ? 'leave it where it is' : `${sub.from ? 'move it to' : 'place it'} ${to}`}.</li>`;
         }).join('')}</ul>
+        <p class="guide-hint">${o.moved
+          ? 'The hollow star marks where the search put a sub.'
+          : `Can't put a sub exactly there? Drag its star on the map, and the score and chart follow it.`}</p>
         <div class="guide-actions">
           <button class="primary" id="guideApplyBtn">Apply</button>
+          ${o.moved ? '<button id="guideResetSpotsBtn">Back to suggested spots</button>' : ''}
           <button id="guideAlternativesBtn" aria-pressed="${app.getScoreHeatmap()}">Show alternatives</button>
           <button id="guideCantUseBtn">Can't use that spot</button>
         </div>
@@ -790,6 +802,11 @@
           app.autofitColorRange();
           refresh();
           panel.querySelector('#guideNextBtn').focus(); // Apply went away with the card
+        } else if(id === 'guideResetSpotsBtn'){
+          app.resetSuggestedSubs();
+          outcome = app.optimizerOutcome();
+          refresh();
+          result.querySelector('#guideApplyBtn').focus(); // the reset button went away with the moved spots
         } else if(id === 'guideAlternativesBtn'){
           app.setScoreHeatmap(!app.getScoreHeatmap());
           shown = null;
@@ -807,6 +824,8 @@
         if(app.optimizerRunning()) return;
         // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.
         if(outcome && typeof outcome === 'object' && !app.optimizerOutcomePending()) outcome = null;
+        // A star dragged on the map: grade the moved spots.
+        if(outcome && typeof outcome === 'object' && outcome.version !== app.suggestionVersion()) outcome = app.optimizerOutcome();
         if(shown === outcome) return;
         shown = outcome;
         runBtn.textContent = outcome ? 'Optimize again' : 'Optimize sub placement';
