@@ -60,7 +60,7 @@
     mode: { term: 'Room mode', text: "A frequency at which bass reflecting between the room's surfaces reinforces itself into a standing wave. At that frequency some parts of the room are loud and others nearly silent." },
     null: { term: 'Null', text: 'A frequency at which reflections cancel the direct sound at one spot, so the level drops sharply there. More power or EQ does not fill a null; moving the sub or the seat does.' },
     roomCorrection: { term: 'Room correction', text: "The AVR's automatic setup: it plays test tones through a supplied microphone, then sets speaker distances, levels and EQ. Audyssey, YPAO, Dirac Live, MCACC, AccuEQ and ARC are common names for it." },
-    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: average level minus response variation, with a further penalty for a null more than 20 dB deep. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
+    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. Level does not count, since the sub\'s gain sets it. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
     variation: { term: 'Response variation', text: 'The standard deviation of level across the frequency range, at the seat where it is largest. Lower is more even.' },
     seatToSeat: { term: 'Seat-to-seat variation', text: 'Half the gap between the loudest and the quietest seat at each frequency, averaged over the range. Lower means every seat gets closer to the same bass.' },
     spatialAverage: { term: 'Spatial averaging', text: 'The response is averaged over 20 points within 2 ft (0.6 m) of the seat, not read at one exact point, much like moving a measurement mic around the listening position.' }
@@ -675,8 +675,8 @@
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
     const SCORE_COUNTS = {
-      balanced: 'The score weighs level, evenness and the deepest null across every seat. The chart shows the main seat only.',
-      nullAvoidance: 'With room correction, the score counts only the deepest null at any seat, since correction can tame the rest. The chart shows the main seat only.'
+      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls, but not level, since the sub\'s gain sets it. The chart shows the main seat only.',
+      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest. The chart shows the main seat only.'
     };
     const VERDICTS = {
       major: 'Major improvement.',
@@ -728,10 +728,12 @@
           <p class="guide-hint">These can be changed under Optimizer and Expert in the full tool.</p>
         </details>
         <button class="primary guide-run" id="guideOptimizeBtn">Optimize sub placement</button>
+        <progress class="search-progress" id="guideOptimizeProgress" max="1" value="0" hidden aria-label="Search progress"></progress>
         <p class="guide-hint" id="guideOptimizeStatus" role="status" aria-live="polite"></p>
         <div id="guideResult"></div>`;
       const runBtn = body.querySelector('#guideOptimizeBtn');
       const status = body.querySelector('#guideOptimizeStatus');
+      const progress = body.querySelector('#guideOptimizeProgress');
       const result = body.querySelector('#guideResult');
       // What the last search led to: null (nothing yet), 'none' (no valid
       // position), 'applied', 'kept' (nothing measured better than where the
@@ -750,31 +752,36 @@
         if(!btn) return;
         state.roomCorrection = btn.dataset.rc;
         save();
-        app.setOptimizerMode(ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode);
+        const mode = ROOM_CORRECTION.find(c => c.id === btn.dataset.rc).mode;
+        if(mode !== app.getOptimizerMode()) outcome = null; // the result shown was found in the other mode, and the app drops it
+        app.setOptimizerMode(mode);
         refresh();
       });
+      // While a search runs, the run button stops it.
       async function run(){
-        runBtn.disabled = true;
+        runBtn.textContent = 'Stop';
         result.innerHTML = '';
         shown = undefined; // the card was just cleared, so the next refresh rebuilds it even for the same outcome as before
         const scope = `${settings.positions} positions across ${settings.seats} ${settings.seats === 1 ? 'seat' : 'seats'}`;
-        const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase) => {
+        progress.value = 0;
+        progress.hidden = false;
+        const kept = await app.runOptimizer(state.plannedSubs, (fraction, subIndex, numSubs, phase, overall) => {
+          progress.value = overall;
           status.textContent = `${phase === 'polish' ? 'Refining' : 'Evaluating'} ${scope}${numSubs > 1 ? `, sub ${subIndex + 1} of ${numSubs}` : ''}... ${Math.round(fraction * 100)}%`;
         });
         if(!body.isConnected) return; // the step was left while the search ran
-        runBtn.disabled = false;
-        if(document.activeElement === document.body) runBtn.focus({ preventScroll: true }); // disabling the button dropped focus
-        outcome = kept ? latest() || 'none' : null;
+        progress.hidden = true;
+        outcome = kept === true ? latest() || 'none' : null;
         if(outcome === 'none') app.clearOptimizerResult();
         app.setScoreHeatmap(false);
         refresh();
-        if(!kept) status.textContent = kept === null ? app.SOLVE_FAILED_TEXT : app.OPTIMIZER_DROPPED_TEXT;
+        if(kept !== true) status.textContent = kept === null ? app.SOLVE_FAILED_TEXT : kept === 'stopped' ? app.OPTIMIZER_STOPPED_TEXT : app.OPTIMIZER_DROPPED_TEXT;
         // Bring the card up clear of the sticky footer, but never push its first line off the top.
         const scroller = panel.parentElement, card = result.getBoundingClientRect();
         const hidden = card.bottom - panel.querySelector('.guide-footer').getBoundingClientRect().top;
         if(hidden > 0) scroller.scrollBy(0, Math.min(hidden, card.top - scroller.getBoundingClientRect().top));
       }
-      runBtn.addEventListener('click', run);
+      runBtn.addEventListener('click', () => app.optimizerRunning() ? app.stopOptimizer() : run());
       result.addEventListener('click', (e) => {
         const id = e.target.closest('button') && e.target.closest('button').id;
         if(id === 'guideApplyBtn'){
@@ -796,6 +803,8 @@
       let shown; // what `result` currently shows, so it is rebuilt only on a change
       function refresh(){
         pressOnly(body.querySelector('#guideRoomCorrection'), b => b.dataset.rc === state.roomCorrection);
+        // While a search runs the button stays Stop and the card stays empty; run() refreshes once it ends.
+        if(app.optimizerRunning()) return;
         // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.
         if(outcome && typeof outcome === 'object' && !app.optimizerOutcomePending()) outcome = null;
         if(shown === outcome) return;
@@ -809,7 +818,7 @@
           ? `<p class="guide-warning">No valid positions. Obstacles cover the searchable area; remove or shrink one. <button class="guide-link" id="guideObstaclesLink">Back to obstacles</button></p>`
           : outcome === 'kept'
           ? `<div class="guide-result">${shapeWarning()}${keptGainDb > 0
-            ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb} dB isn't worth moving a sub for, so leave them where they are.</p>`
+            ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb()} dB isn't worth moving a sub for, so leave them where they are.</p>`
             : `<p class="guide-verdict">${VERDICTS.worse}</p>`}</div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }

@@ -512,3 +512,10 @@ body.guide-active:not(.guide-shows-field) #bottomPanel .freq-row, body.guide-act
      upward and sideways only, so it still never covers the slider's thumb. */
   #sweepEndMarker::before { content: ''; position: absolute; inset: -20px -17px 0 -17px; }
 }
+
+/* Overall progress of a sub search, under the run buttons. */
+.search-progress { display: block; width: 100%; height: 6px; margin: 8px 0 0; border: none; border-radius: 3px; background: var(--panel-2); color: var(--accent); appearance: none; -webkit-appearance: none; }
+.search-progress[hidden] { display: none; }
+.search-progress::-webkit-progress-bar { background: var(--panel-2); border-radius: 3px; }
+.search-progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
+.search-progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }

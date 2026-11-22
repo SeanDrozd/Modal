@@ -414,6 +414,49 @@
     return { re, im };
   }
 
+  // Every mode's shape function at one point (feet), in the order of
+  // `modes` (enumerateModes output). The shapes depend only on the room and
+  // the point, not on the sources or the frequency, so a caller that
+  // evaluates the same point again and again (a seat across a frequency
+  // sweep, or across every candidate of a sub search) works them out once
+  // and sums with fieldFromModeShapes instead of computeFieldAtPoint.
+  function modeShapesAtPoint(px, py, pz, modes){
+    const pxM = px * FT_TO_M, pyM = py * FT_TO_M, pzM = pz * FT_TO_M;
+    const out = new Float64Array(modes.length);
+    const plan = modes.floorPlan;
+    if(plan){
+      const { cells, weights } = floorPlanStencil(plan, px, py);
+      const { numModes, shapes } = plan;
+      const cosZ = [];
+      for(let i = 0; i < modes.length; ){
+        const shape = modes[i].shape;
+        let phi = 0;
+        for(let q = 0; q < cells.length; q++) phi += weights[q] * shapes[cells[q] * numModes + shape];
+        for(; i < modes.length && modes[i].shape === shape; i++){
+          const mode = modes[i];
+          out[i] = phi * (cosZ[mode.nz] ?? (cosZ[mode.nz] = Math.cos(mode.invLz * pzM)));
+        }
+      }
+      return out;
+    }
+    for(let i = 0; i < modes.length; i++){
+      const mode = modes[i];
+      out[i] = Math.cos(mode.invLx * pxM) * Math.cos(mode.invLy * pyM) * Math.cos(mode.invLz * pzM);
+    }
+    return out;
+  }
+  // computeFieldAtPoint for a point given as its modeShapesAtPoint (from the
+  // same modes `precomputed` was built with). The same sum in the same
+  // order, so the same result.
+  function fieldFromModeShapes(shapes, precomputed){
+    let re = 0, im = 0;
+    for(let i = 0; i < precomputed.length; i++){
+      re += precomputed[i].coefRe * shapes[i];
+      im += precomputed[i].coefIm * shapes[i];
+    }
+    return { re, im };
+  }
+
   // Factors computeFieldAtPoint's sum for a whole map at one listening
   // height. Every mode shape is cos(kx*x)*cos(ky*y)*cos(kz*z), and only a
   // few distinct kx values exist (11 for a 20 x 15 x 8 ft room's 261 modes),
@@ -1656,18 +1699,24 @@
   // centers: [{x,y,z}, ...]
   // Returns { freqs, perCenterDb }, where perCenterDb[i][j] is the dB at
   // centers[i] for freqs[j] (same order as the input freqs array).
+  // The mode shapes at every sample point are worked out once and shared
+  // by every frequency (see modeShapesAtPoint). A caller that averages at
+  // the same centers again and again, with other sources each time, can
+  // pass what does not change between its calls:
+  //   opts.modes: the room's enumerateModes(ctx).
+  //   opts.sampleShapes: centerSampleShapes(centers, modes, opts), one entry
+  //     per center in the same order. It is the cloud, so opts.radiusFt and
+  //     opts.numPoints are not read when it is given.
   function spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts){
-    const radiusFt = opts?.radiusFt ?? 2;
-    const numPoints = opts?.numPoints ?? 20;
-    const modes = enumerateModes(ctx);
-    const centerSamples = centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints));
+    const modes = opts?.modes || enumerateModes(ctx);
+    const sampleShapes = opts?.sampleShapes || centerSampleShapes(centers, modes, opts);
     const perCenterDb = centers.map(() => []);
     for(const freq of freqs){
       const precomputed = precomputeModalField(sources, freq, ctx, modes);
-      centerSamples.forEach((samplePoints, i) => {
+      sampleShapes.forEach((samplePoints, i) => {
         let sumPower = 0;
-        for(const p of samplePoints){
-          const { re, im } = computeFieldAtPoint(p.x, p.y, p.z, precomputed);
+        for(const shapes of samplePoints){
+          const { re, im } = fieldFromModeShapes(shapes, precomputed);
           sumPower += re*re + im*im;
         }
         const avgPower = sumPower / samplePoints.length;
@@ -1675,6 +1724,15 @@
       });
     }
     return { freqs, perCenterDb };
+  }
+
+  // modeShapesAtPoint at every point of the averaging cloud (opts.radiusFt,
+  // opts.numPoints, as spatiallyAveragedResponseMulti) round each center:
+  // [center][samplePoint] = shapes.
+  function centerSampleShapes(centers, modes, opts){
+    const radiusFt = opts?.radiusFt ?? 2;
+    const numPoints = opts?.numPoints ?? 20;
+    return centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints).map(p => modeShapesAtPoint(p.x, p.y, p.z, modes)));
   }
 
   // ---- Shortest path inside a floor plan ----
@@ -2027,12 +2085,11 @@
   // sources — mains, other subs) by evaluating the field at multiple frequencies
   // across a target band, at one or more listening positions.
   //
-  // mode: 'balanced' (default) combines three things a good sub position
-  // should deliver:
-  //   1. Reasonably high average level (not stuck in a general low zone)
-  //   2. Low variance across frequency AT EACH listener (flat response — avoids
-  //      being loud at some frequencies and nulled at others, the classic
-  //      "one big room-mode hole" problem)
+  // mode: 'balanced' (default) scores evenness, not level, since the sub's
+  // gain sets the level (see scoreResponses):
+  //   1. Low variance across frequency AT EACH listener (a flat response, not
+  //      loud at some frequencies and nulled at others)
+  //   2. No deep null below the scene's average level
   //   3. Consistency ACROSS listeners (a position that's great at one seat but
   //      terrible at another is a worse practical choice than one that's decent
   //      everywhere, even if its single-seat peak score is lower)
@@ -2041,13 +2098,13 @@
   // they can flatten peaks after the fact, but can't fill in a null (it's a
   // position-dependent cancellation, not a tonal dip a filter can undo), so
   // average level and peak-inclusive variance are irrelevant to them. This
-  // mode scores purely by the worst (lowest) dB anywhere in the band, at the
-  // worst listener position — a maximin objective that directly answers
-  // "how deep is the deepest null this candidate produces," ignoring
-  // everything else 'balanced' cares about.
+  // mode scores by the worst (lowest) dB anywhere in the band, at the worst
+  // listener position, a maximin objective that answers "how deep is the
+  // deepest null this candidate produces", less the seat-to-seat spread,
+  // since one correction curve cannot even out the seats either.
   //
   // Unlike 'balanced' (which naturally spreads multi-sub placements out, since
-  // averaging level/flatness across the room rewards covering different areas),
+  // flatness at every seat rewards covering different areas),
   // a pure maximin objective has NO inherent incentive to avoid clustering --
   // if the best null-avoiding spot for sub 2 happens to be right next to sub 1,
   // nothing here would prefer a more spread-out alternative. alreadyPlaced
@@ -2066,7 +2123,7 @@
   // reduce EXACTLY to its pre-weighting form when no caller passes weights --
   // this is a hard backward-compatibility requirement, not just a default.
   //
-  // precomputedModes (optional, last arg): enumerateModes(physicsCtx) only
+  // precomputedModes (optional): enumerateModes(physicsCtx) only
   // depends on room geometry + wall materials, never on candidatePos -- a
   // grid-search optimizer calling this once per candidate (hundreds to
   // thousands of times per run) was redoing that same work every single
@@ -2075,22 +2132,25 @@
   // existing call site (tests included) keeps working unchanged.
   const RELIEF_DB = 15; // nullAvoidance: how much a fully-unimportant (weight 0) listener's null is forgiven
   // 'balanced' mode: how many dB of score a full point of worstStdDev (flatness
-  // unevenness) costs, relative to avgMean's 1:1 weight. Lower values let raw
-  // output matter more relative to flatness. For example, wall/corner placements
-  // couple into every room mode more strongly than open-floor placements
-  // (a real, physically modeled effect: every mode's shape function peaks at
-  // the room's boundaries), genuinely raising avgMean there, but also tend to
-  // produce a somewhat less even response at a fixed listening point, raising
-  // worstStdDev too. At the previous 1.5, that flatness cost could outweigh a
-  // real boundary-reinforcement gain by a hair in close cases; 1.0 keeps
-  // flatness meaningfully penalized while letting a genuine level advantage
-  // win more decisively.
+  // unevenness) costs, relative to seat-to-seat variation's 1:1 weight.
   const BALANCED_FLATNESS_WEIGHT = 1.0;
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes){
-    const candidateSource = Object.assign(
-      { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
-      candidatePos
-    );
+  // seatAveraging ({ radiusFt, numPoints }, optional): each listener's
+  // response is the spatial average over that cloud around it, as
+  // measureAtSeats does with SEAT_AVERAGING, instead of the level at the
+  // single point. A null at one point is often only inches wide, so a
+  // single-point score can rank a position by a null the averaged measure
+  // barely sees, and miss one it does. With SEAT_AVERAGING and the result
+  // card's own frequencies as freqList, the responses scored are the ones
+  // the card grades, so a search ranks positions the way its result will
+  // be judged: the score is gradePlacement's stats.score, less the
+  // nullAvoidance spread penalty below when other subs are near (and
+  // scanGridCandidates adds its preferred-zone bonus on top). seatAveraging
+  // may also carry spatiallyAveragedResponseMulti's sampleShapes for the
+  // listeners.
+  // What a candidate is scored as where the candidate itself does not say.
+  const CANDIDATE_SOURCE_DEFAULTS = { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
+    const candidateSource = Object.assign({}, CANDIDATE_SOURCE_DEFAULTS, candidatePos);
     const allSources = otherSources.concat([candidateSource]);
     const modes = precomputedModes || enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
 
@@ -2102,8 +2162,10 @@
     // listening setup easily putting 5-15+ weighted seats into
     // listenerPositions, that redundancy was the single biggest cost in the
     // whole optimizer grid search -- far more than enumerateModes itself.
-    const perListenerDb = listenerPositions.map(() => []); // [listenerIdx][freqIdx] = dB
-    for(const f of freqList){
+    const perListenerDb = seatAveraging
+      ? spatiallyAveragedResponseMulti(listenerPositions, freqList, allSources, physicsCtx, Object.assign({ modes }, seatAveraging)).perCenterDb
+      : listenerPositions.map(() => []); // [listenerIdx][freqIdx] = dB
+    if(!seatAveraging) for(const f of freqList){
       const precomputed = precomputeModalField(allSources, f, physicsCtx, modes);
       listenerPositions.forEach((lp, i) => {
         const { re, im } = computeFieldAtPoint(lp.x, lp.y, lp.z, precomputed);
@@ -2112,6 +2174,11 @@
       });
     }
 
+    return scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced);
+  }
+  // scoreSubPosition's verdict on a candidate's responses at the listeners
+  // (perListenerDb[listener][freqIndex], in dB), however they were computed.
+  function scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced){
     const combined = scoreResponses(perListenerDb, listenerPositions.map(lp => lp.weight), mode);
     return {
       score: mode === 'nullAvoidance' ? combined.score - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room) : combined.score,
@@ -2169,13 +2236,20 @@
     const worstStdDev = worstStdDevEntry.stdDev;
     const worstMinDb = worstMinDbEntry.minDb;
 
-    // Score weights: level matters, but flatness (avoiding deep nulls) matters more —
-    // a loud position with a severe null at one frequency is a worse real-world
-    // outcome than a slightly quieter but consistently flat one. In
-    // 'nullAvoidance' mode, only the worst null anywhere matters (minus a soft
+    // 'balanced' mode scores evenness only: the worst seat's flatness, a deep
+    // null, and how much the level differs from seat to seat. Level itself
+    // does not count, since a sub's gain sets it: scoring it let the loudest
+    // layout win, such as four subs side by side in a corner. In one 20 x 15
+    // ft room with 8 seats that cluster was 4 dB louder than four subs at the
+    // wall midpoints but worse on flatness (5.5 against 3.7 dB), the deepest
+    // null (12.8 against 8.0 dB) and seat to seat (4.0 against 1.4 dB).
+    // Spreading subs to even out the seats is the approach of Welti and
+    // Toole's multi-sub work at Harman. In 'nullAvoidance' mode the worst
+    // null anywhere matters, less the seat-to-seat spread (and a soft
     // penalty for clustering near already-placed subs, which scoreSubPosition
-    // subtracts itself). See scoreSubPosition's comment for why average level
-    // and peaks are excluded otherwise.
+    // subtracts itself), since room correction can pull peaks down but can
+    // fill neither a null nor a gap between seats. See scoreSubPosition's
+    // comment for why average level and peaks are excluded otherwise.
     //
     // The null penalty engages once the worst listener's minimum dips 20dB+
     // BELOW THE SCENE'S OWN AVERAGE LEVEL (avgMean), not below a hardcoded
@@ -2191,9 +2265,32 @@
     // no penalty term to scale (its score IS the raw worst dB value), so it's
     // given the analogous relief additively instead -- a low-weight listener's
     // null is partially forgiven (up to RELIEF_DB) rather than discounted.
-    const score = mode === 'nullAvoidance'
-      ? worstMinDb + (1 - worstMinDbEntry.weight) * RELIEF_DB
-      : avgMean - (worstStdDev * BALANCED_FLATNESS_WEIGHT * worstStdDevEntry.weight) - Math.max(0, avgMean - worstMinDb - 20) * 0.5 * worstMinDbEntry.weight;
+    //
+    // Each term takes the worst seat after its weight is applied (the
+    // largest stdDev * weight, the lowest null after relief), so two seats
+    // that nearly tie cannot make the score jump as the worst one flips.
+    //
+    // Both modes subtract the seat-to-seat spread (seatToSeatSpreadDb, by
+    // the seats' weights): room correction applies one curve to every seat,
+    // so it cannot even out the seats either.
+    const spreadDb = seatToSeatSpreadDb(perListenerDb, listenerStats.map(s => s.weight));
+    // No seats gives a NaN score, like the rest of this function's
+    // degenerate input (see the empty-input test).
+    let score = NaN;
+    if(listenerStats.length === 0){
+      // left NaN
+    } else if(mode === 'nullAvoidance'){
+      let floor = Infinity;
+      for(const s of listenerStats){ const v = s.minDb + (1 - s.weight) * RELIEF_DB; if(v < floor) floor = v; }
+      score = floor - spreadDb;
+    } else {
+      let rough = -Infinity, nullPenalty = -Infinity;
+      for(const s of listenerStats){
+        rough = Math.max(rough, s.stdDev * s.weight);
+        nullPenalty = Math.max(nullPenalty, Math.max(0, avgMean - s.minDb - 20) * s.weight);
+      }
+      score = -rough * BALANCED_FLATNESS_WEIGHT - nullPenalty * 0.5 - spreadDb;
+    }
 
     return {
       score,
@@ -2218,6 +2315,25 @@
       let min = Infinity, max = -Infinity;
       for(const seat of perSeatDb){ if(seat[j] < min) min = seat[j]; if(seat[j] > max) max = seat[j]; }
       sum += (max - min) / 2;
+    }
+    return sum / numFreqs;
+  }
+  // The seat-to-seat term of scoreResponses: at each frequency, how far the
+  // seats sit from their weighted average level (the weighted mean absolute
+  // deviation), averaged over the frequencies. A seat of weight 0 does not
+  // count. For two seats of equal weight it equals seatToSeatVariationDb.
+  function seatToSeatSpreadDb(perSeatDb, weights){
+    if(perSeatDb.length < 2) return 0;
+    const numFreqs = perSeatDb[0].length;
+    const total = weights.reduce((a, w) => a + w, 0);
+    let sum = 0;
+    for(let j = 0; j < numFreqs; j++){
+      let mean = 0;
+      for(let i = 0; i < perSeatDb.length; i++) mean += weights[i] * perSeatDb[i][j];
+      mean /= total;
+      let dev = 0;
+      for(let i = 0; i < perSeatDb.length; i++) dev += weights[i] * Math.abs(perSeatDb[i][j] - mean);
+      sum += dev / total;
     }
     return sum / numFreqs;
   }
@@ -2256,29 +2372,43 @@
   // placements' scoreResponses results (same listeners, frequencies and
   // mode). gainDb is the change in score, so it is positive when `after` is
   // the better placement by the optimizer's own measure. verdict: 'major' at
-  // PLACEMENT_GAIN_DB.major or more, 'modest' at .modest or more, 'worse'
-  // when `after` scores lower by .modest or more, otherwise 'similar'.
-  const PLACEMENT_GAIN_DB = { major: 6, modest: 2 };
-  function comparePlacements(before, after){
+  // PLACEMENT_GAIN_DB[mode].major or more, 'modest' at .modest or more,
+  // 'worse' when `after` scores lower by .modest or more, otherwise
+  // 'similar'.
+  //
+  // Each mode has its own thresholds, since its scores spread over a
+  // different range. Over every spot one sub could take in 5 rooms (12 x 9
+  // to 18 x 13.5 ft, 1 to 6 seats), the 'balanced' score spread over 2.8 to
+  // 4.4 dB, a tenth of the spots more than 2.3 to 3.5 dB below the best,
+  // and 'nullAvoidance' over 6.7 to 20.9 dB, a tenth more than 6.2 to 15.2
+  // dB below.
+  const PLACEMENT_GAIN_DB = {
+    balanced: { major: 3, modest: 1 },
+    nullAvoidance: { major: 6, modest: 2 }
+  };
+  // The key a mode's constants are under: any mode but 'nullAvoidance'
+  // scores as 'balanced', as in scoreResponses.
+  function scoreModeKey(mode){ return mode === 'nullAvoidance' ? 'nullAvoidance' : 'balanced'; }
+  function comparePlacements(before, after, mode){
     const gainDb = after.score - before.score;
+    const t = PLACEMENT_GAIN_DB[scoreModeKey(mode)];
     return {
       gainDb,
       levelGainDb: after.avgMean - before.avgMean,
-      verdict: gainDb >= PLACEMENT_GAIN_DB.major ? 'major'
-        : gainDb >= PLACEMENT_GAIN_DB.modest ? 'modest'
-        : gainDb <= -PLACEMENT_GAIN_DB.modest ? 'worse' : 'similar'
+      verdict: gainDb >= t.major ? 'major'
+        : gainDb >= t.modest ? 'modest'
+        : gainDb <= -t.modest ? 'worse' : 'similar'
     };
   }
   // Whether refined positions for existing subs are worth suggesting, judged
-  // the way the result card grades them (gradePlacement over `freqs`) rather
-  // than by the search's own coarser score, which can rank a pick above the
-  // current placement while the card ranks it below. `current` and `picked`
+  // the way the result card grades them (gradePlacement over `freqs`).
+  // `current` and `picked`
   // are the same subs in the same order, now and as the search placed them;
   // `otherSources` are the rest of the active sources. The current placement
   // is graded as it stands; the picked one with every source time-aligned to
   // `timeAlignTo` when given, since applying it re-runs automatic time
   // alignment. Returns { placedSubs, moved, gainDb }: the picked subs when
-  // they grade at least PLACEMENT_GAIN_DB.modest higher, since a smaller
+  // they grade at least PLACEMENT_GAIN_DB[mode].modest higher, since a smaller
   // gain is what the card calls "Little to gain" and is not worth moving a
   // sub for; otherwise copies of `current` with every moved[i] false.
   // gainDb is null when the search moved nothing.
@@ -2289,8 +2419,8 @@
     let after = otherSources.concat(picked);
     if(timeAlignTo && after.length >= 2) after = timeAlignedSources(after, timeAlignTo, physicsCtx.room);
     const grade = (sources) => gradePlacement(seats, reference, freqs, sources, physicsCtx, mode).stats;
-    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after));
-    if(gainDb < PLACEMENT_GAIN_DB.modest) return keep(gainDb);
+    const { gainDb } = comparePlacements(grade(otherSources.concat(current)), grade(after), mode);
+    if(gainDb < PLACEMENT_GAIN_DB[scoreModeKey(mode)].modest) return keep(gainDb);
     return { placedSubs: picked.map(p => Object.assign({}, p)), moved: picked.map((p, i) => p.x !== current[i].x || p.y !== current[i].y || p.z !== current[i].z), gainDb };
   }
   // The four walls straight to a point's left, right, front and back, each
@@ -2520,12 +2650,182 @@
   // lets a genuinely better spot elsewhere still win, while nudging the optimizer
   // toward the preferred area in close cases. Kept as a simple additive dB-scale
   // bonus rather than a multiplier, so it composes cleanly regardless of the
-  // underlying score's sign or magnitude.
-  const PREFERRED_ZONE_BONUS_DB = 3;
-  function preferredZoneBonusDb(candidatePos, preferredZones){
+  // underlying score's sign or magnitude. Each mode has its own, sized to
+  // the range its scores spread over (see PLACEMENT_GAIN_DB): at 3 dB the
+  // 'balanced' score, which spreads about a third as far, let a small zone
+  // capture the pick almost every time.
+  const PREFERRED_ZONE_BONUS_DB = { balanced: 1, nullAvoidance: 3 };
+  function preferredZoneBonusDb(candidatePos, preferredZones, mode){
     if(!preferredZones || preferredZones.length === 0) return 0;
     const inside = preferredZones.some(zone => isPointInRect(candidatePos.x, candidatePos.y, zone));
-    return inside ? PREFERRED_ZONE_BONUS_DB : 0;
+    return inside ? PREFERRED_ZONE_BONUS_DB[scoreModeKey(mode)] : 0;
+  }
+
+  // ---- Scoring a grid scan's candidates at averaged seats, fast ----
+  // spatiallyAveragedResponseMulti's responses (dB, [seat][freqIndex]) for
+  // otherSources plus one candidate sub, for every candidate of one grid
+  // scan: the same sums, arranged so the work that is the same for every
+  // candidate is done once.
+  //   - The field is a sum over sources, so each other source's field at
+  //     every cloud point is worked out once, at zero delay. A candidate's
+  //     time alignment only turns each one by its own delay's phase.
+  //   - The candidate's own field at a cloud point is a sum over modes of
+  //     its mode shape times a factor that does not depend on where it is.
+  //     In a rectangle a mode's shape is cos(kx x) cos(ky y) cos(kz z), and
+  //     only a few distinct ky exist, so for each grid column x the modes
+  //     sharing a ky are pre-summed (as fieldRowSums does for the map) and a
+  //     candidate sums those few. In a floor plan the shape is the plan's
+  //     shape at (x, y) times cos(kz z), so the modes sharing a shape are
+  //     pre-summed once for the whole scan.
+  // The results equal spatiallyAveragedResponseMulti's to rounding (about
+  // 1e-14 dB), since the same terms are added in another order.
+  // options: modes (enumerateModes), freqList, otherSources, physicsCtx,
+  // candidateTemplate (the sub's level and passband, over
+  // CANDIDATE_SOURCE_DEFAULTS), subHeightFt, and
+  // sampleShapes (centerSampleShapes of the listeners).
+  // responses(candidate, others): candidate is { x, y, delayMs } at
+  // subHeightFt; others are otherSources in the same order, with the
+  // delays this candidate's time alignment gives them.
+  const SCANNER_GROUP_BUDGET = 4e6; // values per array before seatCloudScanner stores floats
+  function seatCloudScanner(options){
+    const { modes, freqList, otherSources, physicsCtx, candidateTemplate, subHeightFt, sampleShapes } = options;
+    const plan = modes.floorPlan;
+    const numFreqs = freqList.length, numModes = modes.length;
+    const points = sampleShapes.flat(), numPoints = points.length;
+    const cloudSizes = sampleShapes.map(c => c.length);
+    const size = numFreqs * numPoints; // one value per (frequency, cloud point)
+
+    // Each other source's field at zero delay.
+    const sourceFields = otherSources.map(src => {
+      const re = new Float64Array(size), im = new Float64Array(size);
+      const alone = [Object.assign({}, src, { delayMs: 0 })];
+      freqList.forEach((freq, fi) => {
+        const precomputed = precomputeModalField(alone, freq, physicsCtx, modes);
+        points.forEach((shapes, p) => {
+          const v = fieldFromModeShapes(shapes, precomputed);
+          re[fi * numPoints + p] = v.re;
+          im[fi * numPoints + p] = v.im;
+        });
+      });
+      return { re, im };
+    });
+
+    // A unit source's factor for each mode and frequency, An / (kn^2 - k^2 - j k deltaN),
+    // as precomputeModalField builds it, and the candidate's level at each frequency.
+    const factorRe = new Float64Array(numModes * numFreqs), factorIm = new Float64Array(numModes * numFreqs);
+    freqList.forEach((freq, fi) => {
+      const k = 2 * Math.PI * freq / C;
+      modes.forEach((mode, n) => {
+        const Dr = mode.kn * mode.kn - k * k, Di = -k * mode.deltaN, denom = Dr * Dr + Di * Di;
+        factorRe[n * numFreqs + fi] = denom > 0 ? mode.An * Dr / denom : 0;
+        factorIm[n * numFreqs + fi] = denom > 0 ? -mode.An * Di / denom : 0;
+      });
+    });
+    const candidateSource = Object.assign({}, CANDIDATE_SOURCE_DEFAULTS, candidateTemplate);
+    const candidateGain = freqList.map(freq => {
+      const freqGain = sourceGainAtFreq(candidateSource, freq);
+      return freqGain >= 0.0005 ? Math.pow(10, candidateSource.levelDb / 20) * freqGain : 0;
+    });
+    const shapeAt = new Float64Array(numModes * numPoints); // [mode][point]
+    points.forEach((shapes, p) => { for(let n = 0; n < numModes; n++) shapeAt[n * numPoints + p] = shapes[n]; });
+
+    // The groups the candidate's modes are pre-summed in: by ky in a
+    // rectangle, by floor-plan shape in a floor plan.
+    const zM = subHeightFt * FT_TO_M;
+    const groupKeys = [], group = new Int32Array(numModes);
+    const groupOf = new Map();
+    modes.forEach((mode, n) => {
+      const key = plan ? mode.shape : mode.invLy;
+      if(!groupOf.has(key)){ groupOf.set(key, groupKeys.length); groupKeys.push(key); }
+      group[n] = groupOf.get(key);
+    });
+    const numGroups = groupKeys.length;
+    // The group sums take size * numGroups values each, re and im. Past
+    // SCANNER_GROUP_BUDGET (a big L, T or U room with many seats, where they
+    // reach about 220 MB in doubles) they are stored as floats instead,
+    // which halves that and moves the responses by about 3e-6 dB (measured
+    // in a 30 x 30 ft L and U room with 20 seats).
+    const GroupArray = size * numGroups > SCANNER_GROUP_BUDGET ? Float32Array : Float64Array;
+    const groupRe = new GroupArray(size * numGroups), groupIm = new GroupArray(size * numGroups);
+    const modeWeight = new Float64Array(numModes);
+    let summedForX = null; // the column groupRe/groupIm hold, or true for a floor plan's one sum
+    function sumGroups(x){
+      if(plan ? summedForX === true : summedForX === x) return;
+      summedForX = plan ? true : x;
+      const xM = x * FT_TO_M;
+      modes.forEach((mode, n) => {
+        modeWeight[n] = (plan ? 1 : Math.cos(mode.invLx * xM)) * Math.cos(mode.invLz * zM);
+      });
+      groupRe.fill(0); groupIm.fill(0);
+      addModeGroups(modeWeight, group, factorRe, factorIm, shapeAt, groupRe, groupIm, numModes, numFreqs, numPoints, numGroups);
+    }
+
+    const fieldRe = new Float64Array(size), fieldIm = new Float64Array(size);
+    return {
+      responses(candidate, others){
+        sumGroups(candidate.x);
+        const delayMs = candidate.delayMs ?? CANDIDATE_SOURCE_DEFAULTS.delayMs;
+        fieldRe.fill(0); fieldIm.fill(0);
+        others.forEach((src, i) => addTurnedField(sourceFields[i].re, sourceFields[i].im, src.delayMs, freqList, numPoints, fieldRe, fieldIm));
+        const groupWeight = plan
+          ? floorPlanShapesAt(plan, candidate.x, candidate.y)
+          : Float64Array.from(groupKeys, ky => Math.cos(ky * candidate.y * FT_TO_M));
+        return cloudResponsesDb(groupWeight, groupRe, groupIm, numGroups, fieldRe, fieldIm, candidateGain, delayMs, freqList, numPoints, cloudSizes);
+      }
+    };
+  }
+  // seatCloudScanner's inner loops, each in a function of its own so the
+  // engine optimizes it on its own.
+  // groupRe/Im[(f, point) * numGroups + group] += modeWeight * factor * shape, over the modes.
+  function addModeGroups(modeWeight, group, factorRe, factorIm, shapeAt, groupRe, groupIm, numModes, numFreqs, numPoints, numGroups){
+    for(let n = 0; n < numModes; n++){
+      const w = modeWeight[n], g = group[n];
+      if(w === 0) continue;
+      for(let fi = 0; fi < numFreqs; fi++){
+        const fr = w * factorRe[n * numFreqs + fi], fim = w * factorIm[n * numFreqs + fi];
+        const out = fi * numPoints * numGroups + g, shapes = n * numPoints;
+        for(let p = 0; p < numPoints; p++){
+          const sh = shapeAt[shapes + p];
+          groupRe[out + p * numGroups] += fr * sh;
+          groupIm[out + p * numGroups] += fim * sh;
+        }
+      }
+    }
+  }
+  // field += a source's zero-delay field turned by its delay's phase at each frequency.
+  function addTurnedField(re, im, delayMs, freqList, numPoints, fieldRe, fieldIm){
+    for(let fi = 0; fi < freqList.length; fi++){
+      const phase = 2 * Math.PI * freqList[fi] * (delayMs / 1000), c = Math.cos(phase), sn = Math.sin(phase);
+      for(let p = fi * numPoints, end = p + numPoints; p < end; p++){
+        fieldRe[p] += re[p] * c - im[p] * sn;
+        fieldIm[p] += re[p] * sn + im[p] * c;
+      }
+    }
+  }
+  // The averaged dB at each cloud, [cloud][freqIndex], of the other sources'
+  // field plus the candidate's: its groups weighted by groupWeight, at its
+  // level and delay.
+  function cloudResponsesDb(groupWeight, groupRe, groupIm, numGroups, fieldRe, fieldIm, gain, delayMs, freqList, numPoints, cloudSizes){
+    const out = cloudSizes.map(() => new Array(freqList.length));
+    for(let fi = 0; fi < freqList.length; fi++){
+      const phase = 2 * Math.PI * freqList[fi] * (delayMs / 1000);
+      const ar = gain[fi] * Math.cos(phase), ai = gain[fi] * Math.sin(phase);
+      let p = fi * numPoints;
+      for(let c = 0; c < cloudSizes.length; c++){
+        let sumPower = 0;
+        for(let j = 0; j < cloudSizes[c]; j++, p++){
+          let sr = 0, si = 0;
+          for(let g = 0, base = p * numGroups; g < numGroups; g++){
+            sr += groupWeight[g] * groupRe[base + g];
+            si += groupWeight[g] * groupIm[base + g];
+          }
+          const re = fieldRe[p] + ar * sr - ai * si, im = fieldIm[p] + ar * si + ai * sr;
+          sumPower += re * re + im * im;
+        }
+        out[c][fi] = 10 * Math.log10(Math.max(sumPower / cloudSizes[c], 1e-12));
+      }
+    }
+    return out;
   }
 
   // ---- Shared grid-candidate scan ----
@@ -2546,21 +2846,12 @@
   //     (the candidate included) gets the delay automatic time alignment to
   //     that point would give it with the candidate in place, recomputed
   //     per candidate, instead of the delays the sources came in with.
-  // The frequencies a sub search samples: about 12 steps from freqLow up to
-  // freqHigh, never closer than 2 Hz apart. Coarser than the result card's
-  // 48, since every candidate position is scored at each of them.
-  function optimizerFreqList(freqLow, freqHigh){
-    const freqList = [];
-    const freqStep = Math.max(2, (freqHigh - freqLow) / 12);
-    for(let f = freqLow; f <= freqHigh; f += freqStep) freqList.push(f);
-    return freqList;
-  }
-
+  // seatAveraging: see scoreSubPosition.
   function* scanGridCandidates(options){
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes,
-      candidateTemplate, timeAlignTo
+      candidateTemplate, timeAlignTo, seatAveraging
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -2575,6 +2866,13 @@
     // Only other subs count toward nullAvoidance's spread penalty; a point
     // with its own keepOut is a main speaker (see sourceExclusionPoints).
     const spreadPoints = (excludePoints || []).filter(p => !p.keepOut);
+    // With seatAveraging every candidate is scored by a grid scanner (see
+    // seatCloudScanner), which gives the same responses as scoreSubPosition
+    // without redoing, per candidate, the work they all share.
+    const scanner = seatAveraging && seatCloudScanner({
+      modes, freqList, otherSources, physicsCtx, candidateTemplate, subHeightFt: z,
+      sampleShapes: centerSampleShapes(listenerPositions, modes, seatAveraging)
+    });
 
     for(let x = step/2; x < room.w; x += step){
       for(let y = step/2; y < room.d; y += step){
@@ -2588,7 +2886,9 @@
           others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo, room);
           candidate = others.pop();
         }
-        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
+        const eval_ = scanner
+          ? scoreCandidateResponses(scanner.responses(candidate, others), candidate, room, listenerPositions, mode, spreadPoints)
+          : scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -2596,7 +2896,7 @@
         // still win. Applied here rather than inside scoreSubPosition to
         // keep that function's existing, already-tested balanced/
         // nullAvoidance formulas untouched.
-        const bonus = preferredZoneBonusDb({ x, y }, preferredZones);
+        const bonus = preferredZoneBonusDb({ x, y }, preferredZones, mode);
         yield { x, y, z, score: eval_.score + bonus, avgMean: eval_.avgMean, worstStdDev: eval_.worstStdDev, worstMinDb: eval_.worstMinDb };
       }
     }
@@ -2643,29 +2943,45 @@
   // search logic to keep correct.
   //
   // options additionally accepts:
-  //   onYield: () => Promise   -- awaited every yieldEvery scanned cells (default 150)
+  //   onYield: () => Promise: awaited every yieldEvery scanned cells, or
+  //     without yieldEvery about every YIELD_INTERVAL_MS of scanning, since
+  //     how long a cell takes varies widely with the seats, the frequencies
+  //     and seatAveraging. Timed with performance.now(), which never runs
+  //     backwards as the system clock can.
   //   onProgress: (fraction) => void -- called with 0 before scanning starts, then
   //                                      scanned/totalGridCells at each yield point
-  //   yieldEvery: number -- chunk size, default 150
+  //   yieldEvery: number: chunk size in cells
+  //   signal: an AbortSignal. Once it is aborted the search stops at its
+  //     next yield, and the promise rejects with the signal's reason. A
+  //     caller aborts it when the result is no longer wanted, so the rest
+  //     of a long search is not run for nothing.
+  const YIELD_INTERVAL_MS = 50;
+  // Rejects out of an async search whose signal (optional) has been aborted.
+  function throwIfAborted(signal){
+    if(signal && signal.aborted) throw signal.reason;
+  }
   async function optimizeSubPlacementAsync(options){
-    const { onYield, onProgress, yieldEvery } = options;
-    const chunkSize = yieldEvery || 150;
+    const { onYield, onProgress, yieldEvery, signal } = options;
+    throwIfAborted(signal);
     const totalGridCells = countGridCells(options.room, options.gridStepFt);
     if(onProgress) onProgress(0);
     if(onYield) await onYield();
+    throwIfAborted(signal);
 
     const results = [];
     let best = null;
-    let scanned = 0;
+    let scanned = 0, lastYield = performance.now();
     for(const entry of scanGridCandidates(options)){
       scanned++;
       if(entry !== null){
         results.push(entry);
         if(best === null || entry.score > best.score) best = entry;
       }
-      if(scanned % chunkSize === 0){
+      if(yieldEvery ? scanned % yieldEvery === 0 : performance.now() - lastYield >= YIELD_INTERVAL_MS){
         if(onProgress) onProgress(scanned / totalGridCells);
         if(onYield) await onYield();
+        throwIfAborted(signal);
+        lastYield = performance.now();
       }
     }
 
@@ -2703,7 +3019,7 @@
   function optimizeMultipleSubs(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
     } = options;
     // Default separation: a fraction of the room's smaller dimension, so it
     // scales sensibly across room sizes rather than being a fixed number
@@ -2735,7 +3051,7 @@
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging
       });
       roundResults.push(roundResult);
       if(roundResult.best === null){
@@ -2762,7 +3078,7 @@
     // value through here reproduces the exact prior inlined behavior.
     const polish = polishSubPlacements({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -2829,7 +3145,7 @@
   function polishSubPlacements(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const placedSubs = subs.map(s => Object.assign({}, s));
@@ -2854,7 +3170,7 @@
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo
+            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
@@ -2879,14 +3195,16 @@
 
   // Async/chunked twin of polishSubPlacements, for the same reason
   // optimizeSubPlacementAsync exists. onProgress is called as
-  // (fraction, k, 'polish') -- k is the index into `subs` currently being
-  // re-optimized, matching the polish-phase signal optimizeMultipleSubsAsync
-  // already uses internally.
+  // (fraction, k, 'polish', overall): k is the index into `subs` currently
+  // being re-optimized, matching the polish-phase signal
+  // optimizeMultipleSubsAsync already uses internally, and overall (0..1) is
+  // how far the whole polish is, counted as POLISH_PASSES passes over every
+  // sub. A polish that settles early stops short of 1.
   async function polishSubPlacementsAsync(options){
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
-      onYield, onProgress, yieldEvery, precomputedModes
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
+      onYield, onProgress, yieldEvery, signal, precomputedModes
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = precomputedModes || enumerateModes(physicsCtx);
@@ -2903,9 +3221,9 @@
             physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo,
-            precomputedModes: modes, onYield, yieldEvery,
-            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
+            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging,
+            precomputedModes: modes, onYield, yieldEvery, signal,
+            onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish', (pass * placedSubs.length + k + fraction) / (POLISH_PASSES * placedSubs.length)) : undefined
           });
           polishResults.push(roundResult);
           if(roundResult.best === null) continue;
@@ -2924,20 +3242,25 @@
 
   // Async/chunked twin of optimizeMultipleSubs, for the same reason
   // optimizeSubPlacementAsync exists: lets a UI caller run a multi-sub search
-  // without freezing the tab. onProgress is called as (fraction, roundIndex) so
-  // a caller can show e.g. "Optimizing sub 2 of 3... 40%" without tracking round
-  // boundaries itself. Unlike optimizeMultipleSubs, enumerateModes is computed
+  // without freezing the tab. onProgress is called as (fraction, roundIndex,
+  // phase, overall) so a caller can show e.g. "Optimizing sub 2 of 3... 40%"
+  // without tracking round boundaries itself; phase is undefined in the
+  // greedy rounds, and overall (0..1) is how far the whole search is, the
+  // greedy rounds and every polish pass counted as one grid scan each. A
+  // polish that settles early stops short of 1. Unlike optimizeMultipleSubs, enumerateModes is computed
   // once for the whole run (not once per round) and threaded through via
   // precomputedModes -- purely a perf win, produces numerically identical
   // placements, since physicsCtx never changes between rounds.
   async function optimizeMultipleSubsAsync(options){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo,
-      onYield, onProgress, yieldEvery
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
+      onYield, onProgress, yieldEvery, signal
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = enumerateModes(physicsCtx);
+    const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
+    const totalScans = numSubs + polishScans;
 
     const placedSubs = [];
     const placedPositions = sourceExclusionPoints(otherSources, room);
@@ -2949,9 +3272,9 @@
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo,
-        precomputedModes: modes, onYield, yieldEvery,
-        onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
+        precomputedModes: modes, onYield, yieldEvery, signal,
+        onProgress: onProgress ? (fraction) => onProgress(fraction, i, undefined, (i + fraction) / totalScans) : undefined
       });
       roundResults.push(roundResult);
       if(roundResult.best === null) break;
@@ -2965,16 +3288,16 @@
     }
 
     // Coordinate-descent polish -- see polishSubPlacementsAsync for the full
-    // explanation. onProgress gets a third argument, 'polish', only during
-    // these rounds; the greedy rounds' calls above are unchanged (still just
-    // (fraction, i)), so the existing onProgress contract for callers that
-    // only look at the first two arguments keeps working as-is. `modes`
+    // explanation. onProgress's third argument is 'polish' only during
+    // these rounds, and its overall share is scaled onto the scans left
+    // after the greedy rounds. `modes`
     // (already computed above) is passed through as precomputedModes to avoid
     // enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo,
-      precomputedModes: modes, onYield, yieldEvery, onProgress
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
+      precomputedModes: modes, onYield, yieldEvery, signal,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, (numSubs + overall * polishScans) / totalScans) : undefined
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -3025,6 +3348,8 @@
     enumerateModes,
     precomputeModalField,
     computeFieldAtPoint,
+    modeShapesAtPoint,
+    fieldFromModeShapes,
     fieldRowSums,
     fieldDbAtPoint,
     pressureToDb,
@@ -3035,10 +3360,11 @@
     SEAT_AVERAGING,
     measureAtSeats,
     gradePlacement,
-    optimizerFreqList,
     sphereSamplePoints,
     spatiallyAveragedResponse,
     spatiallyAveragedResponseMulti,
+    seatCloudScanner,
+    centerSampleShapes,
     axialModes,
     estimatedT60,
     schroederFrequency,
@@ -3062,6 +3388,7 @@
     standardSpeakerPositions,
     scoreResponses,
     seatToSeatVariationDb,
+    seatToSeatSpreadDb,
     comparePlacements,
     PLACEMENT_GAIN_DB,
     checkSubMoves,
