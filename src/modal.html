@@ -751,13 +751,13 @@ function applyAppearanceAttrs(mode, theme){
     return fallback;
   }
 
-  // Counts the changes that make an optimizer suggestion meaningless: a
+  // Called on the changes that make an optimizer suggestion meaningless: a
   // scene replaced by loadConfig (undo, redo, a preset load, reset) or a
-  // room resize. Each also drops a pending suggestion, and a search that was
-  // running across one drops its result (see runOptimizerWorkflow).
-  let sceneChangeCount = 0;
+  // room resize. Each drops a pending suggestion and stops a search that is
+  // running, since its result could not be used (see runOptimizerWorkflow).
+  let optimizerAbort = null; // the AbortController of the search in flight, if any
   function sceneChanged(){
-    sceneChangeCount++;
+    if(optimizerAbort) optimizerAbort.abort();
     resetOptimizerPanel();
   }
   function loadConfig(cfg){
@@ -2061,8 +2061,8 @@ function applyAppearanceAttrs(mode, theme){
   // Runs the optimizer via RoomPhysics.optimizeMultipleSubsAsync -- the same
   // tested implementation optimizeMultipleSubs uses, just the async/chunked
   // twin so a long search yields to the browser instead of freezing the tab
-  // (onYield below pauses on an animation frame about every 50 ms of
-  // searching; onProgress drives the live "Optimizing sub X... NN%" text).
+  // (onYield pauses about every 50 ms of searching, see yieldToBrowser;
+  // onProgress drives the live "Optimizing sub X... NN%" text).
   // Naming/id assignment stays here, since it depends on this file's own
   // sources/nextId state, not anything RoomPhysics knows about.
   // Shared status-text builder for both optimizer workflows (add new subs /
@@ -2083,6 +2083,29 @@ function applyAppearanceAttrs(mode, theme){
         ? `${verb} ${subLabel}...`
         : `${verb} ${subLabel}... ${Math.round(fraction*100)}%`;
     };
+  }
+  // How a search pauses so the page can redraw and take input: until the
+  // next animation frame. A hidden tab draws no frames and has its timers
+  // slowed to about one a second, so there the pause is a message the page
+  // posts to itself, which is not held back, and a frame being waited for
+  // when the tab is hidden is given up on. Otherwise a search would sit
+  // still until the tab is shown again.
+  const yieldChannel = new MessageChannel();
+  function yieldToBrowser(){
+    return new Promise(resolve => {
+      if(document.hidden){
+        yieldChannel.port1.onmessage = () => resolve();
+        yieldChannel.port2.postMessage(null);
+        return;
+      }
+      const done = () => {
+        cancelAnimationFrame(frame);
+        document.removeEventListener('visibilitychange', done);
+        resolve();
+      };
+      const frame = requestAnimationFrame(done);
+      document.addEventListener('visibilitychange', done);
+    });
   }
 
   // A private copy of everything a search reads. The page stays live while
@@ -2116,7 +2139,7 @@ function applyAppearanceAttrs(mode, theme){
     return scene;
   }
 
-  async function runSubOptimizer(){
+  async function runSubOptimizer(signal){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
     const step = optGridStepFt;
@@ -2135,7 +2158,7 @@ function applyAppearanceAttrs(mode, theme){
       gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode, timeAlignTo: scene.timeAlignTo,
       seatAveraging: RoomPhysics.SEAT_AVERAGING,
       onProgress: optimizerStatusUpdater(status, numSubs),
-      onYield: () => new Promise(resolve => requestAnimationFrame(resolve))
+      onYield: yieldToBrowser, signal
     });
 
     // Assign real ids/names now that placement is decided -- nextSubName looks
@@ -2179,7 +2202,7 @@ function applyAppearanceAttrs(mode, theme){
   // on an existing manually-placed spot by chance. With exactly one existing
   // sub there's nothing to hold fixed against, so that case runs a plain full
   // single-sub search instead (RoomPhysics.optimizeSubPlacementAsync).
-  async function runReoptimizeExistingSubs(){
+  async function runReoptimizeExistingSubs(signal){
     const freqLow = parseFloat(document.getElementById('optFreqLow').value) || 20;
     const freqHigh = parseFloat(document.getElementById('optFreqHigh').value) || 120;
     const step = optGridStepFt;
@@ -2202,7 +2225,6 @@ function applyAppearanceAttrs(mode, theme){
       return;
     }
 
-    const onYield = () => new Promise(resolve => requestAnimationFrame(resolve));
     let refinedSubs, lastBest, lastAllCandidates;
 
     if(existingSubs.length === 1){
@@ -2212,7 +2234,7 @@ function applyAppearanceAttrs(mode, theme){
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
         excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
         seatAveraging: RoomPhysics.SEAT_AVERAGING,
-        onProgress: optimizerStatusUpdater(status, 1), onYield
+        onProgress: optimizerStatusUpdater(status, 1), onYield: yieldToBrowser, signal
       });
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
       lastBest = result.best;
@@ -2222,7 +2244,7 @@ function applyAppearanceAttrs(mode, theme){
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING,
-        onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield
+        onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield: yieldToBrowser, signal
       });
       refinedSubs = result.placedSubs;
       const lastRound = result.polishResults[result.polishResults.length - 1] || null;
@@ -4009,29 +4031,30 @@ function applyAppearanceAttrs(mode, theme){
     if(!optimizerRun) optimizerRun = runOptimizerWorkflow(reoptimize).finally(() => { optimizerRun = null; });
     return optimizerRun;
   }
-  // Resolves to false when the result was dropped because the room changed
-  // during the search, to null when the room's modes could not be worked
-  // out, true otherwise.
-  const OPTIMIZER_DROPPED_TEXT = 'The room changed while the search ran, so its result was dropped. Run it again.';
+  // Resolves to false when the search was stopped because the room changed
+  // while it ran (see sceneChanged), to null when the room's modes could
+  // not be worked out, true otherwise.
+  const OPTIMIZER_DROPPED_TEXT = 'The room changed, so the search was stopped. Run it again.';
   const SOLVE_FAILED_TEXT = "Couldn't work out this room's modes, so there is nothing to search. Try moving a wall slightly.";
   async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
     setOptimizerButtonsDisabled(true);
     const acceptBtn = document.getElementById('acceptOptimizerBtn');
     acceptBtn.style.display = 'none';
+    const { signal } = optimizerAbort = new AbortController();
     try {
-      const changesAtStart = sceneChangeCount;
       // The search scores with the full-size floor plan, never the preview.
       if(!isRectangleRoom()){
         document.getElementById('optimizerStatus').textContent = "Working out this room's modes...";
         await floorPlans.fullPlanFor(room.polygon);
-        if(floorPlans.failed(room.polygon) && sceneChangeCount === changesAtStart){
+        if(floorPlans.failed(room.polygon) && !signal.aborted){
           document.getElementById('optimizerStatus').textContent = SOLVE_FAILED_TEXT;
           return null;
         }
       }
-      if(sceneChangeCount === changesAtStart) await (reoptimize ? runReoptimizeExistingSubs() : runSubOptimizer());
-      if(sceneChangeCount !== changesAtStart){
+      // An aborted search rejects at its next pause; any other failure is still thrown.
+      if(!signal.aborted) await (reoptimize ? runReoptimizeExistingSubs(signal) : runSubOptimizer(signal)).catch(e => { if(!signal.aborted) throw e; });
+      if(signal.aborted){
         clearOptimizerResult();
         document.getElementById('optimizerStatus').textContent = OPTIMIZER_DROPPED_TEXT;
         return false;
@@ -4042,6 +4065,7 @@ function applyAppearanceAttrs(mode, theme){
       }
       return true;
     } finally {
+      optimizerAbort = null;
       setOptimizerButtonsDisabled(false);
     }
   }
@@ -4655,7 +4679,7 @@ function applyAppearanceAttrs(mode, theme){
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase) is called as the
     // search runs. Resolves when it is done, to false when the room changed
-    // meanwhile and the result was dropped, or to null when the room's
+    // meanwhile and the search was stopped, or to null when the room's
     // modes could not be worked out; see optimizerOutcome. Called
     // while a search is already running, it joins that one and takes over
     // its progress reports.

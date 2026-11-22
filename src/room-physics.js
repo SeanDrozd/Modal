@@ -2716,12 +2716,22 @@
   //   onProgress: (fraction) => void -- called with 0 before scanning starts, then
   //                                      scanned/totalGridCells at each yield point
   //   yieldEvery: number: chunk size in cells
+  //   signal: an AbortSignal. Once it is aborted the search stops at its
+  //     next yield, and the promise rejects with the signal's reason. A
+  //     caller aborts it when the result is no longer wanted, so the rest
+  //     of a long search is not run for nothing.
   const YIELD_INTERVAL_MS = 50;
+  // Rejects out of an async search whose signal (optional) has been aborted.
+  function throwIfAborted(signal){
+    if(signal && signal.aborted) throw signal.reason;
+  }
   async function optimizeSubPlacementAsync(options){
-    const { onYield, onProgress, yieldEvery } = options;
+    const { onYield, onProgress, yieldEvery, signal } = options;
+    throwIfAborted(signal);
     const totalGridCells = countGridCells(options.room, options.gridStepFt);
     if(onProgress) onProgress(0);
     if(onYield) await onYield();
+    throwIfAborted(signal);
 
     const results = [];
     let best = null;
@@ -2735,6 +2745,7 @@
       if(yieldEvery ? scanned % yieldEvery === 0 : performance.now() - lastYield >= YIELD_INTERVAL_MS){
         if(onProgress) onProgress(scanned / totalGridCells);
         if(onYield) await onYield();
+        throwIfAborted(signal);
         lastYield = performance.now();
       }
     }
@@ -2956,7 +2967,7 @@
     const {
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
-      onYield, onProgress, yieldEvery, precomputedModes
+      onYield, onProgress, yieldEvery, signal, precomputedModes
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = precomputedModes || enumerateModes(physicsCtx);
@@ -2974,7 +2985,7 @@
             subHeightFt: subHeightFt ?? placedSubs[k].z,
             excludePoints, minSeparationFt: separation, mode,
             candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging,
-            precomputedModes: modes, onYield, yieldEvery,
+            precomputedModes: modes, onYield, yieldEvery, signal,
             onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish') : undefined
           });
           polishResults.push(roundResult);
@@ -3004,7 +3015,7 @@
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
-      onYield, onProgress, yieldEvery
+      onYield, onProgress, yieldEvery, signal
     } = options;
     const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
     const modes = enumerateModes(physicsCtx);
@@ -3020,7 +3031,7 @@
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
         candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
-        precomputedModes: modes, onYield, yieldEvery,
+        precomputedModes: modes, onYield, yieldEvery, signal,
         onProgress: onProgress ? (fraction) => onProgress(fraction, i) : undefined
       });
       roundResults.push(roundResult);
@@ -3044,7 +3055,7 @@
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
-      precomputedModes: modes, onYield, yieldEvery, onProgress
+      precomputedModes: modes, onYield, yieldEvery, signal, onProgress
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };

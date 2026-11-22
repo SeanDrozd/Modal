@@ -2708,6 +2708,69 @@ testAsync('async twins score with seatAveraging exactly as the sync optimizers d
   assert.notDeepStrictEqual(polish.polishResults.map(scores), P.polishSubPlacements({ ...base, subs, subHeightFt: undefined }).polishResults.map(scores));
 });
 
+testAsync('optimizeSubPlacementAsync stops at its next yield once its signal is aborted, and rejects with the signal\'s reason', async () => {
+  const room = { w: 18, d: 13.5, h: 8 };
+  const opts = {
+    room, otherSources: [], freqList: [60], listenerPositions: [{ x: 9, y: 9, z: 3.5 }], physicsCtx: { room, wallAbsorption: 0.51 },
+    offLimitZones: [], gridStepFt: 1, subHeightFt: 1, yieldEvery: 5
+  };
+  const totalCells = P.countGridCells(room, 1);
+  const controller = new AbortController();
+  let yields = 0, lastFraction = null;
+  // the third yield is the one after ten cells: one before the scan, then one every five
+  const stopped = P.optimizeSubPlacementAsync({
+    ...opts, signal: controller.signal, onProgress: (fraction) => { lastFraction = fraction; },
+    onYield: () => { if(++yields === 3) controller.abort(); return Promise.resolve(); }
+  });
+  await assert.rejects(stopped, (e) => e === controller.signal.reason);
+  assert.strictEqual(yields, 3, 'no yield after the one it was aborted in');
+  approx(lastFraction, 10 / totalCells, 1e-12, 'and nothing scanned after it');
+
+  // a signal aborted beforehand: the search does not start
+  let started = false;
+  await assert.rejects(P.optimizeSubPlacementAsync({ ...opts, signal: controller.signal, onProgress: () => { started = true; } }), (e) => e === controller.signal.reason);
+  assert.strictEqual(started, false);
+
+  // a signal that is never aborted changes nothing
+  const result = await P.optimizeSubPlacementAsync({ ...opts, signal: new AbortController().signal, onYield: () => Promise.resolve() });
+  assert.deepStrictEqual(result, P.optimizeSubPlacement(opts));
+});
+
+testAsync('optimizeMultipleSubsAsync and polishSubPlacementsAsync stop on an aborted signal, in a greedy round or in the polish', async () => {
+  const room = { w: 12, d: 9, h: 8 };
+  const listener = { x: 6, y: 6.5, z: 3.5 };
+  const mains = [{ id: 1, x: 6, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }];
+  const opts = {
+    room, otherSources: mains, freqList: [40, 70], listenerPositions: [listener], physicsCtx: { room, wallAbsorption: 0.2 },
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1.5, subHeightFt: 1, mode: 'balanced', yieldEvery: 5
+  };
+  // Aborts at the first progress report `when` picks, and counts any that follow it.
+  const stopAt = async (run, when) => {
+    const controller = new AbortController();
+    let reportsAfter = 0;
+    const onProgress = (fraction, index, phase) => {
+      if(controller.signal.aborted) reportsAfter++;
+      else if(when(fraction, index, phase)) controller.abort();
+    };
+    await assert.rejects(run({ signal: controller.signal, onProgress, onYield: () => Promise.resolve() }), (e) => e === controller.signal.reason);
+    assert.strictEqual(reportsAfter, 0, 'the search went on after it was aborted');
+  };
+  const multi = (extra) => P.optimizeMultipleSubsAsync({ ...opts, numSubs: 2, ...extra });
+  await stopAt(multi, (fraction, index, phase) => index === 1 && !phase && fraction > 0); // placing the second sub
+  await stopAt(multi, (fraction, index, phase) => phase === 'polish' && fraction > 0);
+  const subs = [
+    { id: 3, x: 1.5, y: 7.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true },
+    { id: 4, x: 10.5, y: 7.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }
+  ];
+  const polish = (extra) => P.polishSubPlacementsAsync({ ...opts, subs, subHeightFt: undefined, ...extra });
+  await stopAt(polish, (fraction, index) => index === 1 && fraction > 0);
+
+  // with a signal that is never aborted, both give what their sync twins give
+  const signal = new AbortController().signal;
+  assert.deepStrictEqual((await multi({ signal })).placedSubs, P.optimizeMultipleSubs({ ...opts, numSubs: 2 }).placedSubs);
+  assert.deepStrictEqual((await polish({ signal })).placedSubs, P.polishSubPlacements({ ...opts, subs, subHeightFt: undefined }).placedSubs);
+});
+
 console.log('\n-- pressureToDb / sampleFieldDbRange / logSpacedFreqs / maxSchroederFrequency --');
 
 test('pressureToDb is 20 log10 of the magnitude over refAmp, floored at 1e-6', () => {
