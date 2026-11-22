@@ -2210,6 +2210,9 @@ function applyAppearanceAttrs(mode, theme){
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
         excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
+        // averaged round each seat like the grading in checkSubMoves below,
+        // or the pick can grade no better than where the sub already is
+        seatAveraging: RoomPhysics.SEARCH_SEAT_AVERAGING,
         onProgress: optimizerStatusUpdater(status, 1), onYield
       });
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];

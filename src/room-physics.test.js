@@ -1146,6 +1146,60 @@ test('checkSubMoves keeps the current subs unless the picked ones grade meaningf
   assert.deepStrictEqual(same.moved, [false, false]);
 });
 
+test('scoreSubPosition with seatAveraging scores the spatially averaged response at each seat', () => {
+  const room = { w: 12, d: 9, h: 8 };
+  const ctx = { room, wallAbsorption: 0.2 };
+  const mains = [{ x: 3.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true }];
+  const seats = [{ x: 6, y: 5.6, z: 3.5, weight: 1 }, { x: 8, y: 5.6, z: 3.5, weight: 0.5 }];
+  const freqs = P.optimizerFreqList(20, 120);
+  const sub = { x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true };
+  assert.deepStrictEqual(P.SEARCH_SEAT_AVERAGING, { radiusFt: 2, numPoints: 6 });
+  for(const mode of ['balanced', 'nullAvoidance']){
+    const got = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, [], undefined, P.SEARCH_SEAT_AVERAGING);
+    const candidate = Object.assign({ name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true }, sub);
+    const { perCenterDb } = P.spatiallyAveragedResponseMulti(seats, freqs, mains.concat([candidate]), ctx, P.SEARCH_SEAT_AVERAGING);
+    approx(got.score, P.scoreResponses(perCenterDb, [1, 0.5], mode).score, 1e-9, mode);
+    const point = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, []);
+    assert.ok(Math.abs(point.score - got.score) > 1e-6, `${mode}: averaging changes the score`);
+  }
+  // A caller's own mode list gives the same averaged responses.
+  const plain = P.spatiallyAveragedResponseMulti(seats, freqs, mains, ctx, { radiusFt: 2, numPoints: 6 });
+  const withModes = P.spatiallyAveragedResponseMulti(seats, freqs, mains, ctx, { radiusFt: 2, numPoints: 6, modes: P.enumerateModes(ctx) });
+  assert.deepStrictEqual(withModes.perCenterDb, plain.perCenterDb);
+});
+
+// Regression: in a 12x9 ft room with two mains and one sub, with room
+// correction on, re-optimizing the sub found nothing worth a move wherever
+// the sub started. The search scored one point per seat and so picked the
+// same spot every time, one the result card's averaged grading put no
+// better than mid-room; scored round each seat, its pick grades well
+// clear of the 2 dB a move needs.
+test('a single-sub search with seatAveraging finds a move from mid-room that checkSubMoves keeps', () => {
+  const room = { w: 12, d: 9, h: 8 };
+  const ctx = { room, wallAbsorption: 0.2 };
+  const main = (id, x) => ({ id, x, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, rolloffDbPerOct: 24, enabled: true, isMain: true });
+  const mains = [main(1, 3.5), main(2, 8.5)];
+  const seats = [{ x: 6, y: 6.5, z: 3.5, weight: 1 }];
+  const reference = { x: 6, y: 6.5, z: 3.5 };
+  const current = [{ id: 9, name: 'SW1', x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true }];
+  const mode = 'nullAvoidance';
+  const search = (seatAveraging) => P.optimizeSubPlacement({
+    room, otherSources: mains, freqList: P.optimizerFreqList(20, 120), listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], gridStepFt: 0.5, subHeightFt: 1, mode, excludePoints: P.sourceExclusionPoints(mains, room),
+    candidateTemplate: current[0], timeAlignTo: reference, seatAveraging
+  }).best;
+  const check = (best) => P.checkSubMoves({
+    seats, reference, freqs: P.logSpacedFreqs(20, 120, 48), otherSources: mains, current,
+    picked: [Object.assign({}, current[0], { x: best.x, y: best.y, z: best.z })], physicsCtx: ctx, mode, timeAlignTo: reference
+  });
+  const atPoints = check(search());
+  assert.ok(atPoints.gainDb < P.PLACEMENT_GAIN_DB.modest, `the single-point pick grades only ${atPoints.gainDb.toFixed(2)} dB better`);
+  assert.deepStrictEqual(atPoints.moved, [false]);
+  const averaged = check(search(P.SEARCH_SEAT_AVERAGING));
+  assert.ok(averaged.gainDb >= 3, `the averaged pick grades ${averaged.gainDb.toFixed(2)} dB better`);
+  assert.deepStrictEqual(averaged.moved, [true]);
+});
+
 test('checkSubMoves grades the picked subs time-aligned when asked, the current ones as they stand', () => {
   const room = { w: 18, d: 14, h: 8 };
   const ctx = { room, wallAbsorption: 0.3 };

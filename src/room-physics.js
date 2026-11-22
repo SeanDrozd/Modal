@@ -1656,10 +1656,11 @@
   // centers: [{x,y,z}, ...]
   // Returns { freqs, perCenterDb }, where perCenterDb[i][j] is the dB at
   // centers[i] for freqs[j] (same order as the input freqs array).
+  // opts.modes: the room's enumerateModes(ctx), when the caller has it already.
   function spatiallyAveragedResponseMulti(centers, freqs, sources, ctx, opts){
     const radiusFt = opts?.radiusFt ?? 2;
     const numPoints = opts?.numPoints ?? 20;
-    const modes = enumerateModes(ctx);
+    const modes = opts?.modes || enumerateModes(ctx);
     const centerSamples = centers.map(c => sphereSamplePoints(c.x, c.y, c.z, radiusFt, numPoints));
     const perCenterDb = centers.map(() => []);
     for(const freq of freqs){
@@ -2086,7 +2087,13 @@
   // flatness meaningfully penalized while letting a genuine level advantage
   // win more decisively.
   const BALANCED_FLATNESS_WEIGHT = 1.0;
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes){
+  // seatAveraging ({ radiusFt, numPoints }, optional): each listener's
+  // response is the spatial average over that cloud around it, as
+  // measureAtSeats does with SEAT_AVERAGING, instead of the level at the
+  // single point. A null at one point is often only inches wide, so a
+  // single-point score can rank a position by a null the averaged measure
+  // barely sees, and miss one it does.
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
     const candidateSource = Object.assign(
       { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true },
       candidatePos
@@ -2102,8 +2109,10 @@
     // listening setup easily putting 5-15+ weighted seats into
     // listenerPositions, that redundancy was the single biggest cost in the
     // whole optimizer grid search -- far more than enumerateModes itself.
-    const perListenerDb = listenerPositions.map(() => []); // [listenerIdx][freqIdx] = dB
-    for(const f of freqList){
+    const perListenerDb = seatAveraging
+      ? spatiallyAveragedResponseMulti(listenerPositions, freqList, allSources, physicsCtx, Object.assign({ modes }, seatAveraging)).perCenterDb
+      : listenerPositions.map(() => []); // [listenerIdx][freqIdx] = dB
+    if(!seatAveraging) for(const f of freqList){
       const precomputed = precomputeModalField(allSources, f, physicsCtx, modes);
       listenerPositions.forEach((lp, i) => {
         const { re, im } = computeFieldAtPoint(lp.x, lp.y, lp.z, precomputed);
@@ -2227,6 +2236,13 @@
   // and at one reference point, the top row's own center, which is not
   // always a seat.
   const SEAT_AVERAGING = { radiusFt: 2, numPoints: 20 };
+  // The same 2 ft cloud with fewer points, for a sub search that scores
+  // every grid position this way (scoreSubPosition's seatAveraging). Scored
+  // at single points, a search ranks positions by nulls inches wide and can
+  // pick a spot the result card grades worse than where the sub already is;
+  // 6 points ranks positions close to how the 20-point card does, at about
+  // 2 to 4 times the cost of single points, where all 20 cost 4 to 13 times.
+  const SEARCH_SEAT_AVERAGING = { radiusFt: 2, numPoints: 6 };
   // seats: from seatPositions. reference: {x, y, z}. Returns perSeatDb
   // [seat][freqIndex], referenceDb [freqIndex], and the quietest and loudest
   // seat at each frequency (seatMinDb, seatMaxDb).
@@ -2546,6 +2562,7 @@
   //     (the candidate included) gets the delay automatic time alignment to
   //     that point would give it with the candidate in place, recomputed
   //     per candidate, instead of the delays the sources came in with.
+  // seatAveraging: see scoreSubPosition.
   // The frequencies a sub search samples: about 12 steps from freqLow up to
   // freqHigh, never closer than 2 Hz apart. Coarser than the result card's
   // 48, since every candidate position is scored at each of them.
@@ -2560,7 +2577,7 @@
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes,
-      candidateTemplate, timeAlignTo
+      candidateTemplate, timeAlignTo, seatAveraging
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
@@ -2588,7 +2605,7 @@
           others = timeAlignedSources(otherSources.concat([candidate]), timeAlignTo, room);
           candidate = others.pop();
         }
-        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
+        const eval_ = scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes, seatAveraging);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -3033,6 +3050,7 @@
     seatPositions,
     maxSchroederFrequency,
     SEAT_AVERAGING,
+    SEARCH_SEAT_AVERAGING,
     measureAtSeats,
     gradePlacement,
     optimizerFreqList,
