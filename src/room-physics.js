@@ -2060,26 +2060,6 @@
     return dbValue < thresholdDb;
   }
 
-  // Soft repulsion penalty (dB) used only by 'nullAvoidance' mode, to counteract
-  // its lack of any inherent spread-out incentive (see scoreSubPosition below).
-  // 0 once a candidate is at least SPREAD_TARGET_FT from every already-placed
-  // point; ramps up linearly to REDUNDANCY_PENALTY_DB right at/inside that
-  // radius. This doesn't forbid close placement outright (isCandidateValid's
-  // minSeparationFt already does that) -- it just makes the optimizer actually
-  // prefer a meaningfully different spot unless the close one is genuinely a
-  // much better null-avoider, rather than defaulting to "closest legal spot."
-  function nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room){
-    if(!alreadyPlaced || alreadyPlaced.length === 0) return 0;
-    const SPREAD_TARGET_FT = Math.max(8, Math.min(room.w, room.d) * 0.5);
-    const REDUNDANCY_PENALTY_DB = 12;
-    const nearestDist = Math.min(...alreadyPlaced.map(p =>
-      Math.sqrt((candidatePos.x - p.x) ** 2 + (candidatePos.y - p.y) ** 2)
-    ));
-    if(nearestDist >= SPREAD_TARGET_FT) return 0;
-    const closeness = 1 - nearestDist / SPREAD_TARGET_FT; // 0..1, 1 = right at/inside the min separation floor
-    return closeness * REDUNDANCY_PENALTY_DB;
-  }
-
   // ---- Sub placement scoring ----
   // Scores one candidate sub position (combined with any other already-placed
   // sources — mains, other subs) by evaluating the field at multiple frequencies
@@ -2102,15 +2082,6 @@
   // listener position, a maximin objective that answers "how deep is the
   // deepest null this candidate produces", less the seat-to-seat spread,
   // since one correction curve cannot even out the seats either.
-  //
-  // Unlike 'balanced' (which naturally spreads multi-sub placements out, since
-  // flatness at every seat rewards covering different areas),
-  // a pure maximin objective has NO inherent incentive to avoid clustering --
-  // if the best null-avoiding spot for sub 2 happens to be right next to sub 1,
-  // nothing here would prefer a more spread-out alternative. alreadyPlaced
-  // (optional: array of {x,y}, e.g. subs placed in earlier rounds of a
-  // multi-sub search) adds a soft repulsion penalty in 'nullAvoidance' mode
-  // specifically to counteract that -- see nullAvoidanceSpreadPenalty below.
   //
   // Returns a single scalar score where HIGHER IS BETTER, plus the raw per-listener
   // per-frequency dB values for diagnostics/visualization.
@@ -2142,14 +2113,13 @@
   // barely sees, and miss one it does. With SEAT_AVERAGING and the result
   // card's own frequencies as freqList, the responses scored are the ones
   // the card grades, so a search ranks positions the way its result will
-  // be judged: the score is gradePlacement's stats.score, less the
-  // nullAvoidance spread penalty below when other subs are near (and
+  // be judged: the score is gradePlacement's stats.score (and
   // scanGridCandidates adds its preferred-zone bonus on top). seatAveraging
   // may also carry spatiallyAveragedResponseMulti's sampleShapes for the
   // listeners.
   // What a candidate is scored as where the candidate itself does not say.
   const CANDIDATE_SOURCE_DEFAULTS = { name: 'candidate', levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
-  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, alreadyPlaced, precomputedModes, seatAveraging){
+  function scoreSubPosition(candidatePos, otherSources, room, freqList, listenerPositions, physicsCtx, mode, precomputedModes, seatAveraging){
     const candidateSource = Object.assign({}, CANDIDATE_SOURCE_DEFAULTS, candidatePos);
     const allSources = otherSources.concat([candidateSource]);
     const modes = precomputedModes || enumerateModes(physicsCtx); // shared across every listener x frequency below -- doesn't depend on candidatePos
@@ -2174,14 +2144,14 @@
       });
     }
 
-    return scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced);
+    return scoreCandidateResponses(perListenerDb, listenerPositions, mode);
   }
   // scoreSubPosition's verdict on a candidate's responses at the listeners
   // (perListenerDb[listener][freqIndex], in dB), however they were computed.
-  function scoreCandidateResponses(perListenerDb, candidatePos, room, listenerPositions, mode, alreadyPlaced){
+  function scoreCandidateResponses(perListenerDb, listenerPositions, mode){
     const combined = scoreResponses(perListenerDb, listenerPositions.map(lp => lp.weight), mode);
     return {
-      score: mode === 'nullAvoidance' ? combined.score - nullAvoidanceSpreadPenalty(candidatePos, alreadyPlaced, room) : combined.score,
+      score: combined.score,
       avgMean: combined.avgMean,
       worstStdDev: combined.worstStdDev,
       worstMinDb: combined.worstMinDb,
@@ -2193,8 +2163,8 @@
   // Combines per-listener responses (perListenerDb[listener][freqIndex], in
   // dB) into the optimizer's score for `mode`, HIGHER IS BETTER, along with
   // the figures it is made of. weights[i] is listener i's importance (0..1,
-  // 1 when omitted). This is the whole of scoreSubPosition's judgement apart
-  // from its clustering penalty, split out so a placement can be judged by
+  // 1 when omitted). This is the whole of scoreSubPosition's judgement,
+  // split out so a placement can be judged by
   // the same formula from responses computed some other way (a denser
   // frequency list, spatial averaging). worstMinIndex is the frequency index
   // of worstMinDb.
@@ -2245,9 +2215,8 @@
     // null (12.8 against 8.0 dB) and seat to seat (4.0 against 1.4 dB).
     // Spreading subs to even out the seats is the approach of Welti and
     // Toole's multi-sub work at Harman. In 'nullAvoidance' mode the worst
-    // null anywhere matters, less the seat-to-seat spread (and a soft
-    // penalty for clustering near already-placed subs, which scoreSubPosition
-    // subtracts itself), since room correction can pull peaks down but can
+    // null anywhere matters, less the seat-to-seat spread, since room
+    // correction can pull peaks down but can
     // fill neither a null nor a gap between seats. See scoreSubPosition's
     // comment for why average level and peaks are excluded otherwise.
     //
@@ -2616,10 +2585,9 @@
   function isSubSource(source){ return source.freqHigh <= 150; }
 
   // What a sub search has to keep clear of each existing source. A sub keeps
-  // the search's full sub-to-sub separation (a plain { x, y } point, which
-  // also counts toward nullAvoidance's spread penalty). A main speaker
-  // blocks its keepOut rectangle (speakerKeepOut) instead, with no spread
-  // penalty, since a sub beside a speaker is an ordinary placement.
+  // the search's full sub-to-sub separation (a plain { x, y } point). A
+  // main speaker blocks its keepOut rectangle (speakerKeepOut) instead,
+  // since a sub beside a speaker is an ordinary placement.
   function sourceExclusionPoints(sources, room){
     return sources.map(s => isSubSource(s) ? { x: s.x, y: s.y } : { x: s.x, y: s.y, keepOut: speakerKeepOut(s, room) });
   }
@@ -2863,9 +2831,6 @@
     // subs across several grid scans can pass precomputedModes to avoid
     // re-enumerating them once per sub too.
     const modes = precomputedModes || enumerateModes(physicsCtx);
-    // Only other subs count toward nullAvoidance's spread penalty; a point
-    // with its own keepOut is a main speaker (see sourceExclusionPoints).
-    const spreadPoints = (excludePoints || []).filter(p => !p.keepOut);
     // With seatAveraging every candidate is scored by a grid scanner (see
     // seatCloudScanner), which gives the same responses as scoreSubPosition
     // without redoing, per candidate, the work they all share.
@@ -2887,8 +2852,8 @@
           candidate = others.pop();
         }
         const eval_ = scanner
-          ? scoreCandidateResponses(scanner.responses(candidate, others), candidate, room, listenerPositions, mode, spreadPoints)
-          : scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, spreadPoints, modes);
+          ? scoreCandidateResponses(scanner.responses(candidate, others), listenerPositions, mode)
+          : scoreSubPosition(candidate, others, room, freqList, listenerPositions, physicsCtx, mode, modes);
         // A preferred zone is a SOFT bias, unlike an allowed zone: it never
         // excludes a candidate (isCandidateValid above knows nothing about
         // it), it just adds a flat bonus to the score of any candidate that
@@ -3001,7 +2966,7 @@
   // placement itself, not exponential.
   const POLISH_PASSES = 2;
 
-  // ---- Multi-sub greedy sequential optimizer ----
+  // ---- Multi-sub search ----
   // Places subs one at a time: find the best position for sub 1 (given only the
   // mains/other fixed sources), fix it in place, then find the best position for
   // sub 2 GIVEN sub 1 is already there, and so on. This is a well-established
@@ -3016,23 +2981,95 @@
   // Each already-placed sub is folded into `otherSources` for the next round, so
   // later subs are scored against the REAL combined field of everything placed
   // so far, not against the mains alone.
+  //
+  // Greedy placement plus polish can still settle on a layout that a better
+  // pair or trio beats: the best spot for one sub on its own is not always
+  // part of the best layout. So with two or more subs the search also runs
+  // again from MULTI_START_SEEDS other first spots (the next best first-round
+  // spots, kept apart from each other; see multiStartSeeds) and keeps
+  // whichever finished layout scores best as a whole (placementScore).
+  const MULTI_START_SEEDS = 3;
+
+  // Default separation: a fraction of the room's smaller dimension, so it
+  // scales sensibly across room sizes rather than being a fixed number
+  // that's too strict in a small room or too loose in a large one. 25%/4ft
+  // (rather than the previous 15%/1ft) so subs land meaningfully apart by
+  // default, since a couple feet of separation is essentially meaningless
+  // at sub wavelengths (9-50+ ft across the usual 20-120Hz sub range).
+  // Math.max(3, ...) floors the EFFECTIVE separation at 3ft even if a
+  // caller explicitly passes something smaller: with isCandidateValid's
+  // square (not circular) exclusion check, that's a real 6x6ft clearance
+  // around every already-placed sub, a reasonable minimum footprint for an
+  // actual cabinet regardless of what a caller-supplied override asks for.
+  function multiSubSeparation(room, minSeparationFt){
+    return Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+  }
+
+  // The sub a search places at a spot it picked.
+  function newSubAt(i, spot){
+    return Object.assign({ name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS, { x: spot.x, y: spot.y, z: spot.z });
+  }
+
+  // The other first spots the multi-sub search starts from: the best of the
+  // first round's candidates, each at least the sub separation away (on
+  // either axis, as isCandidateValid checks it) from the first pick and
+  // from each other, so each start is a genuinely different layout. Each is
+  // { firstRound, spot } for placeAndPolish. None with fewer than two subs.
+  function multiStartSeeds(firstRun, numSubs, separation){
+    const firstRound = firstRun.roundResults[0];
+    if(numSubs < 2 || !firstRound || firstRound.best === null) return [];
+    const taken = [firstRound.best];
+    const seeds = [];
+    for(const spot of firstRound.allCandidates.slice().sort((a, b) => b.score - a.score)){
+      if(seeds.length >= MULTI_START_SEEDS) break;
+      if(taken.some(t => Math.abs(t.x - spot.x) < separation && Math.abs(t.y - spot.y) < separation)) continue;
+      taken.push(spot);
+      seeds.push({ firstRound, spot });
+    }
+    return seeds;
+  }
+
+  // A finished multi-sub layout's score as a whole: the score a grid scan
+  // gives its last sub with every other sub in place (with each sub's time
+  // alignment, as the scan does it), plus every sub's preferred-zone bonus.
+  function placementScore(options, modes, subs){
+    const { room, otherSources, freqList, listenerPositions, physicsCtx, preferredZones, mode, timeAlignTo, seatAveraging } = options;
+    let sources = otherSources.concat(subs);
+    if(timeAlignTo) sources = timeAlignedSources(sources, timeAlignTo, room);
+    const last = sources.pop();
+    const { score } = scoreSubPosition(last, sources, room, freqList, listenerPositions, physicsCtx, mode, modes, seatAveraging);
+    return subs.reduce((sum, s) => sum + preferredZoneBonusDb(s, preferredZones, mode), score);
+  }
+
+  // The run (placeAndPolish's result) whose layout scores best. A run that
+  // placed fewer subs than another loses to it; ties keep the earlier run.
+  function bestPlacement(options, modes, runs){
+    const most = Math.max(...runs.map(r => r.placedSubs.length));
+    let best = null, bestScore = -Infinity;
+    for(const run of runs){
+      if(run.placedSubs.length < most) continue;
+      const score = most === 0 ? 0 : placementScore(options, modes, run.placedSubs);
+      if(best === null || score > bestScore){ best = run; bestScore = score; }
+    }
+    return best;
+  }
+
   function optimizeMultipleSubs(options){
+    const separation = multiSubSeparation(options.room, options.minSeparationFt);
+    const modes = enumerateModes(options.physicsCtx);
+    const first = placeAndPolish(options, separation, modes, null);
+    const others = multiStartSeeds(first, options.numSubs, separation).map(seed => placeAndPolish(options, separation, modes, seed));
+    return bestPlacement(options, modes, [first].concat(others));
+  }
+
+  // One greedy placement plus polish. With `seed` ({ firstRound, spot }),
+  // the first sub goes at seed.spot instead of the first round's best, and
+  // seed.firstRound (that round's scan, already run) stands as its round.
+  function placeAndPolish(options, separation, modes, seed){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging
     } = options;
-    // Default separation: a fraction of the room's smaller dimension, so it
-    // scales sensibly across room sizes rather than being a fixed number
-    // that's too strict in a small room or too loose in a large one. 25%/4ft
-    // (rather than the previous 15%/1ft) so subs land meaningfully apart by
-    // default, since a couple feet of separation is essentially meaningless
-    // at sub wavelengths (9-50+ ft across the usual 20-120Hz sub range).
-    // Math.max(3, ...) floors the EFFECTIVE separation at 3ft even if a
-    // caller explicitly passes something smaller: with isCandidateValid's
-    // square (not circular) exclusion check, that's a real 6x6ft clearance
-    // around every already-placed sub, a reasonable minimum footprint for an
-    // actual cabinet regardless of what a caller-supplied override asks for.
-    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
 
     const placedSubs = [];
     // Seeded with every existing otherSources position (mains, and any subs
@@ -3047,23 +3084,22 @@
     let currentOtherSources = otherSources.slice();
 
     for(let i = 0; i < numSubs; i++){
-      const roundResult = optimizeSubPlacement({
+      const seeded = i === 0 && seed;
+      const roundResult = seeded ? seed.firstRound : optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging
+        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging, precomputedModes: modes
       });
       roundResults.push(roundResult);
-      if(roundResult.best === null){
+      const spot = seeded ? seed.spot : roundResult.best;
+      if(spot === null){
         // No valid candidate left (e.g. zones fully exhausted, or every remaining
         // spot is too close to an already-placed sub) — stop rather than erroring;
         // return what was successfully placed so far.
         break;
       }
-      const placedSub = Object.assign(
-        { name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS,
-        { x: roundResult.best.x, y: roundResult.best.y, z: roundResult.best.z }
-      );
+      const placedSub = newSubAt(i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
@@ -3147,7 +3183,7 @@
       room, otherSources, subs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
     } = options;
-    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const separation = multiSubSeparation(room, minSeparationFt);
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
     if(placedSubs.length >= 2){
@@ -3155,11 +3191,9 @@
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
           // "Everyone else": mains/other fixed sources plus every OTHER
-          // placed sub, excluding this one's own current position from both
-          // the hard exclusion check and the nullAvoidance mode's spread
-          // penalty -- both are driven from the same excludePoints list
-          // passed into scanGridCandidates, so omitting this sub here is
-          // what stops it from excluding/penalizing itself against its own
+          // placed sub, excluding this one's own current position from the
+          // exclusion check (the excludePoints passed into
+          // scanGridCandidates), so this sub is not kept clear of its own
           // pre-polish position.
           const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
           const excludePoints = sourceExclusionPoints(others, room);
@@ -3206,7 +3240,7 @@
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
       onYield, onProgress, yieldEvery, signal, precomputedModes
     } = options;
-    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const separation = multiSubSeparation(room, minSeparationFt);
     const modes = precomputedModes || enumerateModes(physicsCtx);
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
@@ -3245,59 +3279,77 @@
   // without freezing the tab. onProgress is called as (fraction, roundIndex,
   // phase, overall) so a caller can show e.g. "Optimizing sub 2 of 3... 40%"
   // without tracking round boundaries itself; phase is undefined in the
-  // greedy rounds, and overall (0..1) is how far the whole search is, the
-  // greedy rounds and every polish pass counted as one grid scan each. A
-  // polish that settles early stops short of 1. Unlike optimizeMultipleSubs, enumerateModes is computed
-  // once for the whole run (not once per round) and threaded through via
-  // precomputedModes -- purely a perf win, produces numerically identical
-  // placements, since physicsCtx never changes between rounds.
+  // greedy rounds, and overall (0..1) is how far the whole search is, every
+  // greedy round and polish pass of every start counted as one grid scan
+  // each. A polish that settles early, or a room with fewer than
+  // MULTI_START_SEEDS other starts, stops short of 1. enumerateModes is
+  // computed once for the whole run and threaded through via
+  // precomputedModes, since physicsCtx never changes between rounds.
   async function optimizeMultipleSubsAsync(options){
-    const {
-      room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
-      onYield, onProgress, yieldEvery, signal
-    } = options;
-    const separation = Math.max(3, minSeparationFt ?? Math.max(4, Math.min(room.w, room.d) * 0.25));
+    const { room, numSubs, minSeparationFt, physicsCtx, onProgress } = options;
+    const separation = multiSubSeparation(room, minSeparationFt);
     const modes = enumerateModes(physicsCtx);
     const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
-    const totalScans = numSubs + polishScans;
+    const seedScans = numSubs >= 2 ? MULTI_START_SEEDS * (numSubs - 1 + polishScans) : 0;
+    const totalScans = numSubs + polishScans + seedScans;
+    // Each start reports its progress from `doneScans`, the scans before it.
+    const progressFrom = (doneScans) => onProgress ? (fraction, k, phase, scans) => onProgress(fraction, k, phase, (doneScans + scans) / totalScans) : undefined;
+    const first = await placeAndPolishAsync(options, separation, modes, null, progressFrom(0), polishScans);
+    const runs = [first];
+    let doneScans = numSubs + polishScans;
+    for(const seed of multiStartSeeds(first, numSubs, separation)){
+      runs.push(await placeAndPolishAsync(options, separation, modes, seed, progressFrom(doneScans), polishScans));
+      doneScans += numSubs - 1 + polishScans;
+    }
+    return bestPlacement(options, modes, runs);
+  }
+
+  // Async twin of placeAndPolish. progress(fraction, roundIndex, phase,
+  // scans) gets how many grid scans of this start are done (`scans`, in
+  // scan units), for optimizeMultipleSubsAsync to place on the whole search.
+  async function placeAndPolishAsync(options, separation, modes, seed, progress, polishScans){
+    const {
+      room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging,
+      onYield, yieldEvery, signal
+    } = options;
 
     const placedSubs = [];
     const placedPositions = sourceExclusionPoints(otherSources, room);
     const roundResults = [];
     let currentOtherSources = otherSources.slice();
+    let greedyScans = 0;
 
     for(let i = 0; i < numSubs; i++){
-      const roundResult = await optimizeSubPlacementAsync({
+      const seeded = i === 0 && seed;
+      const scansBefore = greedyScans;
+      const roundResult = seeded ? seed.firstRound : await optimizeSubPlacementAsync({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
         physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
         excludePoints: placedPositions, minSeparationFt: separation, mode,
         candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
         precomputedModes: modes, onYield, yieldEvery, signal,
-        onProgress: onProgress ? (fraction) => onProgress(fraction, i, undefined, (i + fraction) / totalScans) : undefined
+        onProgress: progress ? (fraction) => progress(fraction, i, undefined, scansBefore + fraction) : undefined
       });
+      if(!seeded) greedyScans++;
       roundResults.push(roundResult);
-      if(roundResult.best === null) break;
-      const placedSub = Object.assign(
-        { name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS,
-        { x: roundResult.best.x, y: roundResult.best.y, z: roundResult.best.z }
-      );
+      const spot = seeded ? seed.spot : roundResult.best;
+      if(spot === null) break;
+      const placedSub = newSubAt(i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
     }
 
     // Coordinate-descent polish -- see polishSubPlacementsAsync for the full
-    // explanation. onProgress's third argument is 'polish' only during
-    // these rounds, and its overall share is scaled onto the scans left
-    // after the greedy rounds. `modes`
-    // (already computed above) is passed through as precomputedModes to avoid
-    // enumerating it a second time.
+    // explanation. progress's phase is 'polish' only during these rounds.
+    // `modes` (already computed above) is passed through as
+    // precomputedModes to avoid enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
       precomputedModes: modes, onYield, yieldEvery, signal,
-      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, (numSubs + overall * polishScans) / totalScans) : undefined
+      onProgress: progress ? (fraction, k, phase, overall) => progress(fraction, k, phase, greedyScans + overall * polishScans) : undefined
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -3379,7 +3431,6 @@
     rowRankWeight,
     seatCenterWeight,
     isNearNull,
-    nullAvoidanceSpreadPenalty,
     scoreSubPosition,
     BALANCED_FLATNESS_WEIGHT,
     PREFERRED_ZONE_BONUS_DB,
