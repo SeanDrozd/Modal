@@ -829,83 +829,55 @@ test("optimizeSubPlacement threads mode through to scoreSubPosition", () => {
   approx(result.best.score, result.best.worstMinDb, 1e-9, 'in nullAvoidance mode, the winning candidate\'s score should equal its own worstMinDb');
 });
 
-console.log('\n-- nullAvoidanceSpreadPenalty (anti-clustering for nullAvoidance mode) --');
-// REGRESSION context: mode:'nullAvoidance' is a pure maximin objective with no
-// inherent incentive to spread multiple subs out (unlike 'balanced', where
-// averaging level/flatness naturally rewards covering different areas) -- so
-// a greedy multi-sub search in nullAvoidance mode would cluster every sub
-// right at the minimum-separation floor next to the first one, since nothing
-// else discourages it. This penalty exists specifically to counteract that.
+console.log('\n-- optimizeMultipleSubs: several starts --');
+// The score of a finished 2-sub layout, as optimizeMultipleSubs judges it:
+// the last sub's scan score with the other in place, time aligned.
+function layoutScore(room, mains, subs, freqs, seats, ctx, mode){
+  const aligned = P.timeAlignedSources(mains.concat(subs.map(s => ({ ...s, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, enabled: true }))), seats[0], room);
+  const last = aligned.pop();
+  return P.scoreSubPosition(last, aligned, room, freqs, seats, ctx, mode).score;
+}
+function twoSubScene(w, d, seatY){
+  const room = { w, d, h: 8 };
+  return {
+    room, ctx: { room, wallAbsorption: 0.3 }, seats: [{ x: w / 2, y: seatY, z: 3.5 }], freqs: P.logSpacedFreqs(20, 120, 24),
+    mains: [0.25, 0.75].map(f => ({ x: w * f, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true, isMain: true }))
+  };
+}
 
-test('nullAvoidanceSpreadPenalty is 0 when there are no already-placed points', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  approx(P.nullAvoidanceSpreadPenalty({x:9,y:6}, [], room), 0, 1e-9);
-  approx(P.nullAvoidanceSpreadPenalty({x:9,y:6}, null, room), 0, 1e-9);
-});
-
-test('nullAvoidanceSpreadPenalty is 0 once far enough from every already-placed point', () => {
-  const room = { w: 18, d: 13.5, h: 8 }; // SPREAD_TARGET_FT = max(8, 13.5*0.5) = 8
-  const placed = [{x:1,y:1}];
-  approx(P.nullAvoidanceSpreadPenalty({x:9,y:9}, placed, room), 0, 1e-9, 'well past the 8ft spread target');
-});
-
-test('nullAvoidanceSpreadPenalty ramps up as a candidate gets closer to an already-placed point, maxing out at/inside the spread target', () => {
-  const room = { w: 18, d: 13.5, h: 8 }; // SPREAD_TARGET_FT = 8
-  const placed = [{x:0,y:0}];
-  const far = P.nullAvoidanceSpreadPenalty({x:6,y:0}, placed, room);   // 6ft away -> partial penalty
-  const closer = P.nullAvoidanceSpreadPenalty({x:2,y:0}, placed, room); // 2ft away -> bigger penalty
-  const atZero = P.nullAvoidanceSpreadPenalty({x:0,y:0}, placed, room); // 0ft away -> max penalty
-  assert.ok(far > 0 && far < closer, `expected a partial, increasing penalty: far=${far} closer=${closer}`);
-  assert.ok(closer < atZero, `expected the penalty to keep increasing right up to distance 0: closer=${closer} atZero=${atZero}`);
-  approx(atZero, 12, 1e-9, 'penalty should max out at REDUNDANCY_PENALTY_DB right at the already-placed point');
-});
-
-test('nullAvoidanceSpreadPenalty uses the NEAREST already-placed point, not an average or sum', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const oneNearby = [{x:1,y:0}];
-  const oneNearbyOneFar = [{x:1,y:0}, {x:100,y:100}];
-  const p1 = P.nullAvoidanceSpreadPenalty({x:0,y:0}, oneNearby, room);
-  const p2 = P.nullAvoidanceSpreadPenalty({x:0,y:0}, oneNearbyOneFar, room);
-  approx(p1, p2, 1e-9, 'an additional far-away placed point should not change the penalty at all');
-});
-
-test("scoreSubPosition in nullAvoidance mode subtracts the spread penalty from worstMinDb when alreadyPlaced is given", () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const source = { x: 9, y: 6, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 20000, enabled: true };
-  const listeners = [{ x: 9, y: 9, z: 3.5 }];
-  const freqs = [40, 60, 80];
-  const candidatePos = { x: 2, y: 2, z: 1 };
-
-  const withoutPenalty = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 'nullAvoidance');
-  const withNearbyPlaced = P.scoreSubPosition(candidatePos, [source], room, freqs, listeners, ctx, 'nullAvoidance', [{x:2.5,y:2}]);
-  approx(withoutPenalty.score, withoutPenalty.worstMinDb, 1e-9, 'no alreadyPlaced -> no penalty, score is exactly worstMinDb');
-  assert.ok(withNearbyPlaced.score < withNearbyPlaced.worstMinDb, 'a nearby already-placed point should pull the score below worstMinDb');
-});
-
-test('REGRESSION: optimizeMultipleSubs in nullAvoidance mode no longer clusters subs right at the minimum-separation floor', () => {
-  const room = { w: 18, d: 13.5, h: 8 };
-  const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
-  const mains = [
-    { x: 4.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true },
-    { x: 13.5, y: 1.5, z: 3, levelDb: 0, delayMs: 0, freqLow: 80, freqHigh: 20000, enabled: true }
-  ];
-  const listeners = [{ x: 9, y: 9, z: 3.5 }];
-  const freqs = [];
-  for(let f = 20; f <= 120; f += Math.max(2, (120-20)/12)) freqs.push(f);
-
+test('REGRESSION: optimizeMultipleSubs finds the best 2-sub layout where greedy placement plus polish alone settles short of it', () => {
+  // Measured before the extra starts: greedy plus polish picked a layout
+  // scoring -4.76, while the best pair on this grid scores -4.49.
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
   const result = P.optimizeMultipleSubs({
-    room, otherSources: mains, numSubs: 2, freqList: freqs, listenerPositions: listeners,
-    physicsCtx: ctx, offLimitZones: [], preferredZones: [],
-    gridStepFt: 0.5, subHeightFt: 1, mode: 'nullAvoidance'
+    room, otherSources: mains, numSubs: 2, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'balanced', timeAlignTo: seats[0]
   });
-  assert.strictEqual(result.placedSubs.length, 2, 'expected both subs to be placed');
-  const [a, b] = result.placedSubs;
-  const dist = Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
-  // Before the spread penalty existed, this exact scenario clustered the two
-  // subs ~2ft apart (right at the old minimum-separation floor). It should
-  // now land meaningfully farther apart than that.
-  assert.ok(dist > 5, `expected the two subs to be meaningfully spread out, got ${dist.toFixed(2)}ft apart`);
+  // Every valid pair on the same grid, at the same separation the search uses.
+  const sep = 4, exclude = P.sourceExclusionPoints(mains, room), cells = [];
+  for(let x = 0.5; x < room.w; x += 1) for(let y = 0.5; y < room.d; y += 1){
+    if(P.isCandidateValid(x, y, room, [], [], exclude, sep)) cells.push({ x, y, z: 1 });
+  }
+  let best = -Infinity;
+  for(let i = 0; i < cells.length; i++) for(let j = i + 1; j < cells.length; j++){
+    if(Math.abs(cells[i].x - cells[j].x) < sep && Math.abs(cells[i].y - cells[j].y) < sep) continue;
+    best = Math.max(best, layoutScore(room, mains, [cells[i], cells[j]], freqs, seats, ctx, 'balanced'));
+  }
+  approx(layoutScore(room, mains, result.placedSubs, freqs, seats, ctx, 'balanced'), best, 1e-9, 'expected the best pair on the grid');
+});
+
+testAsync('optimizeMultipleSubsAsync picks the same layout as optimizeMultipleSubs from its several starts, and its progress never goes back or past 1', async () => {
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
+  const opts = {
+    room, otherSources: mains, numSubs: 2, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'nullAvoidance', timeAlignTo: seats[0]
+  };
+  const sync = P.optimizeMultipleSubs(opts);
+  let last = 0, rising = true;
+  const async_ = await P.optimizeMultipleSubsAsync({ ...opts, onProgress: (f, k, phase, overall) => { if(overall < last - 1e-12) rising = false; last = overall; } });
+  assert.deepStrictEqual(async_.placedSubs.map(s => [s.x, s.y]), sync.placedSubs.map(s => [s.x, s.y]));
+  assert.ok(rising, 'overall progress should never go backwards');
+  assert.ok(last > 0.5 && last <= 1 + 1e-12, `expected overall progress to end near 1, got ${last}`);
 });
 
 test('empty listenerPositions produces a NaN score rather than throwing', () => {
@@ -1223,11 +1195,11 @@ test('scoreSubPosition with SEAT_AVERAGING at the card\'s frequencies is gradePl
   const freqs = P.logSpacedFreqs(20, 120, 48);
   const sub = { name: 'SW1', x: 6, y: 4.5, z: 1, levelDb: 0, delayMs: 0, freqLow: 20, freqHigh: 80, rolloffDbPerOct: 24, enabled: true };
   for(const mode of ['balanced', 'nullAvoidance']){
-    const got = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, [], undefined, P.SEAT_AVERAGING);
+    const got = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, undefined, P.SEAT_AVERAGING);
     const card = P.gradePlacement(seats, seats[0], freqs, mains.concat([sub]), ctx, mode).stats;
     approx(got.score, card.score, 1e-9, mode);
     approx(got.worstMinDb, card.worstMinDb, 1e-9, mode);
-    const point = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode, []);
+    const point = P.scoreSubPosition(sub, mains, room, freqs, seats, ctx, mode);
     assert.ok(Math.abs(point.score - got.score) > 1e-6, `${mode}: averaging changes the score`);
   }
 });
@@ -1304,7 +1276,7 @@ test('optimizeMultipleSubs and polishSubPlacements score with seatAveraging when
     const last = result.polishResults[result.polishResults.length - 1].best;
     const rest = result.placedSubs.filter(s => s.x !== last.x || s.y !== last.y);
     const sub = result.placedSubs.find(s => s.x === last.x && s.y === last.y);
-    return [last.score, P.scoreSubPosition(sub, mains.concat(rest), room, freqs, seats, ctx, 'balanced', [], undefined, seatAveraging).score];
+    return [last.score, P.scoreSubPosition(sub, mains.concat(rest), room, freqs, seats, ctx, 'balanced', undefined, seatAveraging).score];
   };
   for(const seatAveraging of [undefined, P.SEAT_AVERAGING]){
     const placed = P.optimizeMultipleSubs({ ...base, numSubs: 2, seatAveraging });
@@ -1556,7 +1528,10 @@ test('stops placing subs (without error) if candidates run out', () => {
 
 test('PERFORMANCE: cost scales linearly with sub count, not exponentially', () => {
   // This is the actual point of greedy placement -- confirm empirically that going
-  // from 1 to 4 subs costs roughly 4x the work (linear), not candidates^4 (exponential).
+  // from 1 to 4 subs costs a bounded number of grid scans, linear in the sub
+  // count, not candidates^4 (exponential). 1 sub is 1 scan; 4 subs are 4
+  // greedy rounds and 8 polish scans, plus MULTI_START_SEEDS (3) more starts
+  // of 3 greedy rounds and 8 polish scans each: 45 scans.
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.51, openings: [], openingsEnabled: true, panels: [], panelsEnabled: true };
   const mains = [
@@ -1581,11 +1556,11 @@ test('PERFORMANCE: cost scales linearly with sub count, not exponentially', () =
 
   assert.strictEqual(r1.placedSubs.length, 1);
   assert.strictEqual(r4.placedSubs.length, 4);
-  // Allow generous slack (up to ~8x for 4x the rounds, accounting for timing noise
+  // Allow generous slack (up to 2x the 45 scans, accounting for timing noise
   // on small workloads) -- the key assertion is NOT hundreds/thousands of times slower,
   // which is what candidates^numSubs brute force would look like even at this grid size.
   const ratio = t4 / Math.max(1, t1);
-  assert.ok(ratio < 15, `expected roughly linear scaling (~4x), got ${ratio.toFixed(1)}x slower for 4 subs vs 1 (t1=${t1}ms, t4=${t4}ms)`);
+  assert.ok(ratio < 90, `expected roughly linear scaling (~45 scans), got ${ratio.toFixed(1)}x slower for 4 subs vs 1 (t1=${t1}ms, t4=${t4}ms)`);
 });
 
 test('REGRESSION: multi-sub placement never picks the same (or near-same) spot twice', () => {
@@ -1725,7 +1700,7 @@ test('scanGridCandidates: candidateTemplate and timeAlignTo score each candidate
   assert.ok(differs, 'expected time alignment to change at least one candidate score');
 });
 
-test('scanGridCandidates: nullAvoidance\'s spread penalty counts other subs only, not main speakers', () => {
+test('scanGridCandidates: a nearby sub or speaker only rules candidates out, it does not change their scores', () => {
   const room = { w: 18, d: 13.5, h: 8 };
   const ctx = { room, wallAbsorption: 0.3 };
   const freqList = [40, 60];
@@ -1741,7 +1716,7 @@ test('scanGridCandidates: nullAvoidance\'s spread penalty counts other subs only
   assert.ok(alone.length > 0 && nearSpeaker.length === alone.length && nearSub.length === alone.length);
   alone.forEach((c, i) => {
     approx(nearSpeaker[i].score, c.score, 1e-9, 'a speaker 3ft away should not cost anything');
-    assert.ok(nearSub[i].score < c.score - 1, 'a sub 3ft away should cost a spread penalty');
+    approx(nearSub[i].score, c.score, 1e-9, 'a sub 3ft away should not cost anything either');
   });
 });
 
@@ -2609,12 +2584,19 @@ testAsync('optimizeMultipleSubsAsync and polishSubPlacementsAsync report overall
     assert.strictEqual(calls[0].overall, 0);
     for(let i = 1; i < calls.length; i++) assert.ok(calls[i].overall >= calls[i - 1].overall - 1e-12, `overall went back at call ${i}`);
     for(const c of calls) assert.ok(c.overall >= 0 && c.overall <= 1);
-    // every scan's start lands on its share: scan s of totalScans starts at s / totalScans
-    const scans = result.roundResults ? 3 + 2 * 3 : 2 * 3;
     const starts = calls.filter(c => c.fraction === 0).map(c => c.overall);
+    if(result.roundResults){
+      // 3 greedy rounds and 6 polish scans, then 3 more starts of 2 greedy
+      // rounds and 6 polish scans each: the first start's rounds begin at
+      // 0, 1 and 2 of 33 scans.
+      [0, 1, 2].forEach(s => approx(starts[s], s / 33, 1e-12));
+      continue;
+    }
+    // every scan's start lands on its share: scan s of totalScans starts at s / totalScans
+    const scans = 2 * 3;
     starts.forEach((o, s) => approx(o, s / scans, 1e-12));
-    // the scans run are the greedy rounds plus every polish scan, and the last report is near the end of the last one
-    assert.strictEqual(starts.length, (result.roundResults ? result.roundResults.length : 0) + result.polishResults.length);
+    // the scans run are every polish scan, and the last report is near the end of the last one
+    assert.strictEqual(starts.length, result.polishResults.length);
     assert.ok(calls.at(-1).overall <= starts.length / scans + 1e-12 && calls.at(-1).overall > (starts.length - 1) / scans);
   }
 });
@@ -3624,7 +3606,6 @@ test('scanGridCandidates with seatAveraging scores every candidate as scoreSubPo
   const freqs = P.logSpacedFreqs(20, 120, 12);
   const averaging = { radiusFt: 2, numPoints: 6 };
   const excludePoints = P.sourceExclusionPoints(others, room);
-  const spreadPoints = excludePoints.filter(p => !p.keepOut);
   const modes = P.enumerateModes(ctx);
   for(const mode of ['balanced', 'nullAvoidance']){
     const entries = [...P.scanGridCandidates({ room, otherSources: others, freqList: freqs, listenerPositions: seats, physicsCtx: ctx, offLimitZones: [], gridStepFt: 1.5, subHeightFt: 1, excludePoints, minSeparationFt: 3, mode, candidateTemplate: placedSub, timeAlignTo: seats[0], seatAveraging: averaging })].filter(Boolean);
@@ -3632,7 +3613,7 @@ test('scanGridCandidates with seatAveraging scores every candidate as scoreSubPo
     for(const e of entries){
       const aligned = P.timeAlignedSources(others.concat([Object.assign({}, placedSub, { x: e.x, y: e.y, z: 1 })]), seats[0], room);
       const candidate = aligned.pop();
-      const want = P.scoreSubPosition(candidate, aligned, room, freqs, seats, ctx, mode, spreadPoints, modes, averaging);
+      const want = P.scoreSubPosition(candidate, aligned, room, freqs, seats, ctx, mode, modes, averaging);
       approx(e.score, want.score, 1e-9);
       approx(e.worstMinDb, want.worstMinDb, 1e-9);
     }

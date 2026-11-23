@@ -8,7 +8,7 @@ A browser-based bass simulator for home theaters and listening rooms. Enter your
 
 Symmetric sub placement looks tidy but excites the room's modes symmetrically, often putting a null right at the center seat. The optimizer breaks that symmetry; the heat map and the averaged frequency response improve together:
 
-![The optimizer moving the same two subs off the symmetric null](docs/optimizer-demo.webp)
+![The optimizer, set for room correction, moving the same two subs off the symmetric null](docs/optimizer-demo.webp)
 
 ## Screenshots
 

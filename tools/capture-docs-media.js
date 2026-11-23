@@ -405,11 +405,17 @@ async function expandSection(page, sectionId){
   });
   await page.waitForTimeout(200);
 
-  // Set optimizer to 2 subs, run it
+  // Set optimizer to 2 subs in null avoidance (room correction) mode, run
+  // it. The symmetric start's trouble is a deep null, which is what this
+  // mode scores; under the default Even score the best pair is under 1 dB
+  // better than the start, too little for the app to suggest a move.
   await page.evaluate(() => {
     const el = document.getElementById('optNumSubs');
     el.value = '2';
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    const mode = document.getElementById('optimizerMode');
+    mode.value = 'nullAvoidance';
+    mode.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.click('#runOptimizerBtn');
   await waitForOptimizer(page);
