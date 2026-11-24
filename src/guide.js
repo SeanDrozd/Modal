@@ -47,6 +47,11 @@
   // `count` is how many of the app's standard channels the layout uses, in
   // its own order (FL, FR, C, then surrounds, backs and wides).
   // `mode` is the optimizer mode each answer selects.
+  // Where the optimizer may put a sub: against a wall (the default) or anywhere on the floor.
+  const SUB_SPOTS = [
+    { id: 'wall', label: 'Against a wall', wallOnly: true, hint: 'A sub at a wall plays louder and stays out of the way. Where furniture or an off-limits area covers the wall, Modal uses the nearest open spot in front of it.' },
+    { id: 'anywhere', label: 'Anywhere in the room', wallOnly: false, hint: 'Modal searches the whole floor, apart from obstacles and off-limits areas. The best spot may be out in the room.' }
+  ];
   const ROOM_CORRECTION = [
     { id: 'yes', label: 'Yes', mode: 'nullAvoidance' },
     { id: 'no', label: 'No', mode: 'balanced' },
@@ -60,7 +65,8 @@
     mode: { term: 'Room mode', text: "A frequency at which bass reflecting between the room's surfaces reinforces itself into a standing wave. At that frequency some parts of the room are loud and others nearly silent." },
     null: { term: 'Null', text: 'A frequency at which reflections cancel the direct sound at one spot, so the level drops sharply there. More power or EQ does not fill a null; moving the sub or the seat does.' },
     roomCorrection: { term: 'Room correction', text: "The AVR's automatic setup: it plays test tones through a supplied microphone, then sets speaker distances, levels and EQ. Audyssey, YPAO, Dirac Live, MCACC, AccuEQ and ARC are common names for it." },
-    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. Level does not count, since the sub\'s gain sets it. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
+    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null. Both add a quarter of the average bass level at the seats, so a louder placement wins only when it is about as even: more level means less work for the sub\'s amplifier.' },
+    bassLevel: { term: 'Bass level', text: 'The average level across the frequency range at the seats. A sub at a wall or in a corner drives more of the room\'s modes, so the same amplifier setting plays louder, with more headroom left before the sub runs out of excursion.' },
     variation: { term: 'Response variation', text: 'The standard deviation of level across the frequency range, at the seat where it is largest. Lower is more even.' },
     seatToSeat: { term: 'Seat-to-seat variation', text: 'Half the gap between the loudest and the quietest seat at each frequency, averaged over the range. Lower means every seat gets closer to the same bass.' },
     spatialAverage: { term: 'Spatial averaging', text: 'The response is averaged over 20 points within 2 ft (0.6 m) of the seat, not read at one exact point, much like moving a measurement mic around the listening position.' }
@@ -691,8 +697,8 @@
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
     const SCORE_COUNTS = {
-      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls, but not level, since the sub\'s gain sets it. The chart shows the main seat only.',
-      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest. The chart shows the main seat only.'
+      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls first, then a smaller credit for bass level. The chart shows the main seat only.',
+      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest, then a smaller credit for bass level. The chart shows the main seat only.'
     };
     const VERDICTS = {
       major: 'Major improvement.',
@@ -719,7 +725,8 @@
         ${b ? `<p class="guide-hint">${SCORE_COUNTS[app.getOptimizerMode()]}</p>` : ''}
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
-        ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
+        ${b ? change('Bass level' + term('bassLevel'), null, signedDb(o.comparison.levelGainDb, 1)) : ''}
+        ${o.levelVsMiddleDb != null ? change('Bass level' + term('bassLevel'), null, `${signedDb(o.levelVsMiddleDb, 1)} over the middle of the room`) : ''}
         ${o.seats > 1 ? change('Seat-to-seat variation' + term('seatToSeat'), b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
         ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}
@@ -740,7 +747,8 @@
         <p class="guide-hint" id="guideAlternativesHint" ${app.getScoreHeatmap() ? '' : 'hidden'}>Green areas scored best and red worst. The star marks the suggestion.</p>`;
     }
     function renderOptimize(body){
-      const subs = app.getSubs(), settings = app.getOptimizerSettings();
+      const subs = app.getSubs();
+      let settings = app.getOptimizerSettings();
       body.innerHTML = `
         <h2 tabindex="-1">Find the best spot</h2>
         <p>The map now shows sound pressure level across the room at the selected frequency. The goal is a response at your seats that stays even across the ${settings.freqLow} to ${settings.freqHigh} Hz range, without deep nulls.</p>
@@ -748,6 +756,9 @@
         <p>Do you run room correction (Audyssey, Dirac, YPAO, ARC)?${term('roomCorrection')}</p>
         <div class="segmented guide-counts" id="guideRoomCorrection" role="group" aria-label="Room correction">${ROOM_CORRECTION.map(c => `<button data-rc="${c.id}">${c.label}</button>`).join('')}</div>
         <p class="guide-hint">Room correction can cut peaks but can't fill nulls, so with it, Modal prioritizes avoiding nulls.</p>
+        <h3>Where can the subs go?</h3>
+        <div class="segmented guide-counts" id="guideSubSpots" role="group" aria-label="Where the subs can go">${SUB_SPOTS.map(c => `<button data-spots="${c.id}">${c.label}</button>`).join('')}</div>
+        <p class="guide-hint" id="guideSubSpotsHint"></p>
         <details class="guide-more"><summary>Settings</summary>
           <div class="guide-stat"><span>Frequency range</span><strong>${settings.freqLow} to ${settings.freqHigh} Hz</strong></div>
           <div class="guide-stat"><span>Subs</span><strong>${subs.length ? `${subs.length} (yours, refined in place)` : `${state.plannedSubs} new`}</strong></div>
@@ -775,6 +786,15 @@
       };
       let outcome = latest();
 
+      body.querySelector('#guideSubSpots').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        const wallOnly = SUB_SPOTS.find(c => c.id === btn.dataset.spots).wallOnly;
+        if(wallOnly !== settings.wallOnly) outcome = null; // the result shown was found with the other setting, and the app drops it
+        app.setOptimizerWallOnly(wallOnly);
+        settings = app.getOptimizerSettings();
+        refresh();
+      });
       body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
         if(!btn) return;
@@ -836,6 +856,9 @@
       let shown; // what `result` currently shows, so it is rebuilt only on a change
       function refresh(){
         pressOnly(body.querySelector('#guideRoomCorrection'), b => b.dataset.rc === state.roomCorrection);
+        const spots = SUB_SPOTS.find(c => c.wallOnly === settings.wallOnly);
+        pressOnly(body.querySelector('#guideSubSpots'), b => b.dataset.spots === spots.id);
+        body.querySelector('#guideSubSpotsHint').textContent = spots.hint;
         // While a search runs the button stays Stop and the card stays empty; run() refreshes once it ends.
         if(app.optimizerRunning()) return;
         // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.

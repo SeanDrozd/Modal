@@ -241,7 +241,7 @@ function applyAppearanceAttrs(mode, theme){
           <option value="nullAvoidance">Null avoidance (room correction)</option>
         </select>
       </div>
-      <div class="hint" id="optimizerModeHint">Scores how even the bass is: flat across the band at every seat, the same from seat to seat, and without deep nulls. Level does not count, since the sub's gain sets it. Switch to "Null avoidance" if you have room correction/EQ available: it ignores peaks (which EQ can fix) and scores by the deepest null and how much the seats differ, which EQ can't fix.</div>
+      <div class="hint" id="optimizerModeHint">Scores how even the bass is: flat across the band at every seat, the same from seat to seat, and without deep nulls. Level counts too, at a quarter of a dB per dB, so a louder spot wins only when it is about as even. Switch to "Null avoidance" if you have room correction/EQ available: it ignores peaks (which EQ can fix) and scores by the deepest null and how much the seats differ, which EQ can't fix.</div>
       <div class="row" style="margin-top:8px;"><label>Freq range (Hz)</label>
         <input type="number" id="optFreqLow" min="10" max="500" step="1" value="20" style="width:52px;">
         <span style="color:var(--text-dim);font-size:12.5px;">to</span>
@@ -253,6 +253,10 @@ function applyAppearanceAttrs(mode, theme){
       <div class="row"><label># of subs</label>
         <input type="number" id="optNumSubs" min="1" max="6" step="1" value="1" style="width:52px;">
       </div>
+      <div class="row"><label for="optWallOnlyToggle">Keep subs against a wall</label>
+        <input type="checkbox" id="optWallOnlyToggle" checked>
+      </div>
+      <div class="hint" id="optWallOnlyHint">Most rooms only have space for a sub at a wall, and a wall adds output. Where furniture or an off-limits area covers the wall, the search uses the nearest open spot in front of it. Untick to let the search use the whole floor.</div>
       <button id="runOptimizerBtn" class="full primary" style="margin-top:6px;">Find best sub position</button>
       <button id="reoptimizeExistingBtn" class="full" style="display:none; margin-top:6px;">Re-optimize existing subs</button>
       <button id="stopOptimizerBtn" class="full" style="display:none; margin-top:6px;">Stop search</button>
@@ -654,6 +658,7 @@ function applyAppearanceAttrs(mode, theme){
   // from a saved preset -- see saveSessionSettings/loadSessionSettings.
   let optGridStepFt = 0.5;
   let optSubHeightFt = 1;
+  let optWallOnly = true; // searches only spots against a wall (RoomPhysics.wallSpotMask)
   function renderOptimizerLengthFields(){
     document.getElementById('optGridStepField').innerHTML = lengthFieldHtml('optGridStep', optGridStepFt);
     document.getElementById('optSubHeightField').innerHTML = lengthFieldHtml('optSubHeight', optSubHeightFt);
@@ -1018,7 +1023,7 @@ function applyAppearanceAttrs(mode, theme){
       const collapsedSections = [...document.querySelectorAll('.section.collapsed[id]')].map(el => el.id);
       const session = {
         resolutionScale, dbMin, dbMax, colormapId, renderMode, optimizerMode, autoTimeAlignEnabled, freqSweepSpeed, sweepEndFreq,
-        lengthUnit, optGridStepFt, optSubHeightFt, collapsedSections, appearanceMode, colorTheme, mapView,
+        lengthUnit, optGridStepFt, optSubHeightFt, optWallOnly, collapsedSections, appearanceMode, colorTheme, mapView,
         optFreqLow: document.getElementById('optFreqLow').value,
         optFreqHigh: document.getElementById('optFreqHigh').value,
         optNumSubs: document.getElementById('optNumSubs').value
@@ -1075,6 +1080,10 @@ function applyAppearanceAttrs(mode, theme){
     if(session.optFreqHigh != null) document.getElementById('optFreqHigh').value = session.optFreqHigh;
     if(Number.isFinite(session.optGridStepFt)) optGridStepFt = session.optGridStepFt;
     if(Number.isFinite(session.optSubHeightFt)) optSubHeightFt = session.optSubHeightFt;
+    if(typeof session.optWallOnly === 'boolean'){
+      optWallOnly = session.optWallOnly;
+      document.getElementById('optWallOnlyToggle').checked = optWallOnly;
+    }
     if(session.optNumSubs != null) document.getElementById('optNumSubs').value = session.optNumSubs;
     if(session.lengthUnit === 'ft' || session.lengthUnit === 'm'){
       lengthUnit = session.lengthUnit;
@@ -2124,6 +2133,13 @@ function applyAppearanceAttrs(mode, theme){
   }
 
   const isPointInZoneRect = RoomPhysics.isPointInRect;
+  // How many spots a search tries: every grid cell on the floor, or with
+  // optWallOnly only those against a wall, which depend on the obstacles.
+  function searchPositionCount(){
+    if(!optWallOnly) return RoomPhysics.countGridCells(room, optGridStepFt, true);
+    const scene = optimizerScene();
+    return RoomPhysics.wallSpotMask(room, optGridStepFt, scene.offLimitZones, scene.allowedZones).flat().filter(Boolean).length;
+  }
 
   // Runs the optimizer via RoomPhysics.optimizeMultipleSubsAsync -- the same
   // tested implementation optimizeMultipleSubs uses, just the async/chunked
@@ -2231,7 +2247,7 @@ function applyAppearanceAttrs(mode, theme){
       room: scene.room, otherSources: scene.sources, numSubs, freqList, listenerPositions: scene.listenerPositions,
       physicsCtx: scene.physicsCtx, offLimitZones: scene.offLimitZones, allowedZones: scene.allowedZones, preferredZones: scene.preferredZones,
       gridStepFt: step, subHeightFt: subHeight, mode: optimizerMode, timeAlignTo: scene.timeAlignTo,
-      seatAveraging: RoomPhysics.SEAT_AVERAGING,
+      seatAveraging: RoomPhysics.SEAT_AVERAGING, wallOnly: optWallOnly,
       onProgress: optimizerStatusUpdater(status, numSubs),
       onYield: yieldToBrowser, signal
     });
@@ -2308,7 +2324,7 @@ function applyAppearanceAttrs(mode, theme){
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, subHeightFt: existingSubs[0].z, mode: optimizerMode,
         excludePoints: RoomPhysics.sourceExclusionPoints(otherSources, room), candidateTemplate: existingSubs[0], timeAlignTo,
-        seatAveraging: RoomPhysics.SEAT_AVERAGING,
+        seatAveraging: RoomPhysics.SEAT_AVERAGING, wallOnly: optWallOnly,
         onProgress: optimizerStatusUpdater(status, 1), onYield: yieldToBrowser, signal
       });
       refinedSubs = [result.best ? Object.assign({}, existingSubs[0], { x: result.best.x, y: result.best.y, z: result.best.z }) : Object.assign({}, existingSubs[0])];
@@ -2318,7 +2334,7 @@ function applyAppearanceAttrs(mode, theme){
       const result = await RoomPhysics.polishSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
-        gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING,
+        gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING, wallOnly: optWallOnly,
         onProgress: optimizerStatusUpdater(status, existingSubs.length), onYield: yieldToBrowser, signal
       });
       refinedSubs = result.placedSubs;
@@ -4040,6 +4056,18 @@ function applyAppearanceAttrs(mode, theme){
     saveSessionSettings();
   }
   document.getElementById('optimizerMode').addEventListener('change', function(){ setOptimizerMode(this.value); });
+  // Like a change of mode, a change of where subs may go drops a result
+  // found under the other setting.
+  function setOptimizerWallOnly(on){
+    if(on !== optWallOnly){
+      stopOptimizer();
+      clearOptimizerResult();
+    }
+    optWallOnly = on;
+    document.getElementById('optWallOnlyToggle').checked = on;
+    saveSessionSettings();
+  }
+  document.getElementById('optWallOnlyToggle').addEventListener('change', function(){ setOptimizerWallOnly(this.checked); });
   document.getElementById('verifyGpuBtn').addEventListener('click', function(){
     const out = document.getElementById('verifyResult');
     out.textContent = 'Running...';
@@ -4731,8 +4759,14 @@ function applyAppearanceAttrs(mode, theme){
     // compares it with the spots the search found.
     const moved = suggestionMoved();
     const suggested = moved ? measure(sourcesWithSuggestion(active, optimizerResult.suggestedSubs)) : null;
+    // With no sub yet, the level is compared with the same subs in the
+    // middle of the room, so the card can say what the spots gain.
+    const middle = before ? null : RoomPhysics.clampToFloorPlan(room.w / 2, room.d / 2, room, 0.5);
+    const inMiddle = middle && measure(sourcesWithSuggestion(active, optimizerResult.placedSubs.map(p => ({ ...p, x: middle.x, y: middle.y }))));
     return {
       freqs, before, after, seats: seats.length, moved, version: suggestionVersion,
+      // levelVsMiddleDb: how much louder the seats are than with the subs in the middle of the room; null with subs already in the room.
+      levelVsMiddleDb: inMiddle ? after.stats.avgMean - inMiddle.stats.avgMean : null,
       comparison: before ? RoomPhysics.comparePlacements(before.stats, after.stats, optimizerMode) : null,
       vsSuggested: suggested ? RoomPhysics.comparePlacements(suggested.stats, after.stats, optimizerMode) : null,
       // from: where a refined existing sub stands now; null for a new sub.
@@ -4832,10 +4866,12 @@ function applyAppearanceAttrs(mode, theme){
       freqLow: parseFloat(document.getElementById('optFreqLow').value) || 20,
       freqHigh: parseFloat(document.getElementById('optFreqHigh').value) || 120,
       gridStepFt: optGridStepFt, subHeightFt: optSubHeightFt,
-      positions: RoomPhysics.countGridCells(room, optGridStepFt, true),
+      positions: searchPositionCount(),
+      wallOnly: optWallOnly,
       seats: allSeatPositions().length
     }),
     setOptimizerMode,
+    setOptimizerWallOnly,
     // Refines the existing subs, or with none searches for `newSubs` new
     // ones. onProgress(fraction, subIndex, numSubs, phase, overall) is called as the
     // search runs. Resolves when it is done, to false when the room changed
