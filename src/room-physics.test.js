@@ -1102,12 +1102,12 @@ test('comparePlacements grades the change in score by the mode\'s own thresholds
   approx(c.gainDb, 7.5, 1e-9); approx(c.levelGainDb, 3, 1e-9);
   assert.strictEqual(c.verdict, 'major');
   const na = (after, level) => P.comparePlacements(s(60, 70), s(after, level ?? 70), 'nullAvoidance').verdict;
-  assert.deepStrictEqual([na(66), na(65.9), na(62), na(61.9, 75), na(60), na(58.1), na(58)], ['major', 'modest', 'modest', 'similar', 'similar', 'similar', 'worse']);
+  assert.deepStrictEqual([na(67), na(66.9), na(62.5), na(62.4, 75), na(60), na(57.6), na(57.5)], ['major', 'modest', 'modest', 'similar', 'similar', 'similar', 'worse']);
   const ev = (after) => P.comparePlacements(s(-6, 70), s(after, 70), 'balanced').verdict;
-  assert.deepStrictEqual([ev(-3), ev(-3.1), ev(-5), ev(-5.1), ev(-6.9), ev(-7)], ['major', 'modest', 'modest', 'similar', 'similar', 'worse']);
-  assert.deepStrictEqual(P.PLACEMENT_GAIN_DB, { balanced: { major: 3, modest: 1 }, nullAvoidance: { major: 6, modest: 2 } });
+  assert.deepStrictEqual([ev(-2), ev(-2.1), ev(-4.5), ev(-4.6), ev(-7.4), ev(-7.5)], ['major', 'modest', 'modest', 'similar', 'similar', 'worse']);
+  assert.deepStrictEqual(P.PLACEMENT_GAIN_DB, { balanced: { major: 4, modest: 1.5 }, nullAvoidance: { major: 7, modest: 2.5 } });
   // any other mode grades as balanced, as scoreResponses scores it
-  assert.strictEqual(P.comparePlacements(s(-6, 70), s(-3, 70)).verdict, 'major');
+  assert.strictEqual(P.comparePlacements(s(-6, 70), s(-2, 70)).verdict, 'major');
 });
 
 test('seatToSeatSpreadDb is the weighted mean distance from the weighted mean level, and ignores a seat of weight 0', () => {
@@ -3757,6 +3757,28 @@ test('countGridCells with onFloorOnly leaves out the cells in a cut-out', () => 
   assert.strictEqual(P.countGridCells(baseRoom, 0.5, true), P.countGridCells(baseRoom, 0.5));
 });
 
+test('countGridCells with search options counts the cells a search with those zones tries', () => {
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
+  const couch = [{ x: 4, y: 7, width: 4, height: 2 }], corner = [{ x: 0, y: 0, width: 4, height: 3 }];
+  const scanned = (zones) => P.optimizeSubPlacement({
+    room, otherSources: [], freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: zones.offLimitZones, allowedZones: zones.allowedZones, preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'balanced', wallOnly: zones.wallOnly
+  }).allCandidates.length;
+  for(const zones of [
+    { offLimitZones: [], allowedZones: [], wallOnly: false },
+    { offLimitZones: couch, allowedZones: [], wallOnly: false },
+    { offLimitZones: [], allowedZones: corner, wallOnly: false },
+    { offLimitZones: couch, allowedZones: [], wallOnly: true },
+    { offLimitZones: [], allowedZones: corner, wallOnly: true }
+  ]) assert.strictEqual(P.countGridCells(room, 1, true, zones), scanned(zones), JSON.stringify(zones));
+  assert.strictEqual(P.countGridCells(room, 1, true, { offLimitZones: [], allowedZones: [], wallOnly: false }), 108, 'every cell with no zones');
+  assert.strictEqual(P.countGridCells(room, 1, true, { offLimitZones: couch, allowedZones: [], wallOnly: false }), 108 - 8, 'less the couch');
+  assert.strictEqual(P.countGridCells(room, 1, true, { offLimitZones: [], allowedZones: corner, wallOnly: false }), 12, 'only the allowed zone');
+  assert.strictEqual(P.countGridCells(room, 1, true, { offLimitZones: [], allowedZones: [], wallOnly: true }), 2 * 12 + 2 * 9 - 4, 'the ring of cells along the walls');
+  // in an L room the cut-out's cells never count
+  assert.strictEqual(P.countGridCells(lShapedRoom, 1, true, { offLimitZones: [], allowedZones: [], wallOnly: false }), 400);
+});
+
 // The cells of a wallSpotMask that are set, as [x, y] cell centers, for a 1 ft grid.
 const wallCells = (mask) => mask.flatMap((col, i) => col.flatMap((on, j) => on ? [[i + 0.5, j + 0.5]] : []));
 
@@ -3939,6 +3961,15 @@ test('crossoverBand finds where the subs hand over to the speakers, from their o
   const gap = P.crossoverBand([main(130), sub(60)]);
   approx(gap.fromHz, 60 * Math.SQRT2, 1e-9); approx(gap.toHz, 130 / Math.SQRT2, 1e-9);
   assert.ok(gap.fromHz < gap.hz && gap.hz < gap.toHz, `${gap.fromHz} < ${gap.hz} < ${gap.toHz}`);
+});
+
+test('isAboveCrossover is true only past the blend, where the subs are 12 dB or more down', () => {
+  const band = P.crossoverBand([{ x: 0, y: 0, freqLow: 80, freqHigh: 20000 }, { x: 0, y: 0, freqLow: 20, freqHigh: 80 }]);
+  assert.strictEqual(P.isAboveCrossover(117, band), true, 'past toHz (113 Hz)');
+  assert.strictEqual(P.isAboveCrossover(94, band), false, 'above the crossover but inside the blend');
+  assert.strictEqual(P.isAboveCrossover(band.toHz, band), false);
+  assert.strictEqual(P.isAboveCrossover(40, band), false);
+  assert.strictEqual(P.isAboveCrossover(117, null), false, 'no crossover');
 });
 
 test('wallsAround gives the first wall each way, a notch wall where it is the nearer that way', () => {

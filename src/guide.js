@@ -47,15 +47,15 @@
   // `count` is how many of the app's standard channels the layout uses, in
   // its own order (FL, FR, C, then surrounds, backs and wides).
   // `mode` is the optimizer mode each answer selects.
-  // Where the optimizer may put a sub: against a wall (the default) or anywhere on the floor.
-  const SUB_SPOTS = [
-    { id: 'wall', label: 'Against a wall', wallOnly: true, hint: 'A sub at a wall plays louder and stays out of the way. Where furniture or an off-limits area covers the wall, Modal uses the nearest open spot in front of it.' },
-    { id: 'anywhere', label: 'Anywhere in the room', wallOnly: false, hint: 'Modal searches the whole floor, apart from obstacles and off-limits areas. The best spot may be out in the room.' }
-  ];
   const ROOM_CORRECTION = [
     { id: 'yes', label: 'Yes', mode: 'nullAvoidance' },
     { id: 'no', label: 'No', mode: 'balanced' },
     { id: 'unsure', label: 'Not sure', mode: 'balanced' }
+  ];
+  // Where the optimizer may put a sub: against a wall (the default) or anywhere on the floor.
+  const SUB_SPOTS = [
+    { id: 'wall', label: 'Against a wall', wallOnly: true, hint: 'A sub at a wall plays louder and stays out of the way. Where furniture or an off-limits area covers the wall, Modal uses the nearest open spot in front of it.' },
+    { id: 'anywhere', label: 'Anywhere in the room', wallOnly: false, hint: 'Modal searches the whole floor, apart from obstacles and off-limits areas. The best spot may be out in the room.' }
   ];
 
   // The definitions behind the "?" buttons (see term() below): the terms the
@@ -680,6 +680,8 @@
     const fmtDb = (db) => `${db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`;
     const fmtSwing = (db) => `±${db.toFixed(0)} dB`;
     const signedDb = (db, digits) => { const shown = Number(db.toFixed(digits)); return `${shown >= 0 ? '+' : '−'}${Math.abs(shown).toFixed(digits)} dB`; }; // rounds first so a tiny negative reads +0.0
+    // A quieter pick reads "1.2 dB under", never "-1.2 dB over".
+    const levelVsMiddle = (db) => Number(db.toFixed(1)) >= 0 ? `${signedDb(db, 1)} over the middle of the room` : `${Math.abs(db).toFixed(1)} dB under the middle of the room`;
     const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.label}, ${app.formatLength(walls.end.distFt)} from the ${walls.end.label}`;
     const shapeWarning = () => SHAPE_WARNINGS[state.roomShape] ? `<p class="guide-warning">Not reliable for this room. ${esc(SHAPE_WARNINGS[state.roomShape])}</p>` : '';
     // Current and suggested response at the main seat, as two lines on a
@@ -694,11 +696,11 @@
       // subs' side to the speakers' across the range both play in.
       const xo = o.crossover && o.crossover.fromHz < o.freqs.at(-1) && o.crossover.toHz > o.freqs[0] ? o.crossover : null;
       const band = xo ? (() => {
-        const x0 = Math.max(0, xAt(xo.fromHz)), x1 = Math.min(W, xAt(xo.toHz)), xc = Math.max(0, Math.min(W, xAt(xo.hz)));
+        const x0 = Math.max(0, xAt(xo.fromHz)), x1 = Math.min(W, xAt(xo.toHz)), xc = xAt(xo.hz);
         // the gradient spans the whole blend, even where the chart cuts it off
         return `<defs><linearGradient id="guideCrossover" gradientUnits="userSpaceOnUse" x1="${xAt(xo.fromHz).toFixed(1)}" x2="${xAt(xo.toHz).toFixed(1)}" y1="0" y2="0"><stop offset="0" class="xover-subs"/><stop offset="1" class="xover-speakers"/></linearGradient></defs>
           <rect class="xover" x="${x0.toFixed(1)}" y="0" width="${(x1 - x0).toFixed(1)}" height="${H}" fill="url(#guideCrossover)"/>
-          <line class="xover-line" x1="${xc.toFixed(1)}" x2="${xc.toFixed(1)}" y1="0" y2="${H}"/>`;
+          ${xc >= 0 && xc <= W ? `<line class="xover-line" x1="${xc.toFixed(1)}" x2="${xc.toFixed(1)}" y1="0" y2="${H}"/>` : '' /* the crossover itself may be off the chart */}`;
       })() : '';
       return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz${xo ? `, crossover at ${Math.round(xo.hz)} Hz` : ''}">
           ${band}${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
@@ -739,7 +741,7 @@
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
         ${b ? change('Bass level' + term('bassLevel'), null, signedDb(o.comparison.levelGainDb, 1)) : ''}
-        ${o.levelVsMiddleDb != null ? change('Bass level' + term('bassLevel'), null, `${signedDb(o.levelVsMiddleDb, 1)} over the middle of the room`) : ''}
+        ${o.levelVsMiddleDb != null ? change('Bass level' + term('bassLevel'), null, levelVsMiddle(o.levelVsMiddleDb)) : ''}
         ${o.seats > 1 ? change('Seat-to-seat variation' + term('seatToSeat'), b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
         ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}

@@ -2365,14 +2365,26 @@
   // 'similar'.
   //
   // Each mode has its own thresholds, since its scores spread over a
-  // different range. Over every spot one sub could take in 5 rooms (12 x 9
-  // to 18 x 13.5 ft, 1 to 6 seats), the 'balanced' score spread over 2.8 to
-  // 4.4 dB, a tenth of the spots more than 2.3 to 3.5 dB below the best,
-  // and 'nullAvoidance' over 6.7 to 20.9 dB, a tenth more than 6.2 to 15.2
-  // dB below.
+  // different range. Over every spot one sub could take in 8 rooms (12 x 9
+  // to 20 x 15 ft, 1 to 6 seats), the 'balanced' score spread over 2.0 to
+  // 9.4 dB (4.8 on average), a tenth of the spots more than 1.6 to 5.4 dB
+  // below the best, and 'nullAvoidance' over 7.3 to 19.5 dB (11.7 on
+  // average), a tenth more than 5.8 to 12.2 dB below.
+  //
+  // Those spreads include the level credit (LEVEL_WEIGHT), which widened
+  // them by about a fifth in 'balanced' and an eighth in 'nullAvoidance':
+  // level differs by 5.5 to 8.1 dB across a room's spots, worth 1.4 to 2 dB
+  // of score. The thresholds were 3/1 and 6/2 before level counted, and at
+  // those a move from a spot picked at random to the best spot against a
+  // wall graded 'major' about twice as often as it had in 'balanced' (13%
+  // of spots against 6%), and a louder spot no more even than the old one
+  // could grade 'modest'. At these, the shares are about where they were (6%
+  // 'major' and 59% 'modest' or better in 'balanced', 13% and 83% in
+  // 'nullAvoidance'), and level alone has to differ by 6 dB or more to
+  // grade 'modest'.
   const PLACEMENT_GAIN_DB = {
-    balanced: { major: 3, modest: 1 },
-    nullAvoidance: { major: 6, modest: 2 }
+    balanced: { major: 4, modest: 1.5 },
+    nullAvoidance: { major: 7, modest: 2.5 }
   };
   // The key a mode's constants are under: any mode but 'nullAvoidance'
   // scores as 'balanced', as in scoreResponses.
@@ -2634,6 +2646,11 @@
     const subDownHz = sub.freqHigh * Math.pow(2, CROSSOVER_BLEND_DB / subSlope);
     return { hz: Math.pow(2, log2Hz), fromHz: Math.min(mainDownHz, subDownHz), toHz: Math.max(mainDownHz, subDownHz) };
   }
+  // Whether hz is past a crossoverBand's blend (above band.toHz), where the
+  // subs are CROSSOVER_BLEND_DB or more down and the speakers carry the
+  // bass, so moving or adding subs changes little there. Inside the blend
+  // both play a part, so it is false there, and with no band (null).
+  function isAboveCrossover(hz, band){ return !!band && hz > band.toHz; }
 
   // What a sub search has to keep clear of each existing source. A sub keeps
   // the search's full sub-to-sub separation (a plain { x, y } point). A
@@ -2671,8 +2688,12 @@
   // bonus rather than a multiplier, so it composes cleanly regardless of the
   // underlying score's sign or magnitude. Each mode has its own, sized to
   // the range its scores spread over (see PLACEMENT_GAIN_DB): at 3 dB the
-  // 'balanced' score, which spreads about a third as far, let a small zone
-  // capture the pick almost every time.
+  // 'balanced' score, which spreads less than half as far, let a small zone
+  // capture the pick almost every time. Measured again with the level
+  // credit in the score (8 rooms, a 3 x 3 ft zone tried at every spot it
+  // could go): in a search against the walls the zone takes the pick from
+  // 50% of those spots in 'balanced' and 62% in 'nullAvoidance', against
+  // 48% and 70% before level counted, so the bonuses are unchanged.
   const PREFERRED_ZONE_BONUS_DB = { balanced: 1, nullAvoidance: 3 };
   function preferredZoneBonusDb(candidatePos, preferredZones, mode){
     if(!preferredZones || preferredZones.length === 0) return 0;
@@ -2956,13 +2977,22 @@
   // step size, using the identical loop bounds -- kept in sync by construction so
   // it can never drift from the actual candidate count. With `onFloorOnly`,
   // only the cells on the floor (inside the walls of an L, T or U room, not
-  // in its bounding box's cut-outs) are counted.
-  function countGridCells(room, gridStepFt, onFloorOnly){
+  // in its bounding box's cut-outs) are counted. With `search`
+  // ({ offLimitZones, allowedZones, wallOnly }, as scanGridCandidates takes
+  // them), only the cells a search with those zones tries: on the floor,
+  // outside every off-limits zone, inside an allowed zone if there are any,
+  // and with wallOnly against a wall (wallSpotMask). Spots a search skips
+  // for being too near a speaker or another sub are still counted.
+  function countGridCells(room, gridStepFt, onFloorOnly, search){
     const step = gridStepFt || 0.5;
-    let n = 0;
-    for(let x = step/2; x < room.w; x += step){
-      for(let y = step/2; y < room.d; y += step){
-        if(!onFloorOnly || isCandidateValid(x, y, room)) n++;
+    const atWall = search && search.wallOnly && wallSpotMask(room, step, search.offLimitZones, search.allowedZones);
+    let n = 0, i = 0;
+    for(let x = step/2; x < room.w; x += step, i++){
+      let j = 0;
+      for(let y = step/2; y < room.d; y += step, j++){
+        const counted = search ? (atWall ? atWall[i][j] : isCandidateValid(x, y, room, search.offLimitZones, search.allowedZones))
+          : (!onFloorOnly || isCandidateValid(x, y, room));
+        if(counted) n++;
       }
     }
     return n;
@@ -3202,10 +3232,11 @@
     // Coordinate-descent polish -- see polishSubPlacements for the full
     // explanation. roundResults (above) is left untouched; polish results go
     // in their own array so the "one roundResult per sub placed" invariant
-    // callers/tests rely on keeps holding exactly as before. Every sub placed
-    // above shares the same subHeightFt by construction (it came from this
-    // same options.subHeightFt via scanGridCandidates), so passing that same
-    // value through here reproduces the exact prior inlined behavior.
+    // callers/tests rely on keeps holding exactly as before. Each sub was
+    // placed above at roundHeight: options.subHeightFt when given, otherwise
+    // its own height in options.subs. The polish falls back the same way
+    // (polishRoundOptions), so passing options.subHeightFt through keeps
+    // every sub at the height it was placed at.
     const polish = polishSubPlacements({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging, wallOnly
@@ -3615,6 +3646,7 @@
     isSubSource,
     CROSSOVER_BLEND_DB,
     crossoverBand,
+    isAboveCrossover,
     SPEAKER_CLEARANCE_FT,
     speakerKeepOut,
     sourceExclusionPoints,
