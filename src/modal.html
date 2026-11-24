@@ -3803,6 +3803,32 @@ function applyAppearanceAttrs(mode, theme){
     scheduleDraw();
   });
 
+  // Dragging across the frequency response chart moves the selected
+  // frequency, same as the slider. Inverts redrawFreqResponseCanvas's
+  // log-scale x axis (marginL 38, marginR 8) and routes the value through
+  // the slider's own input handler.
+  const freqResponseCanvasEl = document.getElementById('freqResponseCanvas');
+  function setFreqFromChartX(e){
+    if(!freqResponseData) return;
+    const rect = freqResponseCanvasEl.getBoundingClientRect();
+    const plotW = rect.width - 38 - 8;
+    const t = Math.max(0, Math.min(1, (e.clientX - rect.left - 38) / plotW));
+    const logMin = Math.log10(FREQ_RESPONSE_MIN_HZ), logMax = Math.log10(freqResponseData.maxHz);
+    const slider = document.getElementById('freq');
+    slider.value = Math.round(Math.pow(10, logMin + t * (logMax - logMin)));
+    slider.dispatchEvent(new Event('input'));
+  }
+  freqResponseCanvasEl.style.cursor = 'ew-resize';
+  freqResponseCanvasEl.style.touchAction = 'none';
+  freqResponseCanvasEl.addEventListener('pointerdown', function(e){
+    if(e.button !== 0) return;
+    freqResponseCanvasEl.setPointerCapture(e.pointerId);
+    setFreqFromChartX(e);
+  });
+  freqResponseCanvasEl.addEventListener('pointermove', function(e){
+    if(freqResponseCanvasEl.hasPointerCapture(e.pointerId)) setFreqFromChartX(e);
+  });
+
   function freqSweepTick(ts){
     if(!freqSweepPlaying) return;
     if(freqSweepLastTs === null) freqSweepLastTs = ts;
