@@ -2603,6 +2603,35 @@
   // A source counts as a sub when its passband tops out at or below 150 Hz.
   function isSubSource(source){ return source.freqHigh <= 150; }
 
+  // ---- Crossover between the subs and the speakers ----
+  // Where bass management hands the bass from the subs to the main
+  // speakers, from the sources' own passbands and slopes (sourceGainAtFreq):
+  // the sub that reaches highest and the speaker that reaches lowest.
+  //   hz: where the two are equally loud. Between the sub's lowpass corner
+  //     and the speaker's highpass corner each falls at its own slope, so
+  //     log2(hz) is their corners' log2 weighted by the slopes; with equal
+  //     slopes, the geometric mean of the corners (80 Hz for an 80 Hz
+  //     crossover on both).
+  //   fromHz: below it the speaker is CROSSOVER_BLEND_DB or more down, so
+  //     the subs carry the bass; toHz: above it the sub is, so the speakers
+  //     do. In between both play a part.
+  // Null with no sub, no speaker, or a speaker run full range (freqLow 0).
+  const CROSSOVER_BLEND_DB = 12;
+  function crossoverBand(sources){
+    const subs = sources.filter(isSubSource), mains = sources.filter(s => !isSubSource(s));
+    if(subs.length === 0 || mains.length === 0) return null;
+    const sub = subs.reduce((a, b) => b.freqHigh > a.freqHigh ? b : a);
+    const main = mains.reduce((a, b) => b.freqLow < a.freqLow ? b : a);
+    if(!(main.freqLow > 0)) return null;
+    const subSlope = sub.rolloffDbPerOct ?? 24, mainSlope = main.rolloffDbPerOct ?? 24;
+    const log2Hz = (subSlope * Math.log2(sub.freqHigh) + mainSlope * Math.log2(main.freqLow)) / (subSlope + mainSlope);
+    return {
+      hz: Math.pow(2, log2Hz),
+      fromHz: main.freqLow / Math.pow(2, CROSSOVER_BLEND_DB / mainSlope),
+      toHz: sub.freqHigh * Math.pow(2, CROSSOVER_BLEND_DB / subSlope)
+    };
+  }
+
   // What a sub search has to keep clear of each existing source. A sub keeps
   // the search's full sub-to-sub separation (a plain { x, y } point). A
   // main speaker blocks its keepOut rectangle (speakerKeepOut) instead,
@@ -3564,6 +3593,8 @@
     clipRectToRoom,
     isCandidateValid,
     isSubSource,
+    CROSSOVER_BLEND_DB,
+    crossoverBand,
     SPEAKER_CLEARANCE_FT,
     speakerKeepOut,
     sourceExclusionPoints,

@@ -263,6 +263,7 @@ function applyAppearanceAttrs(mode, theme){
       <div class="hint" id="reoptimizeExistingHint" style="display:none;">Refines your existing subs' own positions in place, starting from where they already are -- a sub that's already well placed can stay put; only add-new-subs uses "Find best sub position" above.</div>
       <progress id="optimizerProgress" class="search-progress" max="1" value="0" hidden aria-label="Search progress"></progress>
       <div id="optimizerStatus" class="hint" style="margin-top:6px;"></div>
+      <div id="optimizerCrossoverNote" class="hint" style="margin-top:6px;"></div>
       <div class="row" id="optimizerResultRow" style="display:none; margin-top:6px;">
         <label style="font-size:12.5px;">Show score heatmap</label>
         <input type="checkbox" id="showHeatmapToggle" checked>
@@ -3535,7 +3536,8 @@ function applyAppearanceAttrs(mode, theme){
       afterBandMin: after ? after.seatMinDb[j] : null,
       afterBandMax: after ? after.seatMaxDb[j] : null
     }));
-    freqResponseData = { points, maxHz };
+    // Where the subs hand over to the speakers, shaded on the chart.
+    freqResponseData = { points, maxHz, crossover: RoomPhysics.crossoverBand(after ? sourcesWithSuggestion(activeSources) : activeSources) };
   }
 
   // Linear interpolation between the two nearest sampled points in `points`
@@ -3584,10 +3586,12 @@ function applyAppearanceAttrs(mode, theme){
     const afterText = hasAfter ? ` &rarr; suggested <b>${Math.round(afterDb)} dB</b>` : '';
     el.innerHTML = `Current: <b>${Math.round(freq)} Hz</b>, <b>${Math.round(db)} dB</b>${rangeText}${afterText}`;
 
-    if(!hasSpread && !hasAfter){
+    const hasCrossover = !!freqResponseData.crossover;
+    if(!hasSpread && !hasAfter && !hasCrossover){
       legendEl.textContent = '';
     } else {
       const parts = [];
+      if(hasCrossover) parts.push('Shaded band = crossover: the subs fade out and the speakers take over.');
       if(hasSpread) parts.push('Shaded blue = range across all listening positions.');
       if(hasAfter) parts.push(suggestionMoved() ? 'Green = the suggested placement with your moved stars, not yet added.' : "Green = optimizer's suggested placement, not yet added.");
       legendEl.textContent = parts.join(' ');
@@ -3701,6 +3705,33 @@ function applyAppearanceAttrs(mode, theme){
       c2.stroke();
     }
 
+    // The crossover: a gradient from the subs' side to the speakers' side
+    // across the range where both play a part, and a dashed line where they
+    // are equally loud.
+    const xo = freqResponseData.crossover;
+    if(xo && xo.fromHz < maxHz && xo.toHz > FREQ_RESPONSE_MIN_HZ){
+      const clampHz = (f) => Math.max(FREQ_RESPONSE_MIN_HZ, Math.min(maxHz, f));
+      const x0 = xForFreq(clampHz(xo.fromHz)), x1 = xForFreq(clampHz(xo.toHz)), xc = xForFreq(clampHz(xo.hz));
+      const grad = c2.createLinearGradient(xForFreq(xo.fromHz), 0, xForFreq(xo.toHz), 0);
+      grad.addColorStop(0, themeColors.accent);
+      grad.addColorStop(1, themeColors['text-dim']);
+      c2.fillStyle = grad;
+      c2.globalAlpha = 0.18;
+      c2.fillRect(x0, marginT, x1 - x0, plotH);
+      c2.globalAlpha = 1;
+      c2.strokeStyle = themeColors['text-dim'];
+      c2.setLineDash([2, 3]);
+      c2.beginPath();
+      c2.moveTo(xc, marginT);
+      c2.lineTo(xc, marginT + plotH);
+      c2.stroke();
+      c2.setLineDash([]);
+      c2.fillStyle = themeColors['text-dim'];
+      c2.font = '11px system-ui, sans-serif';
+      c2.textAlign = 'center';
+      c2.fillText(`${Math.round(xo.hz)} Hz crossover`, xc, marginT + plotH - 4); // at the bottom, clear of the curve near the top
+      c2.textAlign = 'left';
+    }
     drawBand('bandMin', 'bandMax', themeColors['series-1']);
     drawBand('afterBandMin', 'afterBandMax', themeColors['series-2']);
     drawLine('db', themeColors['series-1']);
@@ -4170,6 +4201,7 @@ function applyAppearanceAttrs(mode, theme){
   const SOLVE_FAILED_TEXT = "Couldn't work out this room's modes, so there is nothing to search. Try moving a wall slightly.";
   async function runOptimizerWorkflow(reoptimize){
     document.getElementById('optimizerStatus').textContent = 'Optimizing...';
+    document.getElementById('optimizerCrossoverNote').textContent = '';
     setOptimizerButtonsDisabled(true);
     const acceptBtn = document.getElementById('acceptOptimizerBtn');
     acceptBtn.style.display = 'none';
@@ -4192,6 +4224,7 @@ function applyAppearanceAttrs(mode, theme){
         document.getElementById('optimizerStatus').textContent = byUser ? OPTIMIZER_STOPPED_TEXT : OPTIMIZER_DROPPED_TEXT;
         return byUser ? STOPPED_BY_USER : false;
       }
+      document.getElementById('optimizerCrossoverNote').textContent = crossoverDipNote();
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
         acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
         acceptBtn.style.display = 'block';
@@ -4209,6 +4242,7 @@ function applyAppearanceAttrs(mode, theme){
   function resetOptimizerPanel(){
     optimizerResult = null;
     document.getElementById('optimizerStatus').textContent = '';
+    document.getElementById('optimizerCrossoverNote').textContent = '';
     document.getElementById('optimizerResultRow').style.display = 'none';
     document.getElementById('acceptOptimizerBtn').style.display = 'none';
     document.getElementById('resetSuggestionBtn').style.display = 'none';
@@ -4740,6 +4774,24 @@ function applyAppearanceAttrs(mode, theme){
   // `comparison` grades the change in that score. `before` and `comparison`
   // are null when there is no sub yet, since there is nothing to compare
   // with. Null with no suggestion pending.
+  // When the deepest dip at the seats lies above the subs' crossover, past
+  // where they are CROSSOVER_BLEND_DB down, moving or adding subs does little
+  // for it, and the person should hear why. For the pending suggestion, or
+  // the room as it is when there is none, graded as the result card grades.
+  // '' otherwise.
+  function crossoverDipNote(){
+    if(!fieldReady()) return '';
+    const active = sourcesEnabled ? sources.filter(s => s.enabled !== false) : [];
+    const pending = optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0;
+    const srcs = pending ? sourcesWithSuggestion(active) : active;
+    const xo = RoomPhysics.crossoverBand(srcs);
+    if(!xo) return '';
+    const freqs = resultFreqs(parseFloat(document.getElementById('optFreqLow').value) || 20, parseFloat(document.getElementById('optFreqHigh').value) || 120);
+    const { stats } = RoomPhysics.gradePlacement(allSeatPositions(), resultReference(), freqs, srcs, physicsCtx(), optimizerMode);
+    const dipHz = freqs[stats.worstMinIndex];
+    if(!(dipHz > xo.toHz)) return ''; // within the crossover both play a part, so subs can still move it
+    return `The deepest dip, at ${Math.round(dipHz)} Hz, is above the ${Math.round(xo.hz)} Hz crossover, where the speakers carry most of the bass, so moving or adding subs changes it little. Moving the speakers or the seat can help, and so can a higher crossover in your receiver, which lets the subs cover it.`;
+  }
   function optimizerOutcome(){
     if(!optimizerResult || !optimizerResult.placedSubs || optimizerResult.placedSubs.length === 0 || !fieldReady()) return null;
     // A refinement that had no position to try (obstacles cover the floor) leaves every sub in place; that is no result.
@@ -4764,6 +4816,7 @@ function applyAppearanceAttrs(mode, theme){
     const inMiddle = middle && measure(sourcesWithSuggestion(active, optimizerResult.placedSubs.map(p => ({ ...p, x: middle.x, y: middle.y }))));
     return {
       freqs, before, after, seats: seats.length, moved, version: suggestionVersion,
+      crossover: RoomPhysics.crossoverBand(sourcesWithSuggestion(active)),
       // levelVsMiddleDb: how much louder the seats are than with the subs in the middle of the room; null with subs already in the room.
       levelVsMiddleDb: inMiddle ? after.stats.avgMean - inMiddle.stats.avgMean : null,
       comparison: before ? RoomPhysics.comparePlacements(before.stats, after.stats, optimizerMode) : null,
@@ -4891,6 +4944,7 @@ function applyAppearanceAttrs(mode, theme){
     SOLVE_FAILED_TEXT,
     optimizerRunning: () => !!optimizerRun,
     optimizerOutcome,
+    crossoverDipNote,
     // The last search refined the existing subs and found nothing worth a
     // move: { gainDb }, how much better the best found placement scored
     // (null when the search moved nothing). Null otherwise.

@@ -689,10 +689,21 @@
       const all = (o.before ? o.before.db : []).concat(o.after.db);
       const min = Math.min(...all) - 2, max = Math.max(...all) + 2;
       const line = (db) => db.map((v, i) => `${((Math.log10(o.freqs[i]) - lo) / (hi - lo) * W).toFixed(1)},${(H - (v - min) / (max - min) * H).toFixed(1)}`).join(' ');
-      return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz">
-          ${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
+      const xAt = (f) => (Math.log10(f) - lo) / (hi - lo) * W;
+      // The crossover, as on the full tool's chart: a gradient from the
+      // subs' side to the speakers' across the range both play in.
+      const xo = o.crossover && o.crossover.fromHz < o.freqs.at(-1) && o.crossover.toHz > o.freqs[0] ? o.crossover : null;
+      const band = xo ? (() => {
+        const x0 = Math.max(0, xAt(xo.fromHz)), x1 = Math.min(W, xAt(xo.toHz)), xc = Math.max(0, Math.min(W, xAt(xo.hz)));
+        // the gradient spans the whole blend, even where the chart cuts it off
+        return `<defs><linearGradient id="guideCrossover" gradientUnits="userSpaceOnUse" x1="${xAt(xo.fromHz).toFixed(1)}" x2="${xAt(xo.toHz).toFixed(1)}" y1="0" y2="0"><stop offset="0" class="xover-subs"/><stop offset="1" class="xover-speakers"/></linearGradient></defs>
+          <rect class="xover" x="${x0.toFixed(1)}" y="0" width="${(x1 - x0).toFixed(1)}" height="${H}" fill="url(#guideCrossover)"/>
+          <line class="xover-line" x1="${xc.toFixed(1)}" x2="${xc.toFixed(1)}" y1="0" y2="${H}"/>`;
+      })() : '';
+      return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz${xo ? `, crossover at ${Math.round(xo.hz)} Hz` : ''}">
+          ${band}${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
         </svg>
-        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">${o.moved ? 'Moved' : 'Suggested'}</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
+        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">${o.moved ? 'Moved' : 'Suggested'}</span>${xo ? `<span class="xover">${Math.round(xo.hz)} Hz crossover, subs to speakers</span>` : ''}<span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
     }
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
@@ -713,6 +724,8 @@
       similar: 'Little to gain. With the moved spots, this placement is about as good as the current one.',
       worse: 'Worse than the current placement. Try another spot, or go back to the suggested spots.'
     };
+    // Why the deepest dip may be out of the subs' reach; '' when it is not.
+    const crossoverNote = () => { const text = app.crossoverDipNote(); return text ? `<p class="guide-note">${esc(text)}</p>` : ''; };
     function resultCard(o){
       const change = (label, before, after) => `<div class="guide-stat"><span>${label}</span><strong>${before != null ? `${before} → ` : ''}${after}</strong></div>`;
       const b = o.before, a = o.after;
@@ -730,6 +743,7 @@
         ${o.seats > 1 ? change('Seat-to-seat variation' + term('seatToSeat'), b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
         ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}
+        ${crossoverNote()}
         <ul class="guide-moves">${o.subs.map(sub => {
           const to = wallsText(app.wallDistances(sub));
           const stays = sub.from && sub.from.x === sub.x && sub.from.y === sub.y;
@@ -877,7 +891,7 @@
           : outcome === 'kept'
           ? `<div class="guide-result">${shapeWarning()}${keptGainDb > 0
             ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb()} dB isn't worth moving a sub for, so leave them where they are.</p>`
-            : `<p class="guide-verdict">${VERDICTS.worse}</p>`}</div>`
+            : `<p class="guide-verdict">${VERDICTS.worse}</p>`}${crossoverNote()}</div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();

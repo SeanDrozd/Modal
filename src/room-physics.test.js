@@ -3876,6 +3876,23 @@ testAsync('wallOnly reaches the async searches too', async () => {
   assert.ok(polish.placedSubs.every(atWall));
 });
 
+test('crossoverBand finds where the subs hand over to the speakers, from their own corners and slopes', () => {
+  const sub = (freqHigh, rolloffDbPerOct) => ({ x: 0, y: 0, freqLow: 20, freqHigh, rolloffDbPerOct });
+  const main = (freqLow, rolloffDbPerOct) => ({ x: 0, y: 0, freqLow, freqHigh: 20000, rolloffDbPerOct });
+  // an 80 Hz crossover at 24 dB/oct on both: the speaker is 12 dB down half an octave below, the sub half an octave above
+  const b = P.crossoverBand([main(80), main(80), sub(80), sub(80)]);
+  approx(b.hz, 80, 1e-9); approx(b.fromHz, 80 / Math.SQRT2, 1e-9); approx(b.toHz, 80 * Math.SQRT2, 1e-9);
+  for(const [f, src] of [[b.fromHz, main(80)], [b.toHz, sub(80)]]) approx(20 * Math.log10(P.sourceGainAtFreq(src, f)), -P.CROSSOVER_BLEND_DB, 1e-9);
+  // at hz the two are equally loud, whatever the corners and slopes
+  const odd = P.crossoverBand([main(100, 12), sub(60, 24), sub(70, 24)]);
+  approx(P.sourceGainAtFreq(main(100, 12), odd.hz), P.sourceGainAtFreq(sub(70, 24), odd.hz), 1e-9, 'the sub reaching highest and the speaker reaching lowest');
+  assert.ok(odd.hz > 70 && odd.hz < 100);
+  // no handover without both, or with a speaker run full range
+  assert.strictEqual(P.crossoverBand([sub(80)]), null);
+  assert.strictEqual(P.crossoverBand([main(80)]), null);
+  assert.strictEqual(P.crossoverBand([main(0), sub(80)]), null);
+});
+
 test('wallsAround gives the first wall each way, a notch wall where it is the nearer that way', () => {
   assert.deepStrictEqual(P.wallsAround({ x: 2.25, y: 1 }, baseRoom), {
     left: { wall: 'left', distFt: 2.25, x: 0 }, right: { wall: 'right', distFt: 15.75, x: 18 },
