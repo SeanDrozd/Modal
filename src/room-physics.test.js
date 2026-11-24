@@ -3816,6 +3816,48 @@ test('wallOnly limits every search to the wallSpotMask cells: one sub, several, 
   assert.ok(polish.placedSubs.every(atWall), 'a polish moves subs out in the room to a wall');
 });
 
+test('refineSubPlacements gets out of a layout the polish alone stays stuck near, and keeps the subs as they are', () => {
+  // 14 x 11 ft, null avoidance: from these two spots, moving one sub at a
+  // time settles 1.9 dB below the layout the full search finds.
+  const { room, ctx, seats, freqs, mains } = twoSubScene(14, 11, 7);
+  const opts = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'nullAvoidance', timeAlignTo: seats[0] };
+  const grade = (subs) => P.gradePlacement(seats, seats[0], freqs, P.timeAlignedSources(mains.concat(subs), seats[0], room), ctx, 'nullAvoidance').stats.score;
+  const subs = [{ id: 7, name: 'SW1', ...P.NEW_SUB_DEFAULTS, x: 0.5, y: 7.5, z: 1 }, { id: 8, name: 'SW2', ...P.NEW_SUB_DEFAULTS, x: 5.5, y: 2.5, z: 1 }];
+  const polish = P.polishSubPlacements({ ...opts, subs });
+  const refined = P.refineSubPlacements({ ...opts, subs });
+  assert.ok(grade(refined.placedSubs) > grade(polish.placedSubs) + 1.5, `refined ${grade(refined.placedSubs).toFixed(2)} against polish ${grade(polish.placedSubs).toFixed(2)}`);
+  assert.deepStrictEqual(refined.placedSubs.map(s => [s.id, s.name]), [[7, 'SW1'], [8, 'SW2']], 'the same subs, in order');
+  assert.deepStrictEqual(refined.moved, refined.placedSubs.map((p, i) => p.x !== subs[i].x || p.y !== subs[i].y));
+  assert.ok(refined.polishResults.length > 0);
+  // from the refined layout itself, nothing better is found, so nothing moves
+  const again = P.refineSubPlacements({ ...opts, subs: refined.placedSubs });
+  assert.deepStrictEqual(again.moved, [false, false]);
+});
+
+test('refineSubPlacements places each sub as itself: its own level and passband', () => {
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
+  const opts = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'balanced', timeAlignTo: seats[0] };
+  const subs = [{ ...P.NEW_SUB_DEFAULTS, name: 'big', levelDb: 6, freqHigh: 60, x: 6.5, y: 4.5, z: 1 }, { ...P.NEW_SUB_DEFAULTS, name: 'small', x: 2.5, y: 2.5, z: 1 }];
+  const r = P.refineSubPlacements({ ...opts, subs });
+  assert.deepStrictEqual(r.placedSubs.map(s => [s.name, s.levelDb, s.freqHigh]), [['big', 6, 60], ['small', 0, 80]]);
+});
+
+testAsync('refineSubPlacementsAsync matches refineSubPlacements, and its progress rises to at most 1', async () => {
+  const { room, ctx, seats, freqs, mains } = twoSubScene(14, 11, 7);
+  const opts = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'nullAvoidance', timeAlignTo: seats[0],
+    subs: [{ ...P.NEW_SUB_DEFAULTS, x: 0.5, y: 7.5, z: 1 }, { ...P.NEW_SUB_DEFAULTS, x: 5.5, y: 2.5, z: 1 }] };
+  const sync = P.refineSubPlacements(opts);
+  let last = 0, rising = true;
+  const async_ = await P.refineSubPlacementsAsync({ ...opts, onProgress: (f, k, phase, overall) => { if(overall < last - 1e-12) rising = false; last = overall; } });
+  assert.deepStrictEqual(async_.placedSubs.map(s => [s.x, s.y]), sync.placedSubs.map(s => [s.x, s.y]));
+  assert.deepStrictEqual(async_.moved, sync.moved);
+  assert.ok(rising, 'overall progress should never go backwards');
+  assert.ok(last > 0.5 && last <= 1 + 1e-12, `expected overall progress to end near 1, got ${last}`);
+});
+
 testAsync('wallOnly reaches the async searches too', async () => {
   const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
   const opts = {

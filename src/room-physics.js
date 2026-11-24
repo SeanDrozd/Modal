@@ -3062,6 +3062,15 @@
   function newSubAt(i, spot){
     return Object.assign({ name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS, { x: spot.x, y: spot.y, z: spot.z });
   }
+  // A multi-sub search places new subs (NEW_SUB_DEFAULTS), or with
+  // options.subs, those subs: round i scores and places a copy of
+  // options.subs[i], with its own level and passband, at its own height
+  // unless options.subHeightFt says otherwise.
+  function roundTemplate(options, i){ return options.subs ? options.subs[i] : NEW_SUB_DEFAULTS; }
+  function roundHeight(options, i){ return options.subHeightFt ?? (options.subs ? options.subs[i].z : undefined); }
+  function roundSub(options, i, spot){
+    return options.subs ? Object.assign({}, options.subs[i], { x: spot.x, y: spot.y, z: spot.z }) : newSubAt(i, spot);
+  }
 
   // The other first spots the multi-sub search starts from: the best of the
   // first round's candidates, each at least the sub separation away (on
@@ -3140,9 +3149,9 @@
       const seeded = i === 0 && seed;
       const roundResult = seeded ? seed.firstRound : optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt: roundHeight(options, i),
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging, wallOnly, precomputedModes: modes
+        candidateTemplate: roundTemplate(options, i), timeAlignTo, seatAveraging, wallOnly, precomputedModes: modes
       });
       roundResults.push(roundResult);
       const spot = seeded ? seed.spot : roundResult.best;
@@ -3152,7 +3161,7 @@
         // return what was successfully placed so far.
         break;
       }
-      const placedSub = newSubAt(i, spot);
+      const placedSub = roundSub(options, i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
@@ -3343,8 +3352,7 @@
     const separation = multiSubSeparation(room, minSeparationFt);
     const modes = enumerateModes(physicsCtx);
     const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
-    const seedScans = numSubs >= 2 ? MULTI_START_SEEDS * (numSubs - 1 + polishScans) : 0;
-    const totalScans = numSubs + polishScans + seedScans;
+    const totalScans = multiSubScanCount(numSubs);
     // Each start reports its progress from `doneScans`, the scans before it.
     const progressFrom = (doneScans) => onProgress ? (fraction, k, phase, scans) => onProgress(fraction, k, phase, (doneScans + scans) / totalScans) : undefined;
     const first = await placeAndPolishAsync(options, separation, modes, null, progressFrom(0), polishScans);
@@ -3378,9 +3386,9 @@
       const scansBefore = greedyScans;
       const roundResult = seeded ? seed.firstRound : await optimizeSubPlacementAsync({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt: roundHeight(options, i),
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging, wallOnly,
+        candidateTemplate: roundTemplate(options, i), timeAlignTo, seatAveraging, wallOnly,
         precomputedModes: modes, onYield, yieldEvery, signal,
         onProgress: progress ? (fraction) => progress(fraction, i, undefined, scansBefore + fraction) : undefined
       });
@@ -3388,7 +3396,7 @@
       roundResults.push(roundResult);
       const spot = seeded ? seed.spot : roundResult.best;
       if(spot === null) break;
-      const placedSub = newSubAt(i, spot);
+      const placedSub = roundSub(options, i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
@@ -3406,6 +3414,57 @@
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
+  }
+
+  // ---- Refining subs already in the room ----
+  // Better spots for the subs the person has (options.subs, each keeping its
+  // own level and passband), searched two ways: the polish from where they
+  // stand (polishSubPlacements), and the full multi-start search
+  // (optimizeMultipleSubs) placing those same subs from scratch. The polish
+  // alone moves one sub at a time, so from a poor layout it can settle on a
+  // nearby one that no single move improves, even when a layout elsewhere
+  // scores well above it. Keeps whichever layout scores best as a whole
+  // (placementScore; the polish wins ties), with the spots handed out so
+  // the subs move as little as possible (assignNearestSpots). Returns
+  // { placedSubs, moved, polishResults } as polishSubPlacements does,
+  // polishResults from the search whose layout was kept.
+  function refineSubPlacements(options){
+    const modes = enumerateModes(options.physicsCtx);
+    const fromHere = polishSubPlacements(options);
+    const fresh = optimizeMultipleSubs(Object.assign({}, options, { numSubs: options.subs.length }));
+    return betterRefinement(options, modes, fromHere, fresh);
+  }
+  function betterRefinement(options, modes, fromHere, fresh){
+    const { subs, timeAlignTo } = options;
+    if(fresh.placedSubs.length < subs.length || placementScore(options, modes, fresh.placedSubs) <= placementScore(options, modes, fromHere.placedSubs)) return fromHere;
+    return finishPolish(subs, fresh.placedSubs, fresh.polishResults, timeAlignTo);
+  }
+  // How many grid scans optimizeMultipleSubs(Async) runs for numSubs subs,
+  // at most: the greedy rounds and polish of the first start, and of each
+  // other start.
+  function multiSubScanCount(numSubs){
+    const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
+    const seedScans = numSubs >= 2 ? MULTI_START_SEEDS * (numSubs - 1 + polishScans) : 0;
+    return numSubs + polishScans + seedScans;
+  }
+  // Async twin of refineSubPlacements. onProgress(fraction, k, phase,
+  // overall): the polish from where the subs stand reports as
+  // polishSubPlacementsAsync does, then the full search as
+  // optimizeMultipleSubsAsync does, overall counting both.
+  async function refineSubPlacementsAsync(options){
+    const { subs, physicsCtx, onProgress } = options;
+    const modes = enumerateModes(physicsCtx);
+    const polishScans = POLISH_PASSES * subs.length;
+    const total = polishScans + multiSubScanCount(subs.length);
+    const fromHere = await polishSubPlacementsAsync(Object.assign({}, options, {
+      precomputedModes: modes,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, overall * polishScans / total) : undefined
+    }));
+    const fresh = await optimizeMultipleSubsAsync(Object.assign({}, options, {
+      numSubs: subs.length,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, (polishScans + overall * (total - polishScans)) / total) : undefined
+    }));
+    return betterRefinement(options, modes, fromHere, fresh);
   }
 
   return {
@@ -3518,6 +3577,8 @@
     optimizeMultipleSubs,
     optimizeMultipleSubsAsync,
     polishSubPlacements,
-    polishSubPlacementsAsync
+    polishSubPlacementsAsync,
+    refineSubPlacements,
+    refineSubPlacementsAsync
   };
 });

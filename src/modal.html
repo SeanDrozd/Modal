@@ -2286,11 +2286,10 @@ function applyAppearanceAttrs(mode, theme){
 
   // "Re-optimize existing subs": given the subs already in the room, find
   // better positions for those SAME subs (in place), rather than adding new
-  // ones. Runs coordinate-descent refinement starting from each sub's real
-  // current position (RoomPhysics.polishSubPlacementsAsync), not a fresh
-  // greedy placement -- a sub that's already well placed can genuinely stay
-  // put, unlike a from-scratch search which would essentially never land back
-  // on an existing manually-placed spot by chance. With exactly one existing
+  // ones. RoomPhysics.refineSubPlacementsAsync refines from each sub's real
+  // current position, so a sub that's already well placed can stay put, and
+  // also runs the full multi-start search with those subs, so a poor starting
+  // layout can't hold the result near it. With exactly one existing
   // sub there's nothing to hold fixed against, so that case runs a plain full
   // single-sub search instead (RoomPhysics.optimizeSubPlacementAsync).
   async function runReoptimizeExistingSubs(signal){
@@ -2331,7 +2330,7 @@ function applyAppearanceAttrs(mode, theme){
       lastBest = result.best;
       lastAllCandidates = result.allCandidates;
     } else {
-      const result = await RoomPhysics.polishSubPlacementsAsync({
+      const result = await RoomPhysics.refineSubPlacementsAsync({
         room, otherSources, subs: existingSubs, freqList, listenerPositions,
         physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
         gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING, wallOnly: optWallOnly,
