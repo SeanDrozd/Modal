@@ -52,6 +52,11 @@
     { id: 'no', label: 'No', mode: 'balanced' },
     { id: 'unsure', label: 'Not sure', mode: 'balanced' }
   ];
+  // Where the optimizer may put a sub: against a wall (the default) or anywhere on the floor.
+  const SUB_SPOTS = [
+    { id: 'wall', label: 'Against a wall', wallOnly: true, hint: 'A sub at a wall plays louder and stays out of the way. Where furniture or an off-limits area covers the wall, Modal uses the nearest open spot in front of it.' },
+    { id: 'anywhere', label: 'Anywhere in the room', wallOnly: false, hint: 'Modal searches the whole floor, apart from obstacles and off-limits areas. The best spot may be out in the room.' }
+  ];
 
   // The definitions behind the "?" buttons (see term() below): the terms the
   // guide uses that an AVR owner may know by name without knowing exactly
@@ -60,7 +65,8 @@
     mode: { term: 'Room mode', text: "A frequency at which bass reflecting between the room's surfaces reinforces itself into a standing wave. At that frequency some parts of the room are loud and others nearly silent." },
     null: { term: 'Null', text: 'A frequency at which reflections cancel the direct sound at one spot, so the level drops sharply there. More power or EQ does not fill a null; moving the sub or the seat does.' },
     roomCorrection: { term: 'Room correction', text: "The AVR's automatic setup: it plays test tones through a supplied microphone, then sets speaker distances, levels and EQ. Audyssey, YPAO, Dirac Live, MCACC, AccuEQ and ARC are common names for it." },
-    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. Level does not count, since the sub\'s gain sets it. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null.' },
+    score: { term: 'Optimizer score', text: 'What the search maximizes. Without room correction: how even the bass is, as minus the response variation at the worst seat and the seat-to-seat variation, with a further penalty for a null more than 20 dB deep. With room correction: the level of the deepest dip, since EQ can pull peaks down but cannot fill a null. Both add a quarter of the average bass level at the seats, so a louder placement wins only when it is about as even: more level means less work for the sub\'s amplifier.' },
+    bassLevel: { term: 'Bass level', text: 'The average level across the frequency range at the seats. A sub at a wall or in a corner drives more of the room\'s modes, so the same amplifier setting plays louder, with more headroom left before the sub runs out of excursion.' },
     variation: { term: 'Response variation', text: 'The standard deviation of level across the frequency range, at the seat where it is largest. Lower is more even.' },
     seatToSeat: { term: 'Seat-to-seat variation', text: 'Half the gap between the loudest and the quietest seat at each frequency, averaged over the range. Lower means every seat gets closer to the same bass.' },
     spatialAverage: { term: 'Spatial averaging', text: 'The response is averaged over 20 points within 2 ft (0.6 m) of the seat, not read at one exact point, much like moving a measurement mic around the listening position.' }
@@ -674,6 +680,8 @@
     const fmtDb = (db) => `${db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`;
     const fmtSwing = (db) => `±${db.toFixed(0)} dB`;
     const signedDb = (db, digits) => { const shown = Number(db.toFixed(digits)); return `${shown >= 0 ? '+' : '−'}${Math.abs(shown).toFixed(digits)} dB`; }; // rounds first so a tiny negative reads +0.0
+    // A quieter pick reads "1.2 dB under", never "-1.2 dB over".
+    const levelVsMiddle = (db) => Number(db.toFixed(1)) >= 0 ? `${signedDb(db, 1)} over the middle of the room` : `${Math.abs(db).toFixed(1)} dB under the middle of the room`;
     const wallsText = (walls) => `${app.formatLength(walls.side.distFt)} from the ${walls.side.label}, ${app.formatLength(walls.end.distFt)} from the ${walls.end.label}`;
     const shapeWarning = () => SHAPE_WARNINGS[state.roomShape] ? `<p class="guide-warning">Not reliable for this room. ${esc(SHAPE_WARNINGS[state.roomShape])}</p>` : '';
     // Current and suggested response at the main seat, as two lines on a
@@ -683,16 +691,27 @@
       const all = (o.before ? o.before.db : []).concat(o.after.db);
       const min = Math.min(...all) - 2, max = Math.max(...all) + 2;
       const line = (db) => db.map((v, i) => `${((Math.log10(o.freqs[i]) - lo) / (hi - lo) * W).toFixed(1)},${(H - (v - min) / (max - min) * H).toFixed(1)}`).join(' ');
-      return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz">
-          ${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
+      const xAt = (f) => (Math.log10(f) - lo) / (hi - lo) * W;
+      // The crossover, as on the full tool's chart: a gradient from the
+      // subs' side to the speakers' across the range both play in.
+      const xo = o.crossover && o.crossover.fromHz < o.freqs.at(-1) && o.crossover.toHz > o.freqs[0] ? o.crossover : null;
+      const band = xo ? (() => {
+        const x0 = Math.max(0, xAt(xo.fromHz)), x1 = Math.min(W, xAt(xo.toHz)), xc = xAt(xo.hz);
+        // the gradient spans the whole blend, even where the chart cuts it off
+        return `<defs><linearGradient id="guideCrossover" gradientUnits="userSpaceOnUse" x1="${xAt(xo.fromHz).toFixed(1)}" x2="${xAt(xo.toHz).toFixed(1)}" y1="0" y2="0"><stop offset="0" class="xover-subs"/><stop offset="1" class="xover-speakers"/></linearGradient></defs>
+          <rect class="xover" x="${x0.toFixed(1)}" y="0" width="${(x1 - x0).toFixed(1)}" height="${H}" fill="url(#guideCrossover)"/>
+          ${xc >= 0 && xc <= W ? `<line class="xover-line" x1="${xc.toFixed(1)}" x2="${xc.toFixed(1)}" y1="0" y2="${H}"/>` : '' /* the crossover itself may be off the chart */}`;
+      })() : '';
+      return `<svg class="guide-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Response at the main seat, ${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz${xo ? `, crossover at ${Math.round(xo.hz)} Hz` : ''}">
+          ${band}${o.before ? `<polyline class="before" points="${line(o.before.db)}"/>` : ''}<polyline class="after" points="${line(o.after.db)}"/>
         </svg>
-        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">${o.moved ? 'Moved' : 'Suggested'}</span><span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
+        <div class="guide-chart-key">${o.before ? '<span class="before">Current</span>' : ''}<span class="after">${o.moved ? 'Moved' : 'Suggested'}</span>${xo ? `<span class="xover">${Math.round(xo.hz)} Hz crossover, subs to speakers</span>` : ''}<span>${o.freqs[0].toFixed(0)} to ${o.freqs.at(-1).toFixed(0)} Hz at the main seat${term('spatialAverage')}</span></div>`;
     }
     // What the optimizer score is made of in each mode, since the chart below
     // shows only the main seat's curve and can look better or worse than the score.
     const SCORE_COUNTS = {
-      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls, but not level, since the sub\'s gain sets it. The chart shows the main seat only.',
-      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest. The chart shows the main seat only.'
+      balanced: 'The score counts evenness across frequency and from seat to seat, and deep nulls first, then a smaller credit for bass level. The chart shows the main seat only.',
+      nullAvoidance: 'With room correction, the score counts the deepest null at any seat and how much the seats differ, since correction can tame the rest, then a smaller credit for bass level. The chart shows the main seat only.'
     };
     const VERDICTS = {
       major: 'Major improvement.',
@@ -707,6 +726,8 @@
       similar: 'Little to gain. With the moved spots, this placement is about as good as the current one.',
       worse: 'Worse than the current placement. Try another spot, or go back to the suggested spots.'
     };
+    // Why the deepest dip may be out of the subs' reach; '' when it is not.
+    const crossoverNote = () => { const text = app.crossoverDipNote(); return text ? `<p class="guide-note">${esc(text)}</p>` : ''; };
     function resultCard(o){
       const change = (label, before, after) => `<div class="guide-stat"><span>${label}</span><strong>${before != null ? `${before} → ` : ''}${after}</strong></div>`;
       const b = o.before, a = o.after;
@@ -719,10 +740,12 @@
         ${b ? `<p class="guide-hint">${SCORE_COUNTS[app.getOptimizerMode()]}</p>` : ''}
         ${change('Response variation' + term('variation'), b && fmtSwing(b.stats.worstStdDev), fmtSwing(a.stats.worstStdDev))}
         ${change('Deepest null' + term('null'), b && nullText(b), nullText(a))}
-        ${b ? change('Average level', null, signedDb(o.comparison.levelGainDb, 0)) : ''}
+        ${b ? change('Bass level' + term('bassLevel'), null, signedDb(o.comparison.levelGainDb, 1)) : ''}
+        ${o.levelVsMiddleDb != null ? change('Bass level' + term('bassLevel'), null, levelVsMiddle(o.levelVsMiddleDb)) : ''}
         ${o.seats > 1 ? change('Seat-to-seat variation' + term('seatToSeat'), b && fmtSwing(b.seatToSeatDb), fmtSwing(a.seatToSeatDb)) : ''}
         ${o.seats > 1 ? '<p class="guide-hint">Variation and the deepest null are for the seat where each is worst.</p>' : ''}
         ${responseChart(o)}
+        ${crossoverNote()}
         <ul class="guide-moves">${o.subs.map(sub => {
           const to = wallsText(app.wallDistances(sub));
           const stays = sub.from && sub.from.x === sub.x && sub.from.y === sub.y;
@@ -740,7 +763,8 @@
         <p class="guide-hint" id="guideAlternativesHint" ${app.getScoreHeatmap() ? '' : 'hidden'}>Green areas scored best and red worst. The star marks the suggestion.</p>`;
     }
     function renderOptimize(body){
-      const subs = app.getSubs(), settings = app.getOptimizerSettings();
+      const subs = app.getSubs();
+      let settings = app.getOptimizerSettings();
       body.innerHTML = `
         <h2 tabindex="-1">Find the best spot</h2>
         <p>The map now shows sound pressure level across the room at the selected frequency. The goal is a response at your seats that stays even across the ${settings.freqLow} to ${settings.freqHigh} Hz range, without deep nulls.</p>
@@ -748,6 +772,9 @@
         <p>Do you run room correction (Audyssey, Dirac, YPAO, ARC)?${term('roomCorrection')}</p>
         <div class="segmented guide-counts" id="guideRoomCorrection" role="group" aria-label="Room correction">${ROOM_CORRECTION.map(c => `<button data-rc="${c.id}">${c.label}</button>`).join('')}</div>
         <p class="guide-hint">Room correction can cut peaks but can't fill nulls, so with it, Modal prioritizes avoiding nulls.</p>
+        <h3>Where can the subs go?</h3>
+        <div class="segmented guide-counts" id="guideSubSpots" role="group" aria-label="Where the subs can go">${SUB_SPOTS.map(c => `<button data-spots="${c.id}">${c.label}</button>`).join('')}</div>
+        <p class="guide-hint" id="guideSubSpotsHint"></p>
         <details class="guide-more"><summary>Settings</summary>
           <div class="guide-stat"><span>Frequency range</span><strong>${settings.freqLow} to ${settings.freqHigh} Hz</strong></div>
           <div class="guide-stat"><span>Subs</span><strong>${subs.length ? `${subs.length} (yours, refined in place)` : `${state.plannedSubs} new`}</strong></div>
@@ -775,6 +802,15 @@
       };
       let outcome = latest();
 
+      body.querySelector('#guideSubSpots').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if(!btn) return;
+        const wallOnly = SUB_SPOTS.find(c => c.id === btn.dataset.spots).wallOnly;
+        if(wallOnly !== settings.wallOnly) outcome = null; // the result shown was found with the other setting, and the app drops it
+        app.setOptimizerWallOnly(wallOnly);
+        settings = app.getOptimizerSettings();
+        refresh();
+      });
       body.querySelector('#guideRoomCorrection').addEventListener('click', (e) => {
         const btn = e.target.closest('button');
         if(!btn) return;
@@ -836,6 +872,9 @@
       let shown; // what `result` currently shows, so it is rebuilt only on a change
       function refresh(){
         pressOnly(body.querySelector('#guideRoomCorrection'), b => b.dataset.rc === state.roomCorrection);
+        const spots = SUB_SPOTS.find(c => c.wallOnly === settings.wallOnly);
+        pressOnly(body.querySelector('#guideSubSpots'), b => b.dataset.spots === spots.id);
+        body.querySelector('#guideSubSpotsHint').textContent = spots.hint;
         // While a search runs the button stays Stop and the card stays empty; run() refreshes once it ends.
         if(app.optimizerRunning()) return;
         // A pending suggestion that was cleared elsewhere (Undo, the full tool) is gone here too.
@@ -854,7 +893,7 @@
           : outcome === 'kept'
           ? `<div class="guide-result">${shapeWarning()}${keptGainDb > 0
             ? `<p class="guide-verdict">${VERDICTS.similar}</p><p class="guide-hint">The best placement the search found scores only ${keptGainDb.toFixed(1)} dB better${term('score')}. Under ${app.minMoveGainDb()} dB isn't worth moving a sub for, so leave them where they are.</p>`
-            : `<p class="guide-verdict">${VERDICTS.worse}</p>`}</div>`
+            : `<p class="guide-verdict">${VERDICTS.worse}</p>`}${crossoverNote()}</div>`
           : outcome && outcome !== 'applied' ? `<div class="guide-result">${resultCard(outcome)}</div>` : '';
       }
       refresh();

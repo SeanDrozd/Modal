@@ -2065,8 +2065,8 @@
   // sources — mains, other subs) by evaluating the field at multiple frequencies
   // across a target band, at one or more listening positions.
   //
-  // mode: 'balanced' (default) scores evenness, not level, since the sub's
-  // gain sets the level (see scoreResponses):
+  // mode: 'balanced' (default) scores evenness first, plus a smaller credit
+  // for level (LEVEL_WEIGHT; see scoreResponses):
   //   1. Low variance across frequency AT EACH listener (a flat response, not
   //      loud at some frequencies and nulled at others)
   //   2. No deep null below the scene's average level
@@ -2077,11 +2077,13 @@
   // mode: 'nullAvoidance' is for someone with room correction/EQ available —
   // they can flatten peaks after the fact, but can't fill in a null (it's a
   // position-dependent cancellation, not a tonal dip a filter can undo), so
-  // average level and peak-inclusive variance are irrelevant to them. This
+  // peak-inclusive variance is irrelevant to them. This
   // mode scores by the worst (lowest) dB anywhere in the band, at the worst
   // listener position, a maximin objective that answers "how deep is the
   // deepest null this candidate produces", less the seat-to-seat spread,
-  // since one correction curve cannot even out the seats either.
+  // since one correction curve cannot even out the seats either, plus the
+  // same smaller level credit as 'balanced': EQ that boosts a dip spends
+  // the headroom a louder spot leaves.
   //
   // Returns a single scalar score where HIGHER IS BETTER, plus the raw per-listener
   // per-frequency dB values for diagnostics/visualization.
@@ -2105,6 +2107,13 @@
   // 'balanced' mode: how many dB of score a full point of worstStdDev (flatness
   // unevenness) costs, relative to seat-to-seat variation's 1:1 weight.
   const BALANCED_FLATNESS_WEIGHT = 1.0;
+  // How many dB of score each dB of average level at the seats (avgMean,
+  // weighted by seat) is worth, per mode. A louder placement needs less
+  // amplifier power and gives the sub more headroom for the same volume, so
+  // level counts, but at a fraction of a dB per dB, so evenness comes first
+  // and a loud spot with a deep null or uneven seats still loses. See
+  // scoreResponses.
+  const LEVEL_WEIGHT = { balanced: 0.25, nullAvoidance: 0.25 };
   // seatAveraging ({ radiusFt, numPoints }, optional): each listener's
   // response is the spatial average over that cloud around it, as
   // measureAtSeats does with SEAT_AVERAGING, instead of the level at the
@@ -2206,19 +2215,20 @@
     const worstStdDev = worstStdDevEntry.stdDev;
     const worstMinDb = worstMinDbEntry.minDb;
 
-    // 'balanced' mode scores evenness only: the worst seat's flatness, a deep
-    // null, and how much the level differs from seat to seat. Level itself
-    // does not count, since a sub's gain sets it: scoring it let the loudest
-    // layout win, such as four subs side by side in a corner. In one 20 x 15
+    // 'balanced' mode scores evenness first: the worst seat's flatness, a
+    // deep null, and how much the level differs from seat to seat. Level
+    // adds only LEVEL_WEIGHT dB of score per dB: at full weight it let the
+    // loudest layout win, such as four subs side by side in a corner. In one 20 x 15
     // ft room with 8 seats that cluster was 4 dB louder than four subs at the
     // wall midpoints but worse on flatness (5.5 against 3.7 dB), the deepest
-    // null (12.8 against 8.0 dB) and seat to seat (4.0 against 1.4 dB).
+    // null (12.8 against 8.0 dB) and seat to seat (4.0 against 1.4 dB); at a
+    // quarter of a dB per dB the midpoints still score 0.4 dB higher.
     // Spreading subs to even out the seats is the approach of Welti and
     // Toole's multi-sub work at Harman. In 'nullAvoidance' mode the worst
     // null anywhere matters, less the seat-to-seat spread, since room
     // correction can pull peaks down but can
     // fill neither a null nor a gap between seats. See scoreSubPosition's
-    // comment for why average level and peaks are excluded otherwise.
+    // comment for why peaks are excluded otherwise.
     //
     // The null penalty engages once the worst listener's minimum dips 20dB+
     // BELOW THE SCENE'S OWN AVERAGE LEVEL (avgMean), not below a hardcoded
@@ -2242,6 +2252,14 @@
     // Both modes subtract the seat-to-seat spread (seatToSeatSpreadDb, by
     // the seats' weights): room correction applies one curve to every seat,
     // so it cannot even out the seats either.
+    //
+    // Both modes then add LEVEL_WEIGHT[mode] times the weighted average
+    // level (avgMean). Over six rooms (12 x 9 to 22 x 16 ft, 1 to 4 subs,
+    // both modes) a quarter of a dB per dB made the picks 0 to 4.3 dB
+    // louder for at most 0.35 dB of the evenness score, apart from one
+    // 4-sub layout (1.0 dB) where the search, which is not global, settled
+    // on a layout that scores lower by this score too. At 0.35 a 14 x 11 ft
+    // room gave up 0.7 dB of evenness and a 3.7 dB deeper null for 3.5 dB.
     const spreadDb = seatToSeatSpreadDb(perListenerDb, listenerStats.map(s => s.weight));
     // No seats gives a NaN score, like the rest of this function's
     // degenerate input (see the empty-input test).
@@ -2260,6 +2278,7 @@
       }
       score = -rough * BALANCED_FLATNESS_WEIGHT - nullPenalty * 0.5 - spreadDb;
     }
+    score += LEVEL_WEIGHT[scoreModeKey(mode)] * avgMean;
 
     return {
       score,
@@ -2346,14 +2365,26 @@
   // 'similar'.
   //
   // Each mode has its own thresholds, since its scores spread over a
-  // different range. Over every spot one sub could take in 5 rooms (12 x 9
-  // to 18 x 13.5 ft, 1 to 6 seats), the 'balanced' score spread over 2.8 to
-  // 4.4 dB, a tenth of the spots more than 2.3 to 3.5 dB below the best,
-  // and 'nullAvoidance' over 6.7 to 20.9 dB, a tenth more than 6.2 to 15.2
-  // dB below.
+  // different range. Over every spot one sub could take in 8 rooms (12 x 9
+  // to 20 x 15 ft, 1 to 6 seats), the 'balanced' score spread over 2.0 to
+  // 9.4 dB (4.8 on average), a tenth of the spots more than 1.6 to 5.4 dB
+  // below the best, and 'nullAvoidance' over 7.3 to 19.5 dB (11.7 on
+  // average), a tenth more than 5.8 to 12.2 dB below.
+  //
+  // Those spreads include the level credit (LEVEL_WEIGHT), which widened
+  // them by about a fifth in 'balanced' and an eighth in 'nullAvoidance':
+  // level differs by 5.5 to 8.1 dB across a room's spots, worth 1.4 to 2 dB
+  // of score. The thresholds were 3/1 and 6/2 before level counted, and at
+  // those a move from a spot picked at random to the best spot against a
+  // wall graded 'major' about twice as often as it had in 'balanced' (13%
+  // of spots against 6%), and a louder spot no more even than the old one
+  // could grade 'modest'. At these, the shares are about where they were (6%
+  // 'major' and 59% 'modest' or better in 'balanced', 13% and 83% in
+  // 'nullAvoidance'), and level alone has to differ by 6 dB or more to
+  // grade 'modest'.
   const PLACEMENT_GAIN_DB = {
-    balanced: { major: 3, modest: 1 },
-    nullAvoidance: { major: 6, modest: 2 }
+    balanced: { major: 4, modest: 1.5 },
+    nullAvoidance: { major: 7, modest: 2.5 }
   };
   // The key a mode's constants are under: any mode but 'nullAvoidance'
   // scores as 'balanced', as in scoreResponses.
@@ -2584,6 +2615,43 @@
   // A source counts as a sub when its passband tops out at or below 150 Hz.
   function isSubSource(source){ return source.freqHigh <= 150; }
 
+  // ---- Crossover between the subs and the speakers ----
+  // Where bass management hands the bass from the subs to the main
+  // speakers, from the sources' own passbands and slopes (sourceGainAtFreq):
+  // the sub that reaches highest and the speaker that reaches lowest.
+  //   hz: where the two are equally loud. Between the sub's lowpass corner
+  //     and the speaker's highpass corner each falls at its own slope, so
+  //     log2(hz) is their corners' log2 weighted by the slopes; with equal
+  //     slopes, the geometric mean of the corners (80 Hz for an 80 Hz
+  //     crossover on both).
+  //   fromHz: below it the speaker is CROSSOVER_BLEND_DB or more down, so
+  //     the subs carry the bass; toHz: above it the sub is, so the speakers
+  //     do. In between both play a part, or, where a gap between the two
+  //     corners leaves both that far down, neither does; fromHz is the
+  //     lower of the two either way.
+  // Null with no sub or no speaker, and when the sub reaches above the
+  // speaker's highpass corner (speakers run full range, say): both then
+  // play at full level across the overlap, so no one frequency is where
+  // the bass changes hands.
+  const CROSSOVER_BLEND_DB = 12;
+  function crossoverBand(sources){
+    const subs = sources.filter(isSubSource), mains = sources.filter(s => !isSubSource(s));
+    if(subs.length === 0 || mains.length === 0) return null;
+    const sub = subs.reduce((a, b) => b.freqHigh > a.freqHigh ? b : a);
+    const main = mains.reduce((a, b) => b.freqLow < a.freqLow ? b : a);
+    if(sub.freqHigh > main.freqLow) return null;
+    const subSlope = sub.rolloffDbPerOct ?? 24, mainSlope = main.rolloffDbPerOct ?? 24;
+    const log2Hz = (subSlope * Math.log2(sub.freqHigh) + mainSlope * Math.log2(main.freqLow)) / (subSlope + mainSlope);
+    const mainDownHz = main.freqLow / Math.pow(2, CROSSOVER_BLEND_DB / mainSlope);
+    const subDownHz = sub.freqHigh * Math.pow(2, CROSSOVER_BLEND_DB / subSlope);
+    return { hz: Math.pow(2, log2Hz), fromHz: Math.min(mainDownHz, subDownHz), toHz: Math.max(mainDownHz, subDownHz) };
+  }
+  // Whether hz is past a crossoverBand's blend (above band.toHz), where the
+  // subs are CROSSOVER_BLEND_DB or more down and the speakers carry the
+  // bass, so moving or adding subs changes little there. Inside the blend
+  // both play a part, so it is false there, and with no band (null).
+  function isAboveCrossover(hz, band){ return !!band && hz > band.toHz; }
+
   // What a sub search has to keep clear of each existing source. A sub keeps
   // the search's full sub-to-sub separation (a plain { x, y } point). A
   // main speaker blocks its keepOut rectangle (speakerKeepOut) instead,
@@ -2620,8 +2688,12 @@
   // bonus rather than a multiplier, so it composes cleanly regardless of the
   // underlying score's sign or magnitude. Each mode has its own, sized to
   // the range its scores spread over (see PLACEMENT_GAIN_DB): at 3 dB the
-  // 'balanced' score, which spreads about a third as far, let a small zone
-  // capture the pick almost every time.
+  // 'balanced' score, which spreads less than half as far, let a small zone
+  // capture the pick almost every time. Measured again with the level
+  // credit in the score (8 rooms, a 3 x 3 ft zone tried at every spot it
+  // could go): in a search against the walls the zone takes the pick from
+  // 50% of those spots in 'balanced' and 62% in 'nullAvoidance', against
+  // 48% and 70% before level counted, so the bonuses are unchanged.
   const PREFERRED_ZONE_BONUS_DB = { balanced: 1, nullAvoidance: 3 };
   function preferredZoneBonusDb(candidatePos, preferredZones, mode){
     if(!preferredZones || preferredZones.length === 0) return 0;
@@ -2819,10 +2891,11 @@
     const {
       room, otherSources, freqList, listenerPositions, physicsCtx,
       offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, excludePoints, minSeparationFt, mode, precomputedModes,
-      candidateTemplate, timeAlignTo, seatAveraging
+      candidateTemplate, timeAlignTo, seatAveraging, wallOnly
     } = options;
     const step = gridStepFt || 0.5;
     const z = subHeightFt ?? 1;
+    const atWall = wallOnly && wallSpotMask(room, step, offLimitZones, allowedZones);
     // Enumerated once for the whole grid, not once per candidate -- modes only
     // depend on room geometry + wall materials (physicsCtx), never on the
     // candidate position, so re-deriving them per grid cell (hundreds to
@@ -2839,9 +2912,11 @@
       sampleShapes: centerSampleShapes(listenerPositions, modes, seatAveraging)
     });
 
-    for(let x = step/2; x < room.w; x += step){
-      for(let y = step/2; y < room.d; y += step){
-        if(!isCandidateValid(x, y, room, offLimitZones, allowedZones, excludePoints, minSeparationFt)){
+    let i = 0;
+    for(let x = step/2; x < room.w; x += step, i++){
+      let j = 0;
+      for(let y = step/2; y < room.d; y += step, j++){
+        if((atWall && !atWall[i][j]) || !isCandidateValid(x, y, room, offLimitZones, allowedZones, excludePoints, minSeparationFt)){
           yield null;
           continue;
         }
@@ -2867,17 +2942,57 @@
     }
   }
 
+  // ---- Subs against a wall ----
+  // Which cells of scanGridCandidates' grid (mask[i][j], for its i-th x and
+  // j-th y) count as against a wall: an open cell (inside the room, outside
+  // every off-limits zone, inside an allowed zone if there are any) from
+  // which a straight line to the left, right, front or back reaches a wall
+  // without crossing another open cell. That is the row of cells along each
+  // wall, and where furniture, a bass trap or another off-limits zone stands
+  // against the wall, the first open cells in front of it: the nearest a
+  // sub can get to that wall. A wall of an L, T or U room counts the same
+  // as an outer one. Subs, speakers and seats do not block a wall here; the
+  // search keeps a sub clear of those separately.
+  function wallSpotMask(room, gridStepFt, offLimitZones, allowedZones){
+    const step = gridStepFt || 0.5;
+    const xs = [], ys = [];
+    for(let x = step/2; x < room.w; x += step) xs.push(x);
+    for(let y = step/2; y < room.d; y += step) ys.push(y);
+    const OUTSIDE = 0, BLOCKED = 1, OPEN = 2;
+    const cell = xs.map(x => ys.map(y => !isCandidateValid(x, y, room) ? OUTSIDE
+      : isCandidateValid(x, y, room, offLimitZones, allowedZones) ? OPEN : BLOCKED));
+    const at = (i, j) => i < 0 || j < 0 || i >= xs.length || j >= ys.length ? OUTSIDE : cell[i][j];
+    // whether a line from cell (i, j) in direction (di, dj) meets a wall before an open cell
+    const reachesWall = (i, j, di, dj) => {
+      for(i += di, j += dj; ; i += di, j += dj){
+        const c = at(i, j);
+        if(c !== BLOCKED) return c === OUTSIDE;
+      }
+    };
+    return cell.map((col, i) => col.map((c, j) => c === OPEN &&
+      (reachesWall(i, j, -1, 0) || reachesWall(i, j, 1, 0) || reachesWall(i, j, 0, -1) || reachesWall(i, j, 0, 1))));
+  }
+
   // Total number of grid cells scanGridCandidates will walk for a given room and
   // step size, using the identical loop bounds -- kept in sync by construction so
   // it can never drift from the actual candidate count. With `onFloorOnly`,
   // only the cells on the floor (inside the walls of an L, T or U room, not
-  // in its bounding box's cut-outs) are counted.
-  function countGridCells(room, gridStepFt, onFloorOnly){
+  // in its bounding box's cut-outs) are counted. With `search`
+  // ({ offLimitZones, allowedZones, wallOnly }, as scanGridCandidates takes
+  // them), only the cells a search with those zones tries: on the floor,
+  // outside every off-limits zone, inside an allowed zone if there are any,
+  // and with wallOnly against a wall (wallSpotMask). Spots a search skips
+  // for being too near a speaker or another sub are still counted.
+  function countGridCells(room, gridStepFt, onFloorOnly, search){
     const step = gridStepFt || 0.5;
-    let n = 0;
-    for(let x = step/2; x < room.w; x += step){
-      for(let y = step/2; y < room.d; y += step){
-        if(!onFloorOnly || isCandidateValid(x, y, room)) n++;
+    const atWall = search && search.wallOnly && wallSpotMask(room, step, search.offLimitZones, search.allowedZones);
+    let n = 0, i = 0;
+    for(let x = step/2; x < room.w; x += step, i++){
+      let j = 0;
+      for(let y = step/2; y < room.d; y += step, j++){
+        const counted = search ? (atWall ? atWall[i][j] : isCandidateValid(x, y, room, search.offLimitZones, search.allowedZones))
+          : (!onFloorOnly || isCandidateValid(x, y, room));
+        if(counted) n++;
       }
     }
     return n;
@@ -3009,6 +3124,15 @@
   function newSubAt(i, spot){
     return Object.assign({ name: `Sub ${i+1}` }, NEW_SUB_DEFAULTS, { x: spot.x, y: spot.y, z: spot.z });
   }
+  // A multi-sub search places new subs (NEW_SUB_DEFAULTS), or with
+  // options.subs, those subs: round i scores and places a copy of
+  // options.subs[i], with its own level and passband, at its own height
+  // unless options.subHeightFt says otherwise.
+  function roundTemplate(options, i){ return options.subs ? options.subs[i] : NEW_SUB_DEFAULTS; }
+  function roundHeight(options, i){ return options.subHeightFt ?? (options.subs ? options.subs[i].z : undefined); }
+  function roundSub(options, i, spot){
+    return options.subs ? Object.assign({}, options.subs[i], { x: spot.x, y: spot.y, z: spot.z }) : newSubAt(i, spot);
+  }
 
   // The other first spots the multi-sub search starts from: the best of the
   // first round's candidates, each at least the sub separation away (on
@@ -3068,7 +3192,7 @@
   function placeAndPolish(options, separation, modes, seed){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging, wallOnly
     } = options;
 
     const placedSubs = [];
@@ -3087,9 +3211,9 @@
       const seeded = i === 0 && seed;
       const roundResult = seeded ? seed.firstRound : optimizeSubPlacement({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt: roundHeight(options, i),
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging, precomputedModes: modes
+        candidateTemplate: roundTemplate(options, i), timeAlignTo, seatAveraging, wallOnly, precomputedModes: modes
       });
       roundResults.push(roundResult);
       const spot = seeded ? seed.spot : roundResult.best;
@@ -3099,7 +3223,7 @@
         // return what was successfully placed so far.
         break;
       }
-      const placedSub = newSubAt(i, spot);
+      const placedSub = roundSub(options, i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
@@ -3108,13 +3232,14 @@
     // Coordinate-descent polish -- see polishSubPlacements for the full
     // explanation. roundResults (above) is left untouched; polish results go
     // in their own array so the "one roundResult per sub placed" invariant
-    // callers/tests rely on keeps holding exactly as before. Every sub placed
-    // above shares the same subHeightFt by construction (it came from this
-    // same options.subHeightFt via scanGridCandidates), so passing that same
-    // value through here reproduces the exact prior inlined behavior.
+    // callers/tests rely on keeps holding exactly as before. Each sub was
+    // placed above at roundHeight: options.subHeightFt when given, otherwise
+    // its own height in options.subs. The polish falls back the same way
+    // (polishRoundOptions), so passing options.subHeightFt through keeps
+    // every sub at the height it was placed at.
     const polish = polishSubPlacements({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging, wallOnly
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
@@ -3179,10 +3304,7 @@
   // with assignNearestSpots, so each sub travels to the nearest of the
   // picked spots it could equally take.
   function polishSubPlacements(options){
-    const {
-      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging
-    } = options;
+    const { room, subs, minSeparationFt, timeAlignTo } = options;
     const separation = multiSubSeparation(room, minSeparationFt);
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
@@ -3190,22 +3312,8 @@
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
-          // "Everyone else": mains/other fixed sources plus every OTHER
-          // placed sub, excluding this one's own current position from the
-          // exclusion check (the excludePoints passed into
-          // scanGridCandidates), so this sub is not kept clear of its own
-          // pre-polish position.
-          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others, room);
-          // Scored as this sub itself (its own level and passband), so a
-          // refined position is judged for the sub that will stand there.
-          const roundResult = optimizeSubPlacement({
-            room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
-            subHeightFt: subHeightFt ?? placedSubs[k].z,
-            excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging
-          });
+          // See polishRoundOptions for what is held and how it is scored.
+          const roundResult = optimizeSubPlacement(polishRoundOptions(options, placedSubs, k, separation));
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
@@ -3219,6 +3327,39 @@
       }
     }
     return finishPolish(subs, placedSubs, polishResults, timeAlignTo);
+  }
+
+  // One polish round's single-sub search: sub k of placedSubs over the
+  // grid, every other sub held where it is in placedSubs. "Everyone else"
+  // is the mains and other fixed sources plus every OTHER placed sub, so
+  // this sub is not kept clear of its own current position. It is scored
+  // as itself (its own level and passband), so a refined position is
+  // judged for the sub that will stand there.
+  function polishRoundOptions(options, placedSubs, k, separation){
+    const {
+      room, otherSources, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging, wallOnly
+    } = options;
+    const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
+    return {
+      room, otherSources: others, freqList, listenerPositions,
+      physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
+      subHeightFt: subHeightFt ?? placedSubs[k].z,
+      excludePoints: sourceExclusionPoints(others, room), minSeparationFt: separation, mode,
+      candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging, wallOnly
+    };
+  }
+  // The score of every spot the last of options.subs could move to, with
+  // the rest held where they stand: the map a polish round gives, for subs
+  // that are staying put (a refinement found nothing worth a move). The
+  // polish's own last round held the others at the spots it picked, so its
+  // map shows their keep-clear squares where no sub stands.
+  // Takes polishSubPlacementsAsync's options; returns optimizeSubPlacementAsync's result.
+  function subScoreMapAsync(options){
+    const { room, subs, minSeparationFt, onYield, onProgress, yieldEvery, signal, precomputedModes } = options;
+    return optimizeSubPlacementAsync(Object.assign(polishRoundOptions(options, subs, subs.length - 1, multiSubSeparation(room, minSeparationFt)), {
+      onYield, onProgress, yieldEvery, signal, precomputedModes
+    }));
   }
 
   function finishPolish(subs, placedSubs, polishResults, timeAlignTo){
@@ -3235,11 +3376,7 @@
   // how far the whole polish is, counted as POLISH_PASSES passes over every
   // sub. A polish that settles early stops short of 1.
   async function polishSubPlacementsAsync(options){
-    const {
-      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging,
-      onYield, onProgress, yieldEvery, signal, precomputedModes
-    } = options;
+    const { room, subs, physicsCtx, minSeparationFt, timeAlignTo, onYield, onProgress, yieldEvery, signal, precomputedModes } = options;
     const separation = multiSubSeparation(room, minSeparationFt);
     const modes = precomputedModes || enumerateModes(physicsCtx);
     const placedSubs = subs.map(s => Object.assign({}, s));
@@ -3248,17 +3385,10 @@
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
-          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others, room);
-          const roundResult = await optimizeSubPlacementAsync({
-            room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
-            subHeightFt: subHeightFt ?? placedSubs[k].z,
-            excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging,
+          const roundResult = await optimizeSubPlacementAsync(Object.assign(polishRoundOptions(options, placedSubs, k, separation), {
             precomputedModes: modes, onYield, yieldEvery, signal,
             onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish', (pass * placedSubs.length + k + fraction) / (POLISH_PASSES * placedSubs.length)) : undefined
-          });
+          }));
           polishResults.push(roundResult);
           if(roundResult.best === null) continue;
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
@@ -3290,8 +3420,7 @@
     const separation = multiSubSeparation(room, minSeparationFt);
     const modes = enumerateModes(physicsCtx);
     const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
-    const seedScans = numSubs >= 2 ? MULTI_START_SEEDS * (numSubs - 1 + polishScans) : 0;
-    const totalScans = numSubs + polishScans + seedScans;
+    const totalScans = multiSubScanCount(numSubs);
     // Each start reports its progress from `doneScans`, the scans before it.
     const progressFrom = (doneScans) => onProgress ? (fraction, k, phase, scans) => onProgress(fraction, k, phase, (doneScans + scans) / totalScans) : undefined;
     const first = await placeAndPolishAsync(options, separation, modes, null, progressFrom(0), polishScans);
@@ -3310,7 +3439,7 @@
   async function placeAndPolishAsync(options, separation, modes, seed, progress, polishScans){
     const {
       room, otherSources, numSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging, wallOnly,
       onYield, yieldEvery, signal
     } = options;
 
@@ -3325,9 +3454,9 @@
       const scansBefore = greedyScans;
       const roundResult = seeded ? seed.firstRound : await optimizeSubPlacementAsync({
         room, otherSources: currentOtherSources, freqList, listenerPositions,
-        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt,
+        physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt: roundHeight(options, i),
         excludePoints: placedPositions, minSeparationFt: separation, mode,
-        candidateTemplate: NEW_SUB_DEFAULTS, timeAlignTo, seatAveraging,
+        candidateTemplate: roundTemplate(options, i), timeAlignTo, seatAveraging, wallOnly,
         precomputedModes: modes, onYield, yieldEvery, signal,
         onProgress: progress ? (fraction) => progress(fraction, i, undefined, scansBefore + fraction) : undefined
       });
@@ -3335,7 +3464,7 @@
       roundResults.push(roundResult);
       const spot = seeded ? seed.spot : roundResult.best;
       if(spot === null) break;
-      const placedSub = newSubAt(i, spot);
+      const placedSub = roundSub(options, i, spot);
       placedSubs.push(placedSub);
       placedPositions.push({ x: placedSub.x, y: placedSub.y });
       currentOtherSources = currentOtherSources.concat([placedSub]);
@@ -3347,12 +3476,74 @@
     // precomputedModes to avoid enumerating it a second time.
     const polish = await polishSubPlacementsAsync({
       room, otherSources, subs: placedSubs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt: separation, mode, timeAlignTo, seatAveraging, wallOnly,
       precomputedModes: modes, onYield, yieldEvery, signal,
       onProgress: progress ? (fraction, k, phase, overall) => progress(fraction, k, phase, greedyScans + overall * polishScans) : undefined
     });
 
     return { placedSubs: polish.placedSubs, roundResults, polishResults: polish.polishResults };
+  }
+
+  // ---- Refining subs already in the room ----
+  // Better spots for the subs the person has (options.subs, each keeping its
+  // own level and passband), searched two ways: the polish from where they
+  // stand (polishSubPlacements), and the full multi-start search
+  // (optimizeMultipleSubs) placing those same subs from scratch. The polish
+  // alone moves one sub at a time, so from a poor layout it can settle on a
+  // nearby one that no single move improves, even when a layout elsewhere
+  // scores well above it. Keeps whichever layout scores best as a whole
+  // (placementScore; the polish wins ties), with the spots handed out so
+  // the subs move as little as possible (assignNearestSpots). The full
+  // search's layout often differs from the polish's by a few hundredths of
+  // a dB while moving a sub the polish left alone, so when it moves more
+  // subs than the polish it has to score REFINE_EXTRA_MOVE_SHARE of
+  // PLACEMENT_GAIN_DB[mode].modest higher, or the person would be asked to
+  // move a sub for a gain they could not hear. Returns
+  // { placedSubs, moved, polishResults } as polishSubPlacements does,
+  // polishResults from the search whose layout was kept.
+  const REFINE_EXTRA_MOVE_SHARE = 0.5;
+  function refineSubPlacements(options){
+    const modes = enumerateModes(options.physicsCtx);
+    const fromHere = polishSubPlacements(options);
+    const fresh = optimizeMultipleSubs(Object.assign({}, options, { numSubs: options.subs.length }));
+    return betterRefinement(options, modes, fromHere, fresh);
+  }
+  function betterRefinement(options, modes, fromHere, fresh){
+    const { subs, timeAlignTo, mode } = options;
+    if(fresh.placedSubs.length < subs.length) return fromHere;
+    const gainDb = placementScore(options, modes, fresh.placedSubs) - placementScore(options, modes, fromHere.placedSubs);
+    if(!(gainDb > 0)) return fromHere;
+    const fromScratch = finishPolish(subs, fresh.placedSubs, fresh.polishResults, timeAlignTo);
+    const movedCount = (result) => result.moved.filter(Boolean).length;
+    if(movedCount(fromScratch) > movedCount(fromHere) && gainDb < REFINE_EXTRA_MOVE_SHARE * PLACEMENT_GAIN_DB[scoreModeKey(mode)].modest) return fromHere;
+    return fromScratch;
+  }
+  // How many grid scans optimizeMultipleSubs(Async) runs for numSubs subs,
+  // at most: the greedy rounds and polish of the first start, and of each
+  // other start.
+  function multiSubScanCount(numSubs){
+    const polishScans = numSubs >= 2 ? POLISH_PASSES * numSubs : 0;
+    const seedScans = numSubs >= 2 ? MULTI_START_SEEDS * (numSubs - 1 + polishScans) : 0;
+    return numSubs + polishScans + seedScans;
+  }
+  // Async twin of refineSubPlacements. onProgress(fraction, k, phase,
+  // overall): the polish from where the subs stand reports as
+  // polishSubPlacementsAsync does, then the full search as
+  // optimizeMultipleSubsAsync does, overall counting both.
+  async function refineSubPlacementsAsync(options){
+    const { subs, physicsCtx, onProgress } = options;
+    const modes = enumerateModes(physicsCtx);
+    const polishScans = POLISH_PASSES * subs.length;
+    const total = polishScans + multiSubScanCount(subs.length);
+    const fromHere = await polishSubPlacementsAsync(Object.assign({}, options, {
+      precomputedModes: modes,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, overall * polishScans / total) : undefined
+    }));
+    const fresh = await optimizeMultipleSubsAsync(Object.assign({}, options, {
+      numSubs: subs.length,
+      onProgress: onProgress ? (fraction, k, phase, overall) => onProgress(fraction, k, phase, (polishScans + overall * (total - polishScans)) / total) : undefined
+    }));
+    return betterRefinement(options, modes, fromHere, fresh);
   }
 
   return {
@@ -3433,6 +3624,7 @@
     isNearNull,
     scoreSubPosition,
     BALANCED_FLATNESS_WEIGHT,
+    LEVEL_WEIGHT,
     PREFERRED_ZONE_BONUS_DB,
     preferredZoneBonusDb,
     SPEAKER_AZIMUTH_DEG,
@@ -3442,6 +3634,7 @@
     seatToSeatSpreadDb,
     comparePlacements,
     PLACEMENT_GAIN_DB,
+    REFINE_EXTRA_MOVE_SHARE,
     checkSubMoves,
     wallsAround,
     nearestWallDistances,
@@ -3451,6 +3644,9 @@
     clipRectToRoom,
     isCandidateValid,
     isSubSource,
+    CROSSOVER_BLEND_DB,
+    crossoverBand,
+    isAboveCrossover,
     SPEAKER_CLEARANCE_FT,
     speakerKeepOut,
     sourceExclusionPoints,
@@ -3458,11 +3654,15 @@
     NEW_SUB_DEFAULTS,
     scanGridCandidates,
     countGridCells,
+    wallSpotMask,
     optimizeSubPlacement,
     optimizeSubPlacementAsync,
     optimizeMultipleSubs,
     optimizeMultipleSubsAsync,
     polishSubPlacements,
-    polishSubPlacementsAsync
+    polishSubPlacementsAsync,
+    refineSubPlacements,
+    subScoreMapAsync,
+    refineSubPlacementsAsync
   };
 });
