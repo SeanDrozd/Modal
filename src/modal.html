@@ -2352,7 +2352,21 @@ function applyAppearanceAttrs(mode, theme){
     const movedCount = check.moved.filter(Boolean).length;
 
     if(movedCount === 0){
-      // Nothing to suggest: the map keeps the score heatmap but shows no move.
+      // Nothing to suggest: the map keeps a score heatmap but shows no move.
+      // The search's own last scan held the other subs at the spots it
+      // picked, so with two or more subs the heatmap is scanned again with
+      // them where they stand, or it would show keep-clear squares around
+      // spots no sub is in.
+      if(existingSubs.length >= 2){
+        const map = await RoomPhysics.subScoreMapAsync({
+          room, otherSources, subs: existingSubs, freqList, listenerPositions,
+          physicsCtx: scene.physicsCtx, offLimitZones, allowedZones, preferredZones,
+          gridStepFt: step, mode: optimizerMode, timeAlignTo, seatAveraging: RoomPhysics.SEAT_AVERAGING, wallOnly: optWallOnly,
+          onYield: yieldToBrowser, signal
+        });
+        lastBest = map.best;
+        lastAllCandidates = map.allCandidates;
+      }
       optimizerResult = { best: lastBest, allCandidates: lastAllCandidates, gridStepFt: step, placedSubs: [], applyInPlace: true, unchanged: true, gainDb: check.gainDb };
       status.innerHTML = `<span style="color:var(--good)">${check.gainDb > 0
         ? `Little to gain. The best positions found score only ${check.gainDb.toFixed(1)} dB better, under the ${RoomPhysics.PLACEMENT_GAIN_DB[optimizerMode].modest} dB worth a move.`

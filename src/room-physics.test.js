@@ -3858,6 +3858,21 @@ testAsync('refineSubPlacementsAsync matches refineSubPlacements, and its progres
   assert.ok(last > 0.5 && last <= 1 + 1e-12, `expected overall progress to end near 1, got ${last}`);
 });
 
+testAsync('subScoreMapAsync scores the last sub\'s every spot with the others held where they stand', async () => {
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
+  const subs = [{ ...P.NEW_SUB_DEFAULTS, x: 0.5, y: 0.5, z: 1 }, { ...P.NEW_SUB_DEFAULTS, levelDb: 3, x: 11.5, y: 8.5, z: 1 }];
+  const opts = { room, otherSources: mains, subs, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'balanced', timeAlignTo: seats[0] };
+  const map = await P.subScoreMapAsync(opts);
+  // the held sub keeps its 4 ft square clear (12 x 9 ft: the separation is 4 ft)
+  assert.ok(map.allCandidates.length > 50);
+  assert.ok(map.allCandidates.every(c => !(Math.abs(c.x - 0.5) < 4 && Math.abs(c.y - 0.5) < 4)), 'nothing within 4 ft of the held sub');
+  assert.ok(map.allCandidates.some(c => c.x === 11.5 && c.y === 8.5), 'the moving sub\'s own spot is open to it');
+  // it is a polish round's scan: the same as a single-sub search for the last sub, scored as itself
+  const direct = P.optimizeSubPlacement({ ...opts, otherSources: mains.concat([subs[0]]), excludePoints: P.sourceExclusionPoints(mains.concat([subs[0]]), room), minSeparationFt: 4, candidateTemplate: subs[1] });
+  assert.deepStrictEqual(map.allCandidates.map(c => [c.x, c.y, c.score]), direct.allCandidates.map(c => [c.x, c.y, c.score]));
+});
+
 testAsync('wallOnly reaches the async searches too', async () => {
   const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
   const opts = {

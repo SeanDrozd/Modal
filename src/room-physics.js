@@ -3270,10 +3270,7 @@
   // with assignNearestSpots, so each sub travels to the nearest of the
   // picked spots it could equally take.
   function polishSubPlacements(options){
-    const {
-      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging, wallOnly
-    } = options;
+    const { room, subs, minSeparationFt, timeAlignTo } = options;
     const separation = multiSubSeparation(room, minSeparationFt);
     const placedSubs = subs.map(s => Object.assign({}, s));
     const polishResults = [];
@@ -3281,22 +3278,8 @@
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
-          // "Everyone else": mains/other fixed sources plus every OTHER
-          // placed sub, excluding this one's own current position from the
-          // exclusion check (the excludePoints passed into
-          // scanGridCandidates), so this sub is not kept clear of its own
-          // pre-polish position.
-          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others, room);
-          // Scored as this sub itself (its own level and passband), so a
-          // refined position is judged for the sub that will stand there.
-          const roundResult = optimizeSubPlacement({
-            room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
-            subHeightFt: subHeightFt ?? placedSubs[k].z,
-            excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging, wallOnly
-          });
+          // See polishRoundOptions for what is held and how it is scored.
+          const roundResult = optimizeSubPlacement(polishRoundOptions(options, placedSubs, k, separation));
           polishResults.push(roundResult);
           if(roundResult.best === null) continue; // no valid candidate; leave this sub where it is
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
@@ -3310,6 +3293,39 @@
       }
     }
     return finishPolish(subs, placedSubs, polishResults, timeAlignTo);
+  }
+
+  // One polish round's single-sub search: sub k of placedSubs over the
+  // grid, every other sub held where it is in placedSubs. "Everyone else"
+  // is the mains and other fixed sources plus every OTHER placed sub, so
+  // this sub is not kept clear of its own current position. It is scored
+  // as itself (its own level and passband), so a refined position is
+  // judged for the sub that will stand there.
+  function polishRoundOptions(options, placedSubs, k, separation){
+    const {
+      room, otherSources, freqList, listenerPositions, physicsCtx,
+      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, mode, timeAlignTo, seatAveraging, wallOnly
+    } = options;
+    const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
+    return {
+      room, otherSources: others, freqList, listenerPositions,
+      physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
+      subHeightFt: subHeightFt ?? placedSubs[k].z,
+      excludePoints: sourceExclusionPoints(others, room), minSeparationFt: separation, mode,
+      candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging, wallOnly
+    };
+  }
+  // The score of every spot the last of options.subs could move to, with
+  // the rest held where they stand: the map a polish round gives, for subs
+  // that are staying put (a refinement found nothing worth a move). The
+  // polish's own last round held the others at the spots it picked, so its
+  // map shows their keep-clear squares where no sub stands.
+  // Takes polishSubPlacementsAsync's options; returns optimizeSubPlacementAsync's result.
+  function subScoreMapAsync(options){
+    const { room, subs, minSeparationFt, onYield, onProgress, yieldEvery, signal, precomputedModes } = options;
+    return optimizeSubPlacementAsync(Object.assign(polishRoundOptions(options, subs, subs.length - 1, multiSubSeparation(room, minSeparationFt)), {
+      onYield, onProgress, yieldEvery, signal, precomputedModes
+    }));
   }
 
   function finishPolish(subs, placedSubs, polishResults, timeAlignTo){
@@ -3326,11 +3342,7 @@
   // how far the whole polish is, counted as POLISH_PASSES passes over every
   // sub. A polish that settles early stops short of 1.
   async function polishSubPlacementsAsync(options){
-    const {
-      room, otherSources, subs, freqList, listenerPositions, physicsCtx,
-      offLimitZones, allowedZones, preferredZones, gridStepFt, subHeightFt, minSeparationFt, mode, timeAlignTo, seatAveraging, wallOnly,
-      onYield, onProgress, yieldEvery, signal, precomputedModes
-    } = options;
+    const { room, subs, physicsCtx, minSeparationFt, timeAlignTo, onYield, onProgress, yieldEvery, signal, precomputedModes } = options;
     const separation = multiSubSeparation(room, minSeparationFt);
     const modes = precomputedModes || enumerateModes(physicsCtx);
     const placedSubs = subs.map(s => Object.assign({}, s));
@@ -3339,17 +3351,10 @@
       for(let pass = 0; pass < POLISH_PASSES; pass++){
         let anyMoved = false;
         for(let k = 0; k < placedSubs.length; k++){
-          const others = otherSources.concat(placedSubs.filter((_, idx) => idx !== k));
-          const excludePoints = sourceExclusionPoints(others, room);
-          const roundResult = await optimizeSubPlacementAsync({
-            room, otherSources: others, freqList, listenerPositions,
-            physicsCtx, offLimitZones, allowedZones, preferredZones, gridStepFt,
-            subHeightFt: subHeightFt ?? placedSubs[k].z,
-            excludePoints, minSeparationFt: separation, mode,
-            candidateTemplate: placedSubs[k], timeAlignTo, seatAveraging, wallOnly,
+          const roundResult = await optimizeSubPlacementAsync(Object.assign(polishRoundOptions(options, placedSubs, k, separation), {
             precomputedModes: modes, onYield, yieldEvery, signal,
             onProgress: onProgress ? (fraction) => onProgress(fraction, k, 'polish', (pass * placedSubs.length + k + fraction) / (POLISH_PASSES * placedSubs.length)) : undefined
-          });
+          }));
           polishResults.push(roundResult);
           if(roundResult.best === null) continue;
           if(roundResult.best.x !== placedSubs[k].x || roundResult.best.y !== placedSubs[k].y){
@@ -3610,6 +3615,7 @@
     polishSubPlacements,
     polishSubPlacementsAsync,
     refineSubPlacements,
+    subScoreMapAsync,
     refineSubPlacementsAsync
   };
 });
