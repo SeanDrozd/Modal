@@ -2254,10 +2254,12 @@
     // so it cannot even out the seats either.
     //
     // Both modes then add LEVEL_WEIGHT[mode] times the weighted average
-    // level (avgMean). Over six rooms (12 x 9 to 22 x 16 ft, 1 to 4 subs) a
-    // quarter of a dB per dB made the picks 0 to 4.3 dB louder for at most
-    // 0.3 dB of the evenness score; at 0.35 a 14 x 11 ft room gave up 0.7 dB
-    // of evenness and a 3.7 dB deeper null for 3.5 dB.
+    // level (avgMean). Over six rooms (12 x 9 to 22 x 16 ft, 1 to 4 subs,
+    // both modes) a quarter of a dB per dB made the picks 0 to 4.3 dB
+    // louder for at most 0.35 dB of the evenness score, apart from one
+    // 4-sub layout (1.0 dB) where the search, which is not global, settled
+    // on a layout that scores lower by this score too. At 0.35 a 14 x 11 ft
+    // room gave up 0.7 dB of evenness and a 3.7 dB deeper null for 3.5 dB.
     const spreadDb = seatToSeatSpreadDb(perListenerDb, listenerStats.map(s => s.weight));
     // No seats gives a NaN score, like the rest of this function's
     // degenerate input (see the empty-input test).
