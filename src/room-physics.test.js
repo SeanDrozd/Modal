@@ -3835,6 +3835,31 @@ test('refineSubPlacements gets out of a layout the polish alone stays stuck near
   assert.deepStrictEqual(again.moved, [false, false]);
 });
 
+test('refineSubPlacements leaves a sub the polish kept where it is unless moving it too is worth a real gain', () => {
+  // 12 x 9 ft, Even, against a wall: from these spots the polish moves one
+  // sub, and the full search's layout scores 0.03 dB higher by moving both.
+  const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
+  const opts = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
+    offLimitZones: [], allowedZones: [], preferredZones: [], gridStepFt: 1, subHeightFt: 1, mode: 'balanced', timeAlignTo: seats[0],
+    seatAveraging: P.SEAT_AVERAGING, wallOnly: true };
+  const grade = (subs) => P.gradePlacement(seats, seats[0], freqs, P.timeAlignedSources(mains.concat(subs), seats[0], room), ctx, 'balanced').stats.score;
+  const subs = [{ ...P.NEW_SUB_DEFAULTS, x: 6.5, y: 8.5, z: 1 }, { ...P.NEW_SUB_DEFAULTS, x: 0.5, y: 0.5, z: 1 }];
+  const polish = P.polishSubPlacements({ ...opts, subs });
+  const fresh = P.optimizeMultipleSubs({ ...opts, numSubs: 2 });
+  const edge = grade(fresh.placedSubs) - grade(polish.placedSubs);
+  assert.ok(edge > 0 && edge < P.REFINE_EXTRA_MOVE_SHARE * P.PLACEMENT_GAIN_DB.balanced.modest, `the full search is ahead by only ${edge.toFixed(3)} dB`);
+  assert.strictEqual(polish.moved.filter(Boolean).length, 1);
+  const refined = P.refineSubPlacements({ ...opts, subs });
+  assert.deepStrictEqual(refined.placedSubs.map(s => [s.x, s.y]), polish.placedSubs.map(s => [s.x, s.y]), 'the polish layout is kept');
+  assert.deepStrictEqual(refined.moved, polish.moved);
+  // where the full search moves no more subs than the polish, any edge still wins
+  const both = [{ ...P.NEW_SUB_DEFAULTS, x: 0.5, y: 5.5, z: 1 }, { ...P.NEW_SUB_DEFAULTS, x: 5.5, y: 0.5, z: 1 }];
+  const bothPolish = P.polishSubPlacements({ ...opts, subs: both });
+  const bothRefined = P.refineSubPlacements({ ...opts, subs: both });
+  assert.deepStrictEqual(bothPolish.moved, [true, true]);
+  assert.ok(grade(bothRefined.placedSubs) > grade(bothPolish.placedSubs), `refined ${grade(bothRefined.placedSubs).toFixed(3)} against polish ${grade(bothPolish.placedSubs).toFixed(3)}`);
+});
+
 test('refineSubPlacements places each sub as itself: its own level and passband', () => {
   const { room, ctx, seats, freqs, mains } = twoSubScene(12, 9, 6.3);
   const opts = { room, otherSources: mains, freqList: freqs, listenerPositions: seats, physicsCtx: ctx,
@@ -3902,10 +3927,18 @@ test('crossoverBand finds where the subs hand over to the speakers, from their o
   const odd = P.crossoverBand([main(100, 12), sub(60, 24), sub(70, 24)]);
   approx(P.sourceGainAtFreq(main(100, 12), odd.hz), P.sourceGainAtFreq(sub(70, 24), odd.hz), 1e-9, 'the sub reaching highest and the speaker reaching lowest');
   assert.ok(odd.hz > 70 && odd.hz < 100);
-  // no handover without both, or with a speaker run full range
+  // no handover without both, or when the passbands overlap: both then play
+  // at full level across the overlap, so there is no one crossover
   assert.strictEqual(P.crossoverBand([sub(80)]), null);
   assert.strictEqual(P.crossoverBand([main(80)]), null);
   assert.strictEqual(P.crossoverBand([main(0), sub(80)]), null);
+  assert.strictEqual(P.crossoverBand([main(20), sub(80)]), null, 'speakers run full range');
+  assert.strictEqual(P.crossoverBand([main(40), sub(120)]), null, 'a sub reaching above the speakers\' corner');
+  // with a gap between the corners, each is 12 dB down before the other's
+  // end is reached: fromHz is still the lower end, with hz in between
+  const gap = P.crossoverBand([main(130), sub(60)]);
+  approx(gap.fromHz, 60 * Math.SQRT2, 1e-9); approx(gap.toHz, 130 / Math.SQRT2, 1e-9);
+  assert.ok(gap.fromHz < gap.hz && gap.hz < gap.toHz, `${gap.fromHz} < ${gap.hz} < ${gap.toHz}`);
 });
 
 test('wallsAround gives the first wall each way, a notch wall where it is the nearer that way', () => {

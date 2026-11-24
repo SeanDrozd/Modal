@@ -3475,6 +3475,7 @@ function applyAppearanceAttrs(mode, theme){
       freqResponseTimer = null;
       computeFreqResponseData();
       redrawFreqResponseCanvas();
+      refreshCrossoverNote();
     }, 200);
   }
 
@@ -3818,15 +3819,27 @@ function applyAppearanceAttrs(mode, theme){
     slider.value = Math.round(Math.pow(10, logMin + t * (logMax - logMin)));
     slider.dispatchEvent(new Event('input'));
   }
+  // A finger's vertical swipe still scrolls the sidebar (touch-action pan-y;
+  // the browser then cancels the pointer). So a touch sets the frequency
+  // only once it has moved more sideways than up or down, or lifts as a
+  // tap; a mouse sets it from the press on.
   freqResponseCanvasEl.style.cursor = 'ew-resize';
-  freqResponseCanvasEl.style.touchAction = 'none';
+  freqResponseCanvasEl.style.touchAction = 'pan-y';
+  let chartTouchStart = null; // where a touch went down, until it turns into a sideways drag
   freqResponseCanvasEl.addEventListener('pointerdown', function(e){
     if(e.button !== 0) return;
     freqResponseCanvasEl.setPointerCapture(e.pointerId);
-    setFreqFromChartX(e);
+    chartTouchStart = e.pointerType === 'touch' ? { x: e.clientX, y: e.clientY } : null;
+    if(!chartTouchStart) setFreqFromChartX(e);
   });
   freqResponseCanvasEl.addEventListener('pointermove', function(e){
-    if(freqResponseCanvasEl.hasPointerCapture(e.pointerId)) setFreqFromChartX(e);
+    if(!freqResponseCanvasEl.hasPointerCapture(e.pointerId)) return;
+    if(chartTouchStart && Math.abs(e.clientX - chartTouchStart.x) <= Math.abs(e.clientY - chartTouchStart.y)) return;
+    chartTouchStart = null;
+    setFreqFromChartX(e);
+  });
+  freqResponseCanvasEl.addEventListener('pointerup', function(e){
+    if(freqResponseCanvasEl.hasPointerCapture(e.pointerId) && chartTouchStart) setFreqFromChartX(e);
   });
 
   function freqSweepTick(ts){
@@ -4264,7 +4277,6 @@ function applyAppearanceAttrs(mode, theme){
         document.getElementById('optimizerStatus').textContent = byUser ? OPTIMIZER_STOPPED_TEXT : OPTIMIZER_DROPPED_TEXT;
         return byUser ? STOPPED_BY_USER : false;
       }
-      document.getElementById('optimizerCrossoverNote').textContent = crossoverDipNote();
       if(optimizerResult && optimizerResult.placedSubs && optimizerResult.placedSubs.length > 0){
         acceptBtn.textContent = reoptimize ? 'Apply refined positions' : 'Add suggested sub(s) as sources';
         acceptBtn.style.display = 'block';
@@ -4274,7 +4286,15 @@ function applyAppearanceAttrs(mode, theme){
     } finally {
       optimizerAbort = null;
       setOptimizerButtonsDisabled(false);
+      refreshCrossoverNote();
     }
+  }
+  // The crossover note under the optimizer's status, shown while a search's
+  // result is on show and no search is running. Written again whenever the
+  // response chart is recomputed (scheduleFreqResponseUpdate), so it follows
+  // a dragged star or an edited source as the chart does.
+  function refreshCrossoverNote(){
+    document.getElementById('optimizerCrossoverNote').textContent = optimizerResult && !optimizerAbort ? crossoverDipNote() : '';
   }
   document.getElementById('runOptimizerBtn').addEventListener('click', () => startOptimizer(false));
   document.getElementById('reoptimizeExistingBtn').addEventListener('click', () => startOptimizer(true));

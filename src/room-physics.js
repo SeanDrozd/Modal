@@ -2614,22 +2614,25 @@
   //     crossover on both).
   //   fromHz: below it the speaker is CROSSOVER_BLEND_DB or more down, so
   //     the subs carry the bass; toHz: above it the sub is, so the speakers
-  //     do. In between both play a part.
-  // Null with no sub, no speaker, or a speaker run full range (freqLow 0).
+  //     do. In between both play a part, or, where a gap between the two
+  //     corners leaves both that far down, neither does; fromHz is the
+  //     lower of the two either way.
+  // Null with no sub or no speaker, and when the sub reaches above the
+  // speaker's highpass corner (speakers run full range, say): both then
+  // play at full level across the overlap, so no one frequency is where
+  // the bass changes hands.
   const CROSSOVER_BLEND_DB = 12;
   function crossoverBand(sources){
     const subs = sources.filter(isSubSource), mains = sources.filter(s => !isSubSource(s));
     if(subs.length === 0 || mains.length === 0) return null;
     const sub = subs.reduce((a, b) => b.freqHigh > a.freqHigh ? b : a);
     const main = mains.reduce((a, b) => b.freqLow < a.freqLow ? b : a);
-    if(!(main.freqLow > 0)) return null;
+    if(sub.freqHigh > main.freqLow) return null;
     const subSlope = sub.rolloffDbPerOct ?? 24, mainSlope = main.rolloffDbPerOct ?? 24;
     const log2Hz = (subSlope * Math.log2(sub.freqHigh) + mainSlope * Math.log2(main.freqLow)) / (subSlope + mainSlope);
-    return {
-      hz: Math.pow(2, log2Hz),
-      fromHz: main.freqLow / Math.pow(2, CROSSOVER_BLEND_DB / mainSlope),
-      toHz: sub.freqHigh * Math.pow(2, CROSSOVER_BLEND_DB / subSlope)
-    };
+    const mainDownHz = main.freqLow / Math.pow(2, CROSSOVER_BLEND_DB / mainSlope);
+    const subDownHz = sub.freqHigh * Math.pow(2, CROSSOVER_BLEND_DB / subSlope);
+    return { hz: Math.pow(2, log2Hz), fromHz: Math.min(mainDownHz, subDownHz), toHz: Math.max(mainDownHz, subDownHz) };
   }
 
   // What a sub search has to keep clear of each existing source. A sub keeps
@@ -3459,9 +3462,15 @@
   // nearby one that no single move improves, even when a layout elsewhere
   // scores well above it. Keeps whichever layout scores best as a whole
   // (placementScore; the polish wins ties), with the spots handed out so
-  // the subs move as little as possible (assignNearestSpots). Returns
+  // the subs move as little as possible (assignNearestSpots). The full
+  // search's layout often differs from the polish's by a few hundredths of
+  // a dB while moving a sub the polish left alone, so when it moves more
+  // subs than the polish it has to score REFINE_EXTRA_MOVE_SHARE of
+  // PLACEMENT_GAIN_DB[mode].modest higher, or the person would be asked to
+  // move a sub for a gain they could not hear. Returns
   // { placedSubs, moved, polishResults } as polishSubPlacements does,
   // polishResults from the search whose layout was kept.
+  const REFINE_EXTRA_MOVE_SHARE = 0.5;
   function refineSubPlacements(options){
     const modes = enumerateModes(options.physicsCtx);
     const fromHere = polishSubPlacements(options);
@@ -3469,9 +3478,14 @@
     return betterRefinement(options, modes, fromHere, fresh);
   }
   function betterRefinement(options, modes, fromHere, fresh){
-    const { subs, timeAlignTo } = options;
-    if(fresh.placedSubs.length < subs.length || placementScore(options, modes, fresh.placedSubs) <= placementScore(options, modes, fromHere.placedSubs)) return fromHere;
-    return finishPolish(subs, fresh.placedSubs, fresh.polishResults, timeAlignTo);
+    const { subs, timeAlignTo, mode } = options;
+    if(fresh.placedSubs.length < subs.length) return fromHere;
+    const gainDb = placementScore(options, modes, fresh.placedSubs) - placementScore(options, modes, fromHere.placedSubs);
+    if(!(gainDb > 0)) return fromHere;
+    const fromScratch = finishPolish(subs, fresh.placedSubs, fresh.polishResults, timeAlignTo);
+    const movedCount = (result) => result.moved.filter(Boolean).length;
+    if(movedCount(fromScratch) > movedCount(fromHere) && gainDb < REFINE_EXTRA_MOVE_SHARE * PLACEMENT_GAIN_DB[scoreModeKey(mode)].modest) return fromHere;
+    return fromScratch;
   }
   // How many grid scans optimizeMultipleSubs(Async) runs for numSubs subs,
   // at most: the greedy rounds and polish of the first start, and of each
@@ -3589,6 +3603,7 @@
     seatToSeatSpreadDb,
     comparePlacements,
     PLACEMENT_GAIN_DB,
+    REFINE_EXTRA_MOVE_SHARE,
     checkSubMoves,
     wallsAround,
     nearestWallDistances,
